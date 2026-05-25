@@ -10,6 +10,7 @@ import { validateDateString, validateId, convertRepeatConfiguration } from '../v
 import { isAuthenticationError } from '../../../utils/auth-error-handler';
 import { RETRY_CONFIG } from '../../../utils/retry';
 import { transformApiError, handleFetchError, handleStatusCodeError } from '../../../utils/error-handler';
+import { extractHttpErrorDetail } from '../../../utils/http-error-detail';
 import { AUTH_ERROR_MESSAGES } from '../constants';
 import { createTaskResponse } from './TaskResponseFormatter';
 import { formatAorpAsMarkdown } from '../../../utils/response-factory';
@@ -191,7 +192,14 @@ function buildUpdateData(currentTask: Task, args: UpdateTaskArgs): Task {
 }
 
 /**
- * Updates task labels with authentication error handling
+ * Updates task labels with authentication error handling.
+ *
+ * The catch surfaces the HTTP status + body of the underlying Vikunja error
+ * in both branches. Previously the catch replaced any 403/422 from
+ * `POST /tasks/{id}/labels/bulk` with the generic LABEL_UPDATE "known
+ * limitation" message, which hid the real cause (e.g. a permission failure
+ * vs an invalid label id) from the MCP client and made the diagnostic
+ * round-trip much longer for the consumer.
  */
 async function updateTaskLabels(client: VikunjaClient, taskId: number, labelIds: number[]): Promise<void> {
   try {
@@ -199,9 +207,20 @@ async function updateTaskLabels(client: VikunjaClient, taskId: number, labelIds:
       label_ids: labelIds,
     });
   } catch (labelError) {
-    // Check if it's an auth error
+    const detail = extractHttpErrorDetail(labelError);
     if (isAuthenticationError(labelError)) {
-      throw new MCPError(ErrorCode.API_ERROR, AUTH_ERROR_MESSAGES.LABEL_UPDATE);
+      throw new MCPError(
+        ErrorCode.API_ERROR,
+        detail
+          ? `${AUTH_ERROR_MESSAGES.LABEL_UPDATE} ${detail}`
+          : AUTH_ERROR_MESSAGES.LABEL_UPDATE,
+      );
+    }
+    if (detail) {
+      throw new MCPError(
+        ErrorCode.API_ERROR,
+        `Failed to update task labels ${detail}`,
+      );
     }
     throw labelError;
   }
