@@ -20,6 +20,8 @@ export interface BulkCreateTaskData {
   title: string;
   description?: string;
   dueDate?: string;
+  startDate?: string;
+  endDate?: string;
   priority?: number;
   labels?: number[];
   assignees?: number[];
@@ -95,6 +97,8 @@ export const bulkOperationValidator = {
       'done',
       'priority',
       'due_date',
+      'start_date',
+      'end_date',
       'project_id',
       'assignees',
       'labels',
@@ -118,6 +122,14 @@ export const bulkOperationValidator = {
 
     if (args.field === 'due_date' && typeof args.value === 'string') {
       validateDateString(args.value, 'due_date');
+    }
+
+    if (args.field === 'start_date' && typeof args.value === 'string') {
+      validateDateString(args.value, 'start_date');
+    }
+
+    if (args.field === 'end_date' && typeof args.value === 'string') {
+      validateDateString(args.value, 'end_date');
     }
 
     if (args.field === 'project_id' && typeof args.value === 'number') {
@@ -216,6 +228,12 @@ export const bulkOperationValidator = {
       // Validate optional fields
       if (task.dueDate) {
         validateDateString(task.dueDate, `tasks[${index}].dueDate`);
+      }
+      if (task.startDate) {
+        validateDateString(task.startDate, `tasks[${index}].startDate`);
+      }
+      if (task.endDate) {
+        validateDateString(task.endDate, `tasks[${index}].endDate`);
       }
 
       if (task.assignees) {

@@ -100,6 +100,15 @@ export async function bulkUpdateTasks(args: BulkUpdateArgs): Promise<{ content: 
 
     try {
       if (!args.field) throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Field required');
+
+      // The native Vikunja bulk endpoint, for date fields like start_date and
+      // end_date, truncates fields it does not receive (description, priority,
+      // ...), silently corrupting task data. Route those through the
+      // field-preserving per-task path (getTask + merge + updateTask) instead.
+      if (args.field === 'start_date' || args.field === 'end_date') {
+        return await updateWithFallback();
+      }
+
       const bulkOp = { task_ids: taskIds, field: args.field, value: args.value };
       if (args.field === 'repeat_mode' && typeof args.value === 'string') {
         bulkOp.value = REPEAT_MODE_MAP[args.value] ?? args.value;
