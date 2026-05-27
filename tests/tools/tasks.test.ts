@@ -2704,12 +2704,12 @@ describe('Tasks Tool', () => {
   });
 
   describe('attach subcommand', () => {
-    it('should return not implemented error', async () => {
+    it('should reject when neither filePath nor fileContent is provided', async () => {
       await expect(
         callTool('attach', {
           id: 1,
         }),
-      ).rejects.toThrow('File attachments are not supported in the current MCP context');
+      ).rejects.toThrow('attach requires filePath or fileContent');
     });
   });
 

@@ -25,6 +25,7 @@ import { assignUsers, unassignUsers, listAssignees } from './assignees';
 import { handleComment } from './comments';
 import { addReminder, removeReminder, listReminders } from './reminders';
 import { applyLabels, removeLabels, listTaskLabels } from './labels';
+import { attachSchemaFields, handleAttach, type TaskAttachArgs } from './attach';
 
 
 /**
@@ -100,18 +101,6 @@ async function listTasks(
 
     throw handleFetchError(error, 'list tasks');
   }
-}
-
-/**
- * Handle file attachments (not supported)
- */
-function handleAttach(): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
-  // Attachment handling would require file upload capabilities
-  // which are not available in the current MCP context
-  throw new MCPError(
-    ErrorCode.NOT_IMPLEMENTED,
-    'File attachments are not supported in the current MCP context',
-  );
 }
 
 export function registerTasksTool(
@@ -193,6 +182,8 @@ export function registerTasksTool(
       // Reminder fields
       reminderDate: z.string().optional(),
       reminderId: z.number().optional(),
+      // Attach subcommand fields (filePath, fileContent, filename)
+      ...attachSchemaFields,
       // Add relation schema
       ...relationSchema,
       // Session ID for AORP response tracking
@@ -247,7 +238,7 @@ export function registerTasksTool(
             return handleComment(args as Parameters<typeof handleComment>[0]);
 
           case 'attach':
-            return handleAttach();
+            return handleAttach(args as TaskAttachArgs, authManager);
 
           case 'bulk-update':
             return bulkUpdateTasks(args as Parameters<typeof bulkUpdateTasks>[0]);
