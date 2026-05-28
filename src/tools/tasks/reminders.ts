@@ -37,27 +37,31 @@ export async function addReminder(args: {
     // Get current task to preserve existing reminders
     const currentTask = await client.tasks.getTask(args.id);
 
-    // Transform reminders to the expected API format
-    const existingReminders = (currentTask.reminders || []).map((reminder: TaskReminder) => ({
-      id: reminder.id,
-      reminder_date: reminder.reminder_date,
+    // Vikunja v2.3.0 stores an absolute reminder under the `reminder` key.
+    // node-vikunja's typed model still calls it `reminder_date`, so sending
+    // that key makes Vikunja silently store a zero (0001-01-01) reminder.
+    // Read and write the actual API field; preserve any existing reminders
+    // (absolute or relative) verbatim.
+    const existingReminders = (
+      (currentTask.reminders ?? []) as unknown as Array<{
+        reminder?: string;
+        relative_period?: number;
+        relative_to?: string;
+      }>
+    ).map((r) => ({
+      reminder: r.reminder,
+      ...(r.relative_period !== undefined ? { relative_period: r.relative_period } : {}),
+      ...(r.relative_to !== undefined ? { relative_to: r.relative_to } : {}),
     }));
 
-    const newReminderFormatted = {
-      id: 0, // New reminder, ID will be assigned by API
-      reminder_date: args.reminderDate,
-    };
+    const updatedReminders = [...existingReminders, { reminder: args.reminderDate }];
 
-    const updatedReminders: Array<{ id: number; reminder_date: string }> = [
-      ...existingReminders,
-      newReminderFormatted,
-    ];
-
-    // Update task with new reminders array
+    // Update task with new reminders array. node-vikunja's Task type does not
+    // describe the `reminder` key, so cast through to the API body it forwards.
     await client.tasks.updateTask(args.id, {
       ...currentTask,
       reminders: updatedReminders,
-    });
+    } as unknown as Parameters<typeof client.tasks.updateTask>[1]);
 
     // Fetch updated task
     await client.tasks.getTask(args.id);
