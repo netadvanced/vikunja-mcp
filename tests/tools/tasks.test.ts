@@ -710,6 +710,7 @@ describe('Tasks Tool', () => {
         description: 'Updated Description',
         dueDate: '2025-01-01T00:00:00Z',
         priority: 3,
+        percentDone: 0.5,
         done: true,
       };
       mockClient.tasks.getTask.mockResolvedValueOnce(mockTask).mockResolvedValueOnce(updatedTask);
@@ -721,6 +722,7 @@ describe('Tasks Tool', () => {
         description: 'Updated Description',
         dueDate: '2025-01-01T00:00:00Z',
         priority: 3,
+        percentDone: 0.5,
         done: true,
       });
 
@@ -730,6 +732,7 @@ describe('Tasks Tool', () => {
         description: 'Updated Description',
         due_date: '2025-01-01T00:00:00Z',
         priority: 3,
+        percent_done: 0.5,
         done: true,
       });
 

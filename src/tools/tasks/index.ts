@@ -153,6 +153,7 @@ export function registerTasksTool(
       projectId: z.number().optional(),
       dueDate: z.string().optional(),
       priority: z.number().min(0).max(5).optional(),
+      percentDone: z.number().min(0).max(1).optional(),
       labels: z.array(z.number()).optional(),
       assignees: z.array(z.number()).optional(),
       // Recurring task fields
