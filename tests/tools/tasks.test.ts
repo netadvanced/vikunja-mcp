@@ -2077,7 +2077,8 @@ describe('Tasks Tool', () => {
 
     it('should handle bulk update for labels field', async () => {
       mockClient.tasks.getTask.mockResolvedValue({ ...mockTask, labels: [] });
-      mockClient.tasks.bulkUpdateTasks.mockResolvedValue({ message: 'Tasks updated successfully' });
+      mockClient.tasks.updateTask.mockResolvedValue({ ...mockTask });
+      mockClient.tasks.updateTaskLabels.mockResolvedValue({});
 
       const result = await callTool('bulk-update', {
         taskIds: [1, 2],
@@ -2090,10 +2091,11 @@ describe('Tasks Tool', () => {
       const aorpStatus = parsed.getAorpStatus();
       expect(aorpStatus.type).toBe('success');
       expect(markdown).toContain('Successfully updated 2 tasks');
-      expect(mockClient.tasks.bulkUpdateTasks).toHaveBeenCalledWith({
-        task_ids: [1, 2],
-        field: 'labels',
-        value: [1, 2, 3],
+      // Labels route through the field-preserving per-task path, never the
+      // native /tasks/bulk endpoint (which does not apply label relations).
+      expect(mockClient.tasks.bulkUpdateTasks).not.toHaveBeenCalled();
+      expect(mockClient.tasks.updateTaskLabels).toHaveBeenCalledWith(1, {
+        labels: [{ id: 1 }, { id: 2 }, { id: 3 }],
       });
     });
 
