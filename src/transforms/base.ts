@@ -263,3 +263,50 @@ export const DEFAULT_VERBOSITY_FIELDS = {
     ...FIELD_CATEGORIES.METADATA_FIELDS
   ]
 } as const;
+
+/**
+ * Name of the environment variable that allows operators to change the
+ * default response verbosity for every tool call without needing a
+ * per-call override.
+ *
+ * See https://github.com/democratize-technology/vikunja-mcp/issues/24
+ * ("Phase 1": a single global env var default. Phase 2 - per-tool/per-call
+ * overrides - already exists for some project tools via an explicit
+ * `verbosity` argument, which always takes precedence over this default
+ * when provided.)
+ */
+export const VERBOSITY_ENV_VAR = 'VIKUNJA_RESPONSE_VERBOSITY';
+
+/**
+ * All valid Verbosity values, used to validate the environment variable.
+ */
+const VALID_VERBOSITY_VALUES: readonly string[] = Object.values(Verbosity);
+
+/**
+ * Resolves the default response verbosity from the
+ * `VIKUNJA_RESPONSE_VERBOSITY` environment variable.
+ *
+ * The value is matched case-insensitively against the `Verbosity` enum
+ * ('minimal' | 'standard' | 'detailed' | 'complete'). If the environment
+ * variable is unset, empty, or does not match one of those values, this
+ * falls back to `Verbosity.STANDARD`.
+ *
+ * Callers that accept an explicit per-call verbosity parameter MUST prefer
+ * that explicit value over this default when one is provided - this helper
+ * only supplies the fallback, not an override.
+ */
+export function getDefaultVerbosity(): Verbosity {
+  const rawValue = process.env[VERBOSITY_ENV_VAR];
+
+  if (typeof rawValue !== 'string') {
+    return Verbosity.STANDARD;
+  }
+
+  const normalized = rawValue.trim().toLowerCase();
+
+  if (VALID_VERBOSITY_VALUES.includes(normalized)) {
+    return normalized as Verbosity;
+  }
+
+  return Verbosity.STANDARD;
+}

@@ -4,6 +4,7 @@
  */
 
 import { createAorpResponse } from '../../utils/response-factory';
+import { getDefaultVerbosity } from '../../transforms/base';
 import type { ResponseMetadata } from '../../types/responses';
 import type { ResponseData } from '../../utils/simple-response';
 import type { AorpFactoryResult, AorpVerbosityLevel } from '../../types';
@@ -29,8 +30,9 @@ export function createProjectResponse(
   _useOptimizedFormat?: boolean,
   _useAorp?: boolean
 ): AorpFactoryResult {
-  // Default to standard verbosity if not specified
-  const selectedVerbosity = 'standard';
+  // An explicit per-call verbosity always takes precedence over the
+  // VIKUNJA_RESPONSE_VERBOSITY environment default.
+  const selectedVerbosity = _verbosity ?? getDefaultVerbosity();
 
   // Cast data to ResponseData for type compatibility
   const responseData = _data as ResponseData;

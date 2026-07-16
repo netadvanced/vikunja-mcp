@@ -5,6 +5,7 @@
 
 import { type TaskResponseData, type TaskResponseMetadata, type AorpBuilderConfig, type AorpVerbosityLevel } from '../../../types';
 import { createAorpResponse, createTaskAorpResponse, createAorpErrorResponse } from '../../../utils/response-factory';
+import { getDefaultVerbosity } from '../../../transforms/base';
 import type { AorpFactoryResult } from '../../../types';
 import type { Task } from '../../../types/vikunja';
 import type { ResponseData } from '../../../utils/simple-response';
@@ -83,14 +84,18 @@ export function createTaskResponse(
   _metadata: TaskResponseMetadata = {
     timestamp: new Date().toISOString()
   },
-  _verbosity?: string, // Parameter kept for backward compatibility but ignored
+  _verbosity?: string, // Explicit per-call override; falls back to VIKUNJA_RESPONSE_VERBOSITY (or 'standard') when not provided
   _useOptimizedFormat?: boolean, // Parameter kept for backward compatibility but ignored
   _useAorp?: boolean, // Parameter kept for backward compatibility but ignored
   _aorpConfig?: AorpBuilderConfig,
   _sessionId?: string
 ): AorpFactoryResult {
-  // Use standard AORP configuration - no more verbosity options
-  generateAorpConfig(operation, _data, 'standard');
+  // An explicit per-call verbosity always takes precedence over the
+  // VIKUNJA_RESPONSE_VERBOSITY environment default.
+  const effectiveVerbosity = _verbosity ?? getDefaultVerbosity();
+
+  // Use resolved AORP configuration
+  generateAorpConfig(operation, _data, effectiveVerbosity);
 
   // For task operations, use specialized task AORP response
   const taskData = _data.task || _data.tasks;
@@ -119,7 +124,7 @@ export function createTaskResponse(
           success: true,
           dataSize: JSON.stringify(taskData).length,
           processingTime: 0,
-          verbosity: 'standard',
+          verbosity: effectiveVerbosity,
           verbosityLevel: 'simple' as AorpVerbosityLevel,
           complexityFactors: {
             dataSize: JSON.stringify(taskData).length >= 1024,
@@ -177,7 +182,7 @@ export function createTaskResponse(
         success: true,
         dataSize: JSON.stringify(_data).length,
         processingTime: 0,
-        verbosity: 'standard',
+        verbosity: effectiveVerbosity,
         verbosityLevel: 'simple' as AorpVerbosityLevel,
         complexityFactors: {
           dataSize: JSON.stringify(_data).length >= 1024,
@@ -258,7 +263,7 @@ export function createTaskErrorResponse(
         success: false,
         dataSize: errorMessage.length,
         processingTime: 0,
-        verbosity: 'standard',
+        verbosity: getDefaultVerbosity(),
         verbosityLevel: 'simple' as AorpVerbosityLevel,
         complexityFactors: {
           dataSize: errorMessage.length >= 1024,
