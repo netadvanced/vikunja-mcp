@@ -19,6 +19,7 @@ describe('Assignee operations', () => {
   const mockClient = {
     tasks: {
       bulkAssignUsersToTask: jest.fn(),
+      assignUserToTask: jest.fn(),
       removeUserFromTask: jest.fn(),
       getTask: jest.fn(),
     },
@@ -39,7 +40,7 @@ describe('Assignee operations', () => {
         assignees: [{ id: 1, name: 'User 1' }, { id: 2, name: 'User 2' }],
       };
       
-      mockClient.tasks.bulkAssignUsersToTask.mockResolvedValue({});
+      mockClient.tasks.assignUserToTask.mockResolvedValue({});
       mockClient.tasks.getTask.mockResolvedValue(mockTask);
 
       const result = await assignUsers({
@@ -47,9 +48,12 @@ describe('Assignee operations', () => {
         assignees: [1, 2],
       });
 
-      expect(mockClient.tasks.bulkAssignUsersToTask).toHaveBeenCalledWith(123, {
-        user_ids: [1, 2],
-      });
+      // Uses the additive per-user endpoint (one call per assignee), NOT the
+      // bulk endpoint that would silently unassign everyone (upstream #15).
+      expect(mockClient.tasks.assignUserToTask).toHaveBeenCalledWith(123, 1);
+      expect(mockClient.tasks.assignUserToTask).toHaveBeenCalledWith(123, 2);
+      expect(mockClient.tasks.assignUserToTask).toHaveBeenCalledTimes(2);
+      expect(mockClient.tasks.bulkAssignUsersToTask).not.toHaveBeenCalled();
       expect(mockClient.tasks.getTask).toHaveBeenCalledWith(123);
 
       const markdown = result.content[0].text;
@@ -57,6 +61,53 @@ describe('Assignee operations', () => {
       expect(markdown).toContain("## ✅ Success");
       expect(markdown).toContain('assign');
       expect(markdown).toContain('Users assigned to task successfully');
+    });
+
+    it('should warn when assignees are not persisted (silent API failure)', async () => {
+      // assignUserToTask resolves, but the re-fetched task shows no assignees —
+      // the defense-in-depth verification (adapted from PR #43) must surface it.
+      const mockTaskNoAssignees = {
+        id: 123,
+        title: 'Test Task',
+        assignees: [], // API reported success but nothing persisted
+      };
+
+      mockClient.tasks.assignUserToTask.mockResolvedValue({});
+      mockClient.tasks.getTask.mockResolvedValue(mockTaskNoAssignees);
+
+      const result = await assignUsers({
+        id: 123,
+        assignees: [1, 2],
+      });
+
+      const markdown = result.content[0].text;
+      expect(markdown).toContain('not persisted');
+      expect(markdown).toContain('JWT authentication');
+      expect(markdown).toContain('1, 2');
+    });
+
+    it('should not warn and should fail open when verification re-fetch errors', async () => {
+      // assignUserToTask succeeds; the verification re-fetch throws, but the
+      // main fetch succeeds — verification must fail open (no false warning).
+      const mockTask = {
+        id: 123,
+        title: 'Test Task',
+        assignees: [{ id: 1, name: 'User 1' }, { id: 2, name: 'User 2' }],
+      };
+
+      mockClient.tasks.assignUserToTask.mockResolvedValue({});
+      mockClient.tasks.getTask
+        .mockRejectedValueOnce(new Error('verification fetch failed'))
+        .mockResolvedValueOnce(mockTask);
+
+      const result = await assignUsers({
+        id: 123,
+        assignees: [1, 2],
+      });
+
+      const markdown = result.content[0].text;
+      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).not.toContain('not persisted');
     });
 
     it('should throw error when task id is missing', async () => {
@@ -348,7 +399,7 @@ describe('Assignee operations', () => {
       };
       
       // Mock assignment
-      mockClient.tasks.bulkAssignUsersToTask.mockResolvedValue({});
+      mockClient.tasks.assignUserToTask.mockResolvedValue({});
       mockClient.tasks.getTask.mockResolvedValue(assignedTask);
       
       const assignResult = await assignUsers({ id: 123, assignees: [1] });

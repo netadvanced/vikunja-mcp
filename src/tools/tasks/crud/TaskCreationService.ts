@@ -124,9 +124,26 @@ export async function createTask(args: CreateTaskArgs): Promise<{ content: Array
     // Fetch the complete task with labels and assignees
     const completeTask = createdTask.id ? await client.tasks.getTask(createdTask.id) : createdTask;
 
+    // Defense-in-depth (adapted from upstream PR #43): verify assignees actually
+    // persisted. Even with the additive per-user endpoint, some Vikunja API/auth
+    // combinations can report success without persisting — surface that instead
+    // of silently reporting success.
+    let assigneeWarning: string | undefined;
+    if (args.assignees && args.assignees.length > 0 && completeTask.id) {
+      const persistedIds = new Set((completeTask.assignees || []).map((a) => a.id));
+      const missingIds = args.assignees.filter((id) => !persistedIds.has(id));
+      if (missingIds.length > 0) {
+        assigneeWarning =
+          `Warning: assignee(s) [${missingIds.join(', ')}] were not persisted. ` +
+          `This is a known Vikunja API limitation with API token auth. Try using JWT authentication instead.`;
+      }
+    }
+
     const response = createTaskResponse(
       'create-task',
-      'Task created successfully',
+      assigneeWarning
+        ? `Task created, but assignees may not have been saved. ${assigneeWarning}`
+        : 'Task created successfully',
       { task: completeTask },
       {
         timestamp: new Date().toISOString(),
@@ -205,14 +222,22 @@ async function addLabelsToTask(client: VikunjaClient, taskId: number, labelIds: 
  */
 async function addAssigneesToTask(client: VikunjaClient, taskId: number, assigneeIds: number[]): Promise<void> {
   try {
-    await withRetry(
-      () => client.tasks.bulkAssignUsersToTask(taskId, {
-        user_ids: assigneeIds,
-      }),
-      {
-        ...RETRY_CONFIG.AUTH_ERRORS,
-        shouldRetry: (error) => isAuthenticationError(error)
-      }
+    // Assign each user via the ADDITIVE single-assign endpoint rather than the
+    // bulk endpoint. node-vikunja's bulkAssignUsersToTask posts `{ user_ids }`
+    // to Vikunja's bulk endpoint, which expects `{ assignees }` and REPLACES
+    // the entire assignee list — the mismatched field is parsed as "assign
+    // nobody", silently unassigning everyone (upstream issue #15). Per-user
+    // calls run concurrently via Promise.all.
+    await Promise.all(
+      assigneeIds.map((userId) =>
+        withRetry(
+          () => client.tasks.assignUserToTask(taskId, userId),
+          {
+            ...RETRY_CONFIG.AUTH_ERRORS,
+            shouldRetry: (error) => isAuthenticationError(error)
+          }
+        )
+      )
     );
   } catch (assigneeError) {
     // Check if it's an auth error after retries

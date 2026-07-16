@@ -40,6 +40,7 @@ describe('Tasks CRUD - Final Coverage', () => {
         deleteTask: jest.fn(),
         updateTaskLabels: jest.fn(),
         bulkAssignUsersToTask: jest.fn(),
+        assignUserToTask: jest.fn(),
         removeUserFromTask: jest.fn(),
       },
     } as any;
@@ -210,7 +211,7 @@ describe('Tasks CRUD - Final Coverage', () => {
       mockClient.tasks.updateTask.mockResolvedValue(taskWithAssignees);
 
       // Mock successful addition but failed removal with non-auth error
-      mockClient.tasks.bulkAssignUsersToTask.mockResolvedValue(undefined);
+      mockClient.tasks.assignUserToTask.mockResolvedValue(undefined);
       const nonAuthError = new Error('Network timeout during remove operation');
       mockClient.tasks.removeUserFromTask.mockRejectedValue(nonAuthError);
 
@@ -241,7 +242,7 @@ describe('Tasks CRUD - Final Coverage', () => {
       mockClient.tasks.updateTask.mockResolvedValue(taskWithAssignees);
 
       // Mock successful addition but failed removal with non-Error object
-      mockClient.tasks.bulkAssignUsersToTask.mockResolvedValue(undefined);
+      mockClient.tasks.assignUserToTask.mockResolvedValue(undefined);
       const nonErrorObject = { status: 500, error: 'Database connection lost' };
       mockClient.tasks.removeUserFromTask.mockRejectedValue(nonErrorObject);
 
@@ -284,7 +285,7 @@ describe('Tasks CRUD - Final Coverage', () => {
         .mockResolvedValueOnce(updatedTask); // Final fetch
       mockClient.tasks.updateTask.mockResolvedValue(updatedTask);
       mockClient.tasks.updateTaskLabels.mockResolvedValue(undefined);
-      mockClient.tasks.bulkAssignUsersToTask.mockResolvedValue(undefined);
+      mockClient.tasks.assignUserToTask.mockResolvedValue(undefined);
 
       const result = await updateTask({
         id: 1,

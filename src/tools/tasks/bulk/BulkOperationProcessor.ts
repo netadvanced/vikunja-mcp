@@ -473,15 +473,22 @@ export const BulkOperationProcessor = {
 
     if (taskData.assignees && taskData.assignees.length > 0) {
       try {
-        await withRetry(
-          () => client.tasks.bulkAssignUsersToTask(taskId, {
-            user_ids: taskData.assignees || [],
-          }),
-          {
-            maxRetries: RETRY_CONFIG.AUTH_ERRORS.maxRetries,
-            timeout: RETRY_CONFIG.AUTH_ERRORS.initialDelay + RETRY_CONFIG.AUTH_ERRORS.maxDelay,
-            shouldRetry: (error: unknown) => isAuthenticationError(error)
-          }
+        // Per-user additive assign (assignUserToTask) instead of the bulk
+        // endpoint: node-vikunja's bulkAssignUsersToTask sends `{ user_ids }`
+        // to Vikunja's bulk endpoint, which expects `{ assignees }` and
+        // REPLACES the entire list, silently unassigning everyone on the field
+        // mismatch (upstream issue #15). Run concurrently via Promise.all.
+        await Promise.all(
+          (taskData.assignees || []).map((userId) =>
+            withRetry(
+              () => client.tasks.assignUserToTask(taskId, userId),
+              {
+                maxRetries: RETRY_CONFIG.AUTH_ERRORS.maxRetries,
+                timeout: RETRY_CONFIG.AUTH_ERRORS.initialDelay + RETRY_CONFIG.AUTH_ERRORS.maxDelay,
+                shouldRetry: (error: unknown) => isAuthenticationError(error)
+              }
+            )
+          )
         );
       } catch (assigneeError) {
         if (isAuthenticationError(assigneeError)) {

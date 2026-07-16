@@ -405,9 +405,13 @@ export class TaskCreationService {
 
     if (userIds.length > 0 && createdTask.id) {
       try {
-        await client.tasks.bulkAssignUsersToTask(createdTask.id, {
-          user_ids: userIds,
-        });
+        // Assign each user via the ADDITIVE single-assign endpoint rather than
+        // the bulk endpoint. node-vikunja's bulkAssignUsersToTask sends
+        // `{ user_ids }` to Vikunja's bulk endpoint, which expects `{ assignees }`
+        // and REPLACES the whole assignee list — the mismatched field is parsed
+        // as "assign nobody", silently unassigning everyone (upstream issue #15).
+        const taskId = createdTask.id;
+        await Promise.all(userIds.map((userId) => client.tasks.assignUserToTask(taskId, userId)));
       } catch (assignError) {
         logger.error('Failed to assign users to task', {
           taskId: createdTask.id,
