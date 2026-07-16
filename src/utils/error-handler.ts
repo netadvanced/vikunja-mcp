@@ -154,13 +154,16 @@ class SecureErrorHandler {
       );
     }
 
-    // Only real Error instances contribute their message to the output. Any
-    // other shape (plain strings, objects, null, etc.) becomes "Unknown
-    // error" so that arbitrary upstream API payloads never leak into the
-    // user-visible MCP error surface.
+    // Real Error instances and explicitly-thrown strings contribute their
+    // message to the output (consistent with transform()). Any other shape
+    // (plain objects, null, undefined, etc.) becomes "Unknown error" so that
+    // arbitrary upstream API payloads never leak into the user-visible MCP
+    // error surface.
     let message: string;
     if (error instanceof Error) {
       message = error.message;
+    } else if (typeof error === 'string') {
+      message = error;
     } else {
       message = 'Unknown error';
     }
