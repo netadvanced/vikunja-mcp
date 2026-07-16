@@ -14,48 +14,58 @@ describe('Circuit Breaker Integration with Retry Logic', () => {
     jest.clearAllMocks();
   });
 
-  it('should use circuit breaker when enabled in retry config', async () => {
+  it('should invoke the operation directly without a shared anonymous circuit breaker', async () => {
+    // withRetry no longer wraps calls in a name-cached ('anonymous') circuit
+    // breaker. Previously, every withRetry call shared a single breaker
+    // instance keyed by the literal name 'anonymous'; because opossum binds
+    // the action closure at construction time, only the first call to ever
+    // reach that breaker actually ran its own operation - every subsequent
+    // call silently re-fired the first call's closure, and once the shared
+    // breaker opened, all later calls (regardless of which operation they
+    // passed) rejected immediately with opossum's "Breaker is open" without
+    // ever invoking their own operation. This test asserts each call now
+    // always executes its own operation independently.
     let callCount = 0;
     const mockOperation = jest.fn().mockImplementation(async () => {
       callCount++;
-      if (callCount <= 10) {
-        // Use a 5xx server error to trigger circuit breaker
-        const error = new Error('Internal Server Error');
-        (error as any).status = 500;
-        throw error;
-      }
-      return 'success';
+      // Use a 5xx server error to simulate a failing dependency
+      const error = new Error('Internal Server Error');
+      (error as any).status = 500;
+      throw error;
     });
 
-    // First, make several calls to trigger circuit breaker opening
+    // Make several calls with retries disabled. Passing
+    // enableCircuitBreaker/circuitBreakerName here is a no-op for withRetry -
+    // it never accepted those as real options - but is kept to guard against
+    // regressing back to shared-breaker behavior if they were ever wired up.
     for (let i = 0; i < 6; i++) {
-      try {
-        await withRetry(mockOperation, {
+      await expect(
+        withRetry(mockOperation, {
           enableCircuitBreaker: true,
           circuitBreakerName: 'test-circuit',
-          maxRetries: 0 // No retries to trigger faster opening
-        });
-      } catch (error) {
-        // Expected to fail
-      }
+          maxRetries: 0 // No retries so each call maps to exactly one operation invocation
+        })
+      ).rejects.toThrow('Internal Server Error');
     }
 
-    // Now try rapid calls - should be blocked by open circuit breaker
-    const promises = Array.from({ length: 5 }, () =>
-      withRetry(mockOperation, {
-        enableCircuitBreaker: true,
-        circuitBreakerName: 'test-circuit',
-        maxRetries: 0
-      }).catch(e => e.message)
+    // Every one of the 6 calls actually invoked the operation - none were
+    // short-circuited by a stale shared 'anonymous' breaker.
+    expect(mockOperation).toHaveBeenCalledTimes(6);
+    expect(callCount).toBe(6);
+
+    // Subsequent independent calls also each invoke their own operation.
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () =>
+        withRetry(mockOperation, {
+          enableCircuitBreaker: true,
+          circuitBreakerName: 'test-circuit',
+          maxRetries: 0
+        }).catch(e => e.message)
+      )
     );
 
-    const results = await Promise.all(promises);
-
-    // At least one should be blocked by circuit breaker
-    expect(results.some(r => r.includes('Circuit breaker') && r.includes('OPEN'))).toBe(true);
-
-    // Verify the operation was indeed blocked (limited calls)
-    expect(mockOperation).toHaveBeenCalledTimes(5); // Opened after 5 failures (default threshold)
+    expect(results.every(r => r === 'Internal Server Error')).toBe(true);
+    expect(mockOperation).toHaveBeenCalledTimes(11);
   });
 
   it('should handle network partition detection in retry logic', async () => {
