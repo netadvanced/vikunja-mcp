@@ -66,6 +66,7 @@ export async function vikunjaRestRequest<T = unknown>(
       `Vikunja REST request failed (${method} ${path}): HTTP ${response.status} ${
         response.statusText
       }${detail ? ` — ${detail}` : ''}`,
+      { statusCode: response.status },
     );
   }
 

@@ -4,7 +4,7 @@
 
 import { MCPError, ErrorCode } from '../../../types';
 import { validateDateString, validateId } from '../validation';
-import { MAX_BULK_OPERATION_TASKS } from '../constants';
+import { MAX_BULK_OPERATION_TASKS, REPEAT_MODE_MAP } from '../constants';
 
 export interface BulkUpdateArgs {
   taskIds?: number[];
@@ -214,7 +214,12 @@ export const bulkOperationValidator = {
     }
 
     if (args.field === 'repeat_mode' && typeof args.value === 'string') {
-      const validModes = ['day', 'week', 'month', 'year'];
+      // Valid modes are exactly the keys of REPEAT_MODE_MAP (constants.ts),
+      // which mirrors the API's TaskRepeatMode integer enum (default=0,
+      // month=1, from_current=2). Previously this accepted 'day'/'week'/'year'
+      // (which reach the API unconverted as raw strings) while rejecting the
+      // legitimate 'default'/'from_current'.
+      const validModes = Object.keys(REPEAT_MODE_MAP);
       if (!validModes.includes(args.value)) {
         throw new MCPError(
           ErrorCode.VALIDATION_ERROR,

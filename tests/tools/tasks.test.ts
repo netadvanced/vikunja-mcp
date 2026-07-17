@@ -1854,7 +1854,10 @@ describe('Tasks Tool', () => {
           field: 'repeat_mode',
           value: 'invalid',
         }),
-      ).rejects.toThrow('Invalid repeat_mode: invalid. Valid modes: day, week, month, year');
+        // Valid modes are the REPEAT_MODE_MAP keys (constants.ts), matching
+        // the API's TaskRepeatMode integer enum - not the 'day'/'week'/'year'
+        // interval units used by the unrelated task-create repeatMode field.
+      ).rejects.toThrow('Invalid repeat_mode: invalid. Valid modes: default, month, from_current');
     });
 
     it('should bulk update recurring settings', async () => {

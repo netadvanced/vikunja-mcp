@@ -13,11 +13,29 @@ import type { Webhook } from '../types/vikunja';
 import { logger } from '../utils/logger';
 import { validateAndConvertId } from '../utils/validation';
 import { createAorpResponse } from '../utils/response-factory';
+import { vikunjaRestRequest } from '../utils/vikunja-rest';
 
 // Event cache for validation
 let cachedEvents: string[] | null = null;
 let cacheExpiry: Date | null = null;
 const CACHE_DURATION_MS = 5 * 60 * 1000; // 5 minutes
+
+// Default webhook events used when the API's events endpoint is unavailable.
+// See docs/VIKUNJA_API_ISSUES.md #8: `/webhooks/events` is known to return
+// 401 even with a valid token on some server configurations.
+const DEFAULT_WEBHOOK_EVENTS = [
+  'task.created',
+  'task.updated',
+  'task.deleted',
+  'task.assigned',
+  'task.comment.created',
+  'project.created',
+  'project.updated',
+  'project.deleted',
+  'project.shared',
+  'team.created',
+  'team.deleted',
+];
 
 // Export for testing purposes
 export function clearWebhookEventCache(): void {
@@ -48,40 +66,8 @@ async function getValidEvents(authManager: AuthManager): Promise<string[]> {
   // Fetch fresh events
   logger.debug('Fetching fresh webhook events from API');
   try {
-    const session = authManager.getSession();
-    const response = await fetch(`${session.apiUrl}/webhooks/events`, {
-      method: 'GET',
-      headers: {
-        Authorization: `Bearer ${session.apiToken}`,
-        'Content-Type': 'application/json',
-      },
-    });
-
-    if (!response.ok) {
-      // If webhook events endpoint doesn't exist or returns auth error, use default events
-      if (response.status === 401 || response.status === 403 || response.status === 404) {
-        logger.warn('Webhook events endpoint not available, using default event list');
-        // Default webhook events based on Vikunja documentation
-        cachedEvents = [
-          'task.created',
-          'task.updated',
-          'task.deleted',
-          'task.assigned',
-          'task.comment.created',
-          'project.created',
-          'project.updated',
-          'project.deleted',
-          'project.shared',
-          'team.created',
-          'team.deleted',
-        ];
-        cacheExpiry = new Date(now.getTime() + CACHE_DURATION_MS);
-        return cachedEvents;
-      }
-      throw new Error(`Failed to fetch webhook events: ${response.statusText}`);
-    }
-
-    cachedEvents = (await response.json()) as string[];
+    const events = await vikunjaRestRequest<string[]>(authManager, 'GET', '/webhooks/events');
+    cachedEvents = events ?? [];
     cacheExpiry = new Date(now.getTime() + CACHE_DURATION_MS);
     logger.info('Webhook events cached', {
       eventsCount: cachedEvents.length,
@@ -89,6 +75,15 @@ async function getValidEvents(authManager: AuthManager): Promise<string[]> {
     });
     return cachedEvents;
   } catch (error) {
+    const statusCode = error instanceof MCPError ? error.details?.statusCode : undefined;
+    // If webhook events endpoint doesn't exist or returns auth error, use default events
+    if (statusCode === 401 || statusCode === 403 || statusCode === 404) {
+      logger.warn('Webhook events endpoint not available, using default event list');
+      cachedEvents = [...DEFAULT_WEBHOOK_EVENTS];
+      cacheExpiry = new Date(now.getTime() + CACHE_DURATION_MS);
+      return cachedEvents;
+    }
+
     logger.error('Failed to fetch webhook events', { error });
     // If we have stale cache, use it rather than failing
     if (cachedEvents) {
@@ -97,19 +92,7 @@ async function getValidEvents(authManager: AuthManager): Promise<string[]> {
     }
     // If no cache and fetch failed, use default events
     logger.warn('Using default webhook events due to API error');
-    cachedEvents = [
-      'task.created',
-      'task.updated',
-      'task.deleted',
-      'task.assigned',
-      'task.comment.created',
-      'project.created',
-      'project.updated',
-      'project.deleted',
-      'project.shared',
-      'team.created',
-      'team.deleted',
-    ];
+    cachedEvents = [...DEFAULT_WEBHOOK_EVENTS];
     cacheExpiry = new Date(now.getTime() + CACHE_DURATION_MS);
     return cachedEvents;
   }
@@ -155,12 +138,6 @@ export function registerWebhooksTool(server: McpServer, authManager: AuthManager
 
       await getClientFromContext(); // Ensure client is initialized
       const subcommand = args.subcommand;
-      const session = authManager.getSession();
-      const baseUrl = session.apiUrl;
-      const headers = {
-        Authorization: `Bearer ${session.apiToken}`,
-        'Content-Type': 'application/json',
-      };
 
       logger.debug('Webhooks tool called', { subcommand, args });
 
@@ -169,29 +146,12 @@ export function registerWebhooksTool(server: McpServer, authManager: AuthManager
           case 'list': {
             const projectId = validateAndConvertId(args.projectId, 'projectId');
 
-            const response = await fetch(`${baseUrl}/projects/${projectId}/webhooks`, {
-              method: 'GET',
-              headers,
-            });
-
-            if (!response.ok) {
-              const errorData = (await response.json().catch(() => ({ message: null }))) as {
-                message?: string;
-              };
-              // Check for webhook-specific authentication errors
-              if (response.status === 401 || response.status === 403) {
-                throw new MCPError(
-                  ErrorCode.API_ERROR,
-                  'Webhook operations require additional permissions. Please ensure your API token has webhook access rights.',
-                );
-              }
-              throw new MCPError(
-                ErrorCode.API_ERROR,
-                errorData.message || `Failed to list webhooks: ${response.statusText}`,
-              );
-            }
-
-            const webhooks = (await response.json()) as Webhook[];
+            const webhooks =
+              (await vikunjaRestRequest<Webhook[]>(
+                authManager,
+                'GET',
+                `/projects/${projectId}/webhooks`,
+              )) ?? [];
 
             logger.info('Listed webhooks', { projectId, count: webhooks.length });
 
@@ -223,29 +183,13 @@ export function registerWebhooksTool(server: McpServer, authManager: AuthManager
             const webhookId = validateAndConvertId(args.webhookId, 'webhookId');
 
             // Get all webhooks and find the specific one
-            const response = await fetch(`${baseUrl}/projects/${projectId}/webhooks`, {
-              method: 'GET',
-              headers,
-            });
+            const webhooks =
+              (await vikunjaRestRequest<Webhook[]>(
+                authManager,
+                'GET',
+                `/projects/${projectId}/webhooks`,
+              )) ?? [];
 
-            if (!response.ok) {
-              const errorData = (await response.json().catch(() => ({ message: null }))) as {
-                message?: string;
-              };
-              // Check for webhook-specific authentication errors
-              if (response.status === 401 || response.status === 403) {
-                throw new MCPError(
-                  ErrorCode.API_ERROR,
-                  'Webhook operations require additional permissions. Please ensure your API token has webhook access rights.',
-                );
-              }
-              throw new MCPError(
-                ErrorCode.API_ERROR,
-                errorData.message || `Failed to get webhooks: ${response.statusText}`,
-              );
-            }
-
-            const webhooks = (await response.json()) as Webhook[];
             const webhook = webhooks.find((w: Webhook) => w.id === webhookId);
 
             if (!webhook) {
@@ -309,30 +253,12 @@ export function registerWebhooksTool(server: McpServer, authManager: AuthManager
               webhookData.secret = args.secret;
             }
 
-            const response = await fetch(`${baseUrl}/projects/${projectId}/webhooks`, {
-              method: 'PUT',
-              headers,
-              body: JSON.stringify(webhookData),
-            });
-
-            if (!response.ok) {
-              const errorData = (await response.json().catch(() => ({ message: null }))) as {
-                message?: string;
-              };
-              // Check for webhook-specific authentication errors
-              if (response.status === 401 || response.status === 403) {
-                throw new MCPError(
-                  ErrorCode.API_ERROR,
-                  'Webhook operations require additional permissions. Please ensure your API token has webhook access rights.',
-                );
-              }
-              throw new MCPError(
-                ErrorCode.API_ERROR,
-                errorData.message || `Failed to create webhook: ${response.statusText}`,
-              );
-            }
-
-            const webhook = (await response.json()) as Webhook;
+            const webhook = await vikunjaRestRequest<Webhook>(
+              authManager,
+              'PUT',
+              `/projects/${projectId}/webhooks`,
+              webhookData,
+            );
 
             logger.info('Created webhook', { projectId, webhookId: webhook.id });
 
@@ -378,30 +304,12 @@ export function registerWebhooksTool(server: McpServer, authManager: AuthManager
               events: args.events,
             };
 
-            const response = await fetch(`${baseUrl}/projects/${projectId}/webhooks/${webhookId}`, {
-              method: 'POST',
-              headers,
-              body: JSON.stringify(updateData),
-            });
-
-            if (!response.ok) {
-              const errorData = (await response.json().catch(() => ({ message: null }))) as {
-                message?: string;
-              };
-              // Check for webhook-specific authentication errors
-              if (response.status === 401 || response.status === 403) {
-                throw new MCPError(
-                  ErrorCode.API_ERROR,
-                  'Webhook operations require additional permissions. Please ensure your API token has webhook access rights.',
-                );
-              }
-              throw new MCPError(
-                ErrorCode.API_ERROR,
-                errorData.message || `Failed to update webhook: ${response.statusText}`,
-              );
-            }
-
-            const webhook = (await response.json()) as Webhook;
+            const webhook = await vikunjaRestRequest<Webhook>(
+              authManager,
+              'POST',
+              `/projects/${projectId}/webhooks/${webhookId}`,
+              updateData,
+            );
 
             logger.info('Updated webhook events', { projectId, webhookId, events: args.events });
 
@@ -433,27 +341,11 @@ export function registerWebhooksTool(server: McpServer, authManager: AuthManager
             const projectId = validateAndConvertId(args.projectId, 'projectId');
             const webhookId = validateAndConvertId(args.webhookId, 'webhookId');
 
-            const response = await fetch(`${baseUrl}/projects/${projectId}/webhooks/${webhookId}`, {
-              method: 'DELETE',
-              headers,
-            });
-
-            if (!response.ok) {
-              const errorData = (await response.json().catch(() => ({ message: null }))) as {
-                message?: string;
-              };
-              // Check for webhook-specific authentication errors
-              if (response.status === 401 || response.status === 403) {
-                throw new MCPError(
-                  ErrorCode.API_ERROR,
-                  'Webhook operations require additional permissions. Please ensure your API token has webhook access rights.',
-                );
-              }
-              throw new MCPError(
-                ErrorCode.API_ERROR,
-                errorData.message || `Failed to delete webhook: ${response.statusText}`,
-              );
-            }
+            await vikunjaRestRequest(
+              authManager,
+              'DELETE',
+              `/projects/${projectId}/webhooks/${webhookId}`,
+            );
 
             logger.info('Deleted webhook', { projectId, webhookId });
 
@@ -518,6 +410,17 @@ export function registerWebhooksTool(server: McpServer, authManager: AuthManager
         logger.error('Webhook operation failed', { error, subcommand, args });
 
         if (error instanceof MCPError) {
+          // vikunjaRestRequest surfaces 401/403 as a generic HTTP error; give
+          // callers the documented, more actionable message instead (see
+          // docs/VIKUNJA_API_ISSUES.md #8 - webhook endpoints are known to
+          // reject otherwise-valid tokens on some server configurations).
+          const statusCode = error.details?.statusCode;
+          if (statusCode === 401 || statusCode === 403) {
+            throw new MCPError(
+              ErrorCode.API_ERROR,
+              'Webhook operations require additional permissions. Please ensure your API token has webhook access rights.',
+            );
+          }
           throw error;
         }
 
