@@ -346,7 +346,7 @@ async function testTaskLabels(): Promise<void> {
 
   // Apply single label
   try {
-    await api('PUT', `/tasks/${taskId}/labels/${labelId}`, { label_id: labelId });
+    await api('PUT', `/tasks/${taskId}/labels`, { label_id: labelId });
 
     // Read back and verify
     const task = await api<{ labels: Array<{ id: number }> | null }>('GET', `/tasks/${taskId}`);
@@ -362,7 +362,7 @@ async function testTaskLabels(): Promise<void> {
 
   // Apply second label
   try {
-    await api('PUT', `/tasks/${taskId}/labels/${labelId2}`, { label_id: labelId2 });
+    await api('PUT', `/tasks/${taskId}/labels`, { label_id: labelId2 });
 
     const task = await api<{ labels: Array<{ id: number }> | null }>('GET', `/tasks/${taskId}`);
     const labels = task.labels || [];
@@ -578,7 +578,7 @@ async function testProjects(): Promise<void> {
 
   // Archive project
   try {
-    await api('POST', `/projects/${projectId}`, { is_archived: true });
+    await api('POST', `/projects/${projectId}`, { title: 'test-project-updated', is_archived: true });
 
     const project = await api<{ is_archived: boolean }>('GET', `/projects/${projectId}`);
     if (!project.is_archived) {
@@ -586,7 +586,7 @@ async function testProjects(): Promise<void> {
     } else {
       pass('archive project');
       // Unarchive for cleanup
-      await api('POST', `/projects/${projectId}`, { is_archived: false });
+      await api('POST', `/projects/${projectId}`, { title: 'test-project-updated', is_archived: false });
     }
   } catch (e) {
     fail('archive project', (e as Error).message);
