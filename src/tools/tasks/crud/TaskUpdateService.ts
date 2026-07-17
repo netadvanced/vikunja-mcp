@@ -278,11 +278,17 @@ async function updateTaskAssignees(client: VikunjaClient, taskId: number, newAss
     const toAdd = newAssigneeIds.filter((id: number) => !currentAssigneeIds.includes(id));
     const toRemove = currentAssigneeIds.filter((id: number) => !newAssigneeIds.includes(id));
 
-    // Add new assignees first to avoid leaving task unassigned if removal fails
+    // Add new assignees first to avoid leaving task unassigned if removal fails.
+    // Use the ADDITIVE single-assign endpoint per user rather than the bulk
+    // endpoint: node-vikunja's bulkAssignUsersToTask sends `{ user_ids }` to
+    // Vikunja's bulk endpoint, which expects `{ assignees }` and REPLACES the
+    // whole list, so the mismatched field silently unassigns everyone instead
+    // of adding users (upstream issue #15). Mirrors the per-user removal loop
+    // directly below.
     if (toAdd.length > 0) {
-      await client.tasks.bulkAssignUsersToTask(taskId, {
-        user_ids: toAdd,
-      });
+      await Promise.all(
+        toAdd.map((userId: number) => client.tasks.assignUserToTask(taskId, userId))
+      );
     }
 
     // Remove old assignees only after new ones are successfully added

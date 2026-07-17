@@ -109,16 +109,22 @@ export const bulkOperationErrorHandler = {
       const currentTaskWithAssignees = await client.tasks.getTask(taskId);
       const currentAssigneeIds = currentTaskWithAssignees.assignees?.map((a: Assignee) => a.id) || [];
 
-      // Add new assignees first to avoid leaving task unassigned
+      // Add new assignees first to avoid leaving task unassigned.
+      // Use the ADDITIVE single-assign endpoint per user: node-vikunja's
+      // bulkAssignUsersToTask sends `{ user_ids }` to Vikunja's bulk endpoint,
+      // which expects `{ assignees }` and REPLACES the whole list, silently
+      // unassigning everyone on the field mismatch (upstream issue #15).
       if (newAssigneeIds.length > 0) {
-        await withRetry(
-          () => client.tasks.bulkAssignUsersToTask(taskId, {
-            user_ids: newAssigneeIds,
-          }),
-          {
-            ...RETRY_CONFIG.AUTH_ERRORS,
-            shouldRetry: (error) => isAuthenticationError(error)
-          }
+        await Promise.all(
+          newAssigneeIds.map((userId) =>
+            withRetry(
+              () => client.tasks.assignUserToTask(taskId, userId),
+              {
+                ...RETRY_CONFIG.AUTH_ERRORS,
+                shouldRetry: (error) => isAuthenticationError(error)
+              }
+            )
+          )
         );
       }
 

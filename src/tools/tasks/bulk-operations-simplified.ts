@@ -89,7 +89,12 @@ export async function bulkUpdateTasks(args: BulkUpdateArgs): Promise<{ content: 
         const currentAssignees = (await client.tasks.getTask(taskId)).assignees?.map((a: Assignee) => a.id) || [];
         if (args.value.length > 0) {
           try {
-            await withRetry(() => client.tasks.bulkAssignUsersToTask(taskId, { user_ids: args.value as number[] }), { ...RETRY_CONFIG.AUTH_ERRORS, shouldRetry: isAuthenticationError });
+            // Per-user additive assign (assignUserToTask) instead of the bulk
+            // endpoint: node-vikunja's bulkAssignUsersToTask sends `{ user_ids }`
+            // to Vikunja's bulk endpoint which expects `{ assignees }` and
+            // REPLACES the whole list, silently unassigning everyone on the
+            // field mismatch (upstream issue #15). Run concurrently.
+            await Promise.all((args.value as number[]).map((userId) => withRetry(() => client.tasks.assignUserToTask(taskId, userId), { ...RETRY_CONFIG.AUTH_ERRORS, shouldRetry: isAuthenticationError })));
           } catch (assigneeError) {
             if (isAuthenticationError(assigneeError)) throw new MCPError(ErrorCode.API_ERROR, 'Assignee operations may have authentication issues');
             throw assigneeError;
@@ -202,7 +207,11 @@ export async function bulkCreateTasks(args: BulkCreateArgs): Promise<{ content: 
           const assignees = t.assignees;
           if (assignees && assignees.length > 0) {
             try {
-              await withRetry(() => client.tasks.bulkAssignUsersToTask(createdId, { user_ids: assignees }), { maxRetries: RETRY_CONFIG.AUTH_ERRORS.maxRetries ?? 3, timeout: (RETRY_CONFIG.AUTH_ERRORS.initialDelay ?? 1000) + (RETRY_CONFIG.AUTH_ERRORS.maxDelay ?? 10000), shouldRetry: isAuthenticationError });
+              // Per-user additive assign (assignUserToTask) instead of the bulk
+              // endpoint, which silently unassigns everyone due to node-vikunja's
+              // `{ user_ids }` vs Vikunja's `{ assignees }` field mismatch
+              // (upstream issue #15). Run concurrently.
+              await Promise.all(assignees.map((userId) => withRetry(() => client.tasks.assignUserToTask(createdId, userId), { maxRetries: RETRY_CONFIG.AUTH_ERRORS.maxRetries ?? 3, timeout: (RETRY_CONFIG.AUTH_ERRORS.initialDelay ?? 1000) + (RETRY_CONFIG.AUTH_ERRORS.maxDelay ?? 10000), shouldRetry: isAuthenticationError })));
             } catch (assigneeError) {
               if (isAuthenticationError(assigneeError)) {
                 throw new MCPError(ErrorCode.API_ERROR, 'Assignee operations may have authentication issues');

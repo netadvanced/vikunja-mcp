@@ -41,6 +41,7 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
         updateTaskLabels: jest.fn(),
         addLabelToTask: jest.fn(),
         bulkAssignUsersToTask: jest.fn(),
+        assignUserToTask: jest.fn(),
         removeUserFromTask: jest.fn(),
       },
     } as any;
@@ -321,17 +322,18 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
         .mockResolvedValueOnce(taskWithNullAssignees)
         .mockResolvedValueOnce(taskWithNullAssignees);
       mockClient.tasks.updateTask.mockResolvedValue(taskWithNullAssignees);
-      mockClient.tasks.bulkAssignUsersToTask.mockResolvedValue(undefined);
+      mockClient.tasks.assignUserToTask.mockResolvedValue(undefined);
 
       const result = await updateTask({
         id: 1,
         assignees: [1, 2], // Add assignees to task with null assignees
       });
 
-      // Should add all assignees (since current is empty due to null)
-      expect(mockClient.tasks.bulkAssignUsersToTask).toHaveBeenCalledWith(1, {
-        user_ids: [1, 2],
-      });
+      // Should add all assignees (since current is empty due to null), one
+      // additive per-user call each
+      expect(mockClient.tasks.assignUserToTask).toHaveBeenCalledWith(1, 1);
+      expect(mockClient.tasks.assignUserToTask).toHaveBeenCalledWith(1, 2);
+      expect(mockClient.tasks.bulkAssignUsersToTask).not.toHaveBeenCalled();
       // Should not remove any assignees
       expect(mockClient.tasks.removeUserFromTask).not.toHaveBeenCalled();
 
@@ -488,7 +490,7 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
       
       // Mock assignee assignment failure
       const assigneeError = new Error('Assignee assignment failed');
-      mockClient.tasks.bulkAssignUsersToTask.mockRejectedValue(assigneeError);
+      mockClient.tasks.assignUserToTask.mockRejectedValue(assigneeError);
       
       // Mock successful rollback
       mockClient.tasks.deleteTask.mockResolvedValue(undefined);

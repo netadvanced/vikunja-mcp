@@ -24,6 +24,7 @@ describe('Bulk operations', () => {
       deleteTask: jest.fn(),
       createTask: jest.fn(),
       bulkAssignUsersToTask: jest.fn(),
+      assignUserToTask: jest.fn(),
       removeUserFromTask: jest.fn(),
       updateTaskLabels: jest.fn(),
     },
@@ -283,13 +284,13 @@ describe('Bulk operations', () => {
           .mockResolvedValueOnce({ id: 1, title: 'Task 1', assignees: [{ id: 1 }] })
           .mockResolvedValueOnce({ id: 1, title: 'Task 1', assignees: [{ id: 1 }] });
         mockClient.tasks.updateTask.mockResolvedValue(mockTask);
-        mockClient.tasks.bulkAssignUsersToTask.mockResolvedValue({});
+        mockClient.tasks.assignUserToTask.mockResolvedValue({});
 
         const result = await bulkUpdateTasks({ taskIds: [1], field: 'assignees', value: [1] });
 
-        expect(mockClient.tasks.bulkAssignUsersToTask).toHaveBeenCalledWith(1, {
-          user_ids: [1],
-        });
+        // Additive per-user assign, not the destructive bulk endpoint (upstream #15)
+        expect(mockClient.tasks.assignUserToTask).toHaveBeenCalledWith(1, 1);
+        expect(mockClient.tasks.bulkAssignUsersToTask).not.toHaveBeenCalled();
 
         const markdown = result.content[0].text;
         expect(markdown).toContain('## ✅ Success');
@@ -551,7 +552,7 @@ describe('Bulk operations', () => {
 
         mockClient.tasks.createTask.mockResolvedValue(mockTask);
         mockClient.tasks.updateTaskLabels.mockResolvedValue({});
-        mockClient.tasks.bulkAssignUsersToTask.mockResolvedValue({});
+        mockClient.tasks.assignUserToTask.mockResolvedValue({});
         mockClient.tasks.getTask.mockResolvedValue({
           ...mockTask,
           labels: [{ id: 1 }],
@@ -570,9 +571,9 @@ describe('Bulk operations', () => {
         expect(mockClient.tasks.updateTaskLabels).toHaveBeenCalledWith(1, {
           labels: [{ id: 1 }],
         });
-        expect(mockClient.tasks.bulkAssignUsersToTask).toHaveBeenCalledWith(1, {
-          user_ids: [1],
-        });
+        // Additive per-user assign, not the destructive bulk endpoint (upstream #15)
+        expect(mockClient.tasks.assignUserToTask).toHaveBeenCalledWith(1, 1);
+        expect(mockClient.tasks.bulkAssignUsersToTask).not.toHaveBeenCalled();
 
         const markdown = result.content[0].text;
         const parsed = parseMarkdown(markdown);
