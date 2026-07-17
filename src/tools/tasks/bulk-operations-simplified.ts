@@ -1,6 +1,11 @@
 /**
  * Simplified bulk operations for tasks (~250 lines)
- * Consolidates BulkOperationProcessor, BulkOperationErrorHandler, BulkOperationValidator, and BatchProcessorFactory
+ *
+ * This superseded the old bulk/ implementation (BulkOperationProcessor,
+ * BulkOperationErrorHandler, BatchProcessorFactory), which was dead code -
+ * unreachable from src/tools/index.ts or src/tools/tasks/index.ts - and has
+ * since been deleted. Only BulkOperationValidator survives from that folder,
+ * reused here for its field/value validation.
  */
 
 import { MCPError, ErrorCode, createStandardResponse, getClientFromContext, logger, isAuthenticationError, RETRY_CONFIG, transformApiError, handleFetchError } from '../../index';

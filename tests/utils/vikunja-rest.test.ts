@@ -230,6 +230,25 @@ describe('vikunja-rest helper', () => {
       }
     });
 
+    it('attaches the HTTP status code to the thrown MCPError details', async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({
+          ok: false,
+          status: 401,
+          statusText: 'Unauthorized',
+          text: 'invalid token',
+        }),
+      );
+
+      try {
+        await vikunjaRestRequest(authManager, 'GET', '/webhooks/events');
+        throw new Error('should have thrown');
+      } catch (error) {
+        expect(error).toBeInstanceOf(MCPError);
+        expect((error as MCPError).details?.statusCode).toBe(401);
+      }
+    });
+
     it('falls back to the status line when the error body cannot be read', async () => {
       mockFetch.mockResolvedValueOnce(
         mockResponse({

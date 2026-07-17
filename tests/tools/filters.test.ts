@@ -440,10 +440,12 @@ describe('vikunja_filters tool', () => {
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
       expect(markdown).toContain("## ✅ Success");
-      // Verify through storage
+      // Verify through storage. The stored server-bound filter string uses the
+      // API's snake_case field name (percent_done), not the DSL's camelCase
+      // (percentDone) - see FILTER_FIELD_TO_API_FIELD in src/utils/filters.ts.
       const storage = await getTestStorage();
       const filters = await storage.list();
-      expect(filters[0].filter).toBe('(priority = 5 && percentDone >= 75)');
+      expect(filters[0].filter).toBe('(priority = 5 && percent_done >= 75)');
     });
 
     it('should handle OR conditions in filters object', async () => {

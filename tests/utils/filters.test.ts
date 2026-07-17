@@ -230,6 +230,77 @@ describe('Consolidated Filter Utilities', () => {
       };
       expect(conditionToString(condition)).toBe('labels in 1, 2');
     });
+
+    describe('camelCase to snake_case field-name translation for the server-side filter string', () => {
+      // The DSL's camelCase field names must be translated to the API's
+      // snake_case Task JSON field names before being sent as the server-side
+      // `filter` query param - see FILTER_FIELD_TO_API_FIELD in
+      // src/utils/filters.ts and the matching evaluateCondition switch in
+      // src/tools/tasks/filtering/evaluators.ts used for client-side evaluation.
+      it.each<[FilterCondition['field'], string, FilterCondition['value'], string]>([
+        ['percentDone', '>=', 75, 'percent_done >= 75'],
+        ['dueDate', '<', 'now', 'due_date < now'],
+        ['startDate', '>=', '2024-01-01', 'start_date >= 2024-01-01'],
+        ['endDate', '<=', '2024-12-31', 'end_date <= 2024-12-31'],
+        ['doneAt', '!=', 'now', 'done_at != now'],
+        // 'project' is not just camelCased differently - it renames to the
+        // API's project_id field entirely.
+        ['project', '=', 4, 'project_id = 4'],
+      ])('translates %s to its API field name', (field, operator, value, expected) => {
+        const condition: FilterCondition = {
+          field,
+          operator: operator as FilterCondition['operator'],
+          value,
+        };
+        expect(conditionToString(condition)).toBe(expected);
+      });
+
+      it.each<FilterCondition['field']>([
+        'done',
+        'priority',
+        'assignees',
+        'labels',
+        'created',
+        'updated',
+        'title',
+        'description',
+      ])('leaves %s unchanged (already matches the API field name)', (field) => {
+        const value = field === 'done' ? true : field === 'assignees' || field === 'labels' ? [1] : 'x';
+        const condition: FilterCondition = { field, operator: '=', value };
+        expect(conditionToString(condition)).toBe(
+          `${field} = ${Array.isArray(value) ? value.join(', ') : String(value)}`,
+        );
+      });
+
+      it('translates every multi-word field name inside a built expression', () => {
+        const expression: FilterExpression = {
+          groups: [
+            {
+              operator: '&&',
+              conditions: [
+                { field: 'dueDate', operator: '<', value: 'now' },
+                { field: 'startDate', operator: '>=', value: '2024-01-01' },
+                { field: 'endDate', operator: '<=', value: '2024-12-31' },
+                { field: 'doneAt', operator: '!=', value: 'now' },
+                { field: 'percentDone', operator: '>=', value: 50 },
+                { field: 'project', operator: '=', value: 4 },
+              ],
+            },
+          ],
+        };
+
+        const result = expressionToString(expression);
+        expect(result).toBe(
+          '(due_date < now && start_date >= 2024-01-01 && end_date <= 2024-12-31 && done_at != now && percent_done >= 50 && project_id = 4)',
+        );
+      });
+
+      it('translates the field name for "in"/"not in" operators too', () => {
+        expect(conditionToString({ field: 'project', operator: 'in', value: [1, 2, 3] })).toBe(
+          'project_id in 1, 2, 3',
+        );
+      });
+    });
   });
 
   describe('groupToString', () => {

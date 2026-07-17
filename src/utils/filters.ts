@@ -826,10 +826,33 @@ export function validateFilterExpression(
 }
 
 /**
+ * Maps the filter DSL's camelCase field names to the Vikunja API's snake_case
+ * Task JSON field names, for fields where they differ. Mirrors the mapping
+ * `evaluators.ts` uses for client-side evaluation (see the `evaluateCondition`
+ * switch in `src/tools/tasks/filtering/evaluators.ts`). Fields not listed here
+ * are identical between the DSL and the API (e.g. `done`, `priority`,
+ * `assignees`, `labels`, `created`, `updated`, `title`, `description`).
+ *
+ * Without this translation, the server-side `filter` query string built by
+ * `conditionToString`/`expressionToString` sends DSL field names verbatim
+ * (e.g. `dueDate`), which the API does not recognize as Task fields
+ * (it expects `due_date`).
+ */
+const FILTER_FIELD_TO_API_FIELD: Partial<Record<FilterField, string>> = {
+  percentDone: 'percent_done',
+  dueDate: 'due_date',
+  startDate: 'start_date',
+  endDate: 'end_date',
+  doneAt: 'done_at',
+  project: 'project_id',
+};
+
+/**
  * Convert condition to string representation
  */
 export function conditionToString(condition: FilterCondition): string {
   const { field, operator, value } = condition;
+  const apiField = FILTER_FIELD_TO_API_FIELD[field] ?? field;
 
   let valueStr: string;
   if (Array.isArray(value)) {
@@ -843,10 +866,10 @@ export function conditionToString(condition: FilterCondition): string {
   }
 
   if (operator === 'in' || operator === 'not in') {
-    return `${field} ${operator} ${valueStr}`;
+    return `${apiField} ${operator} ${valueStr}`;
   }
 
-  return `${field} ${operator} ${valueStr}`;
+  return `${apiField} ${operator} ${valueStr}`;
 }
 
 /**

@@ -129,6 +129,39 @@ describe('Bulk operations', () => {
           'Invalid repeat_mode: invalid'
         );
       });
+
+      it('should reject legacy interval-style repeat_mode values (day/week/year) that never matched the API enum', async () => {
+        for (const legacyValue of ['day', 'week', 'year']) {
+          await expect(
+            bulkUpdateTasks({ taskIds: [1, 2], field: 'repeat_mode', value: legacyValue })
+          ).rejects.toThrow(`Invalid repeat_mode: ${legacyValue}`);
+        }
+      });
+
+      it('should accept every REPEAT_MODE_MAP key (default, month, from_current) as a valid repeat_mode', async () => {
+        const repeatModeConversions: Record<string, number> = {
+          default: 0,
+          month: 1,
+          from_current: 2,
+        };
+
+        for (const [mode, expectedNumeric] of Object.entries(repeatModeConversions)) {
+          jest.clearAllMocks();
+          (getClientFromContext as jest.Mock).mockResolvedValue(mockClient);
+          (isAuthenticationError as jest.Mock).mockReturnValue(false);
+          (withRetry as jest.Mock).mockImplementation((fn) => fn());
+
+          mockClient.tasks.getTask.mockResolvedValue({ id: 1, title: 'T', project_id: 1 });
+          mockClient.tasks.updateTask.mockResolvedValue({ id: 1, title: 'T', project_id: 1 });
+
+          await bulkUpdateTasks({ taskIds: [1], field: 'repeat_mode', value: mode });
+
+          expect(mockClient.tasks.updateTask).toHaveBeenCalledWith(
+            1,
+            expect.objectContaining({ repeat_mode: expectedNumeric }),
+          );
+        }
+      });
     });
 
     describe('Type coercion', () => {
