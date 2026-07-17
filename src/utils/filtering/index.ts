@@ -8,10 +8,11 @@
 // Core strategy interface
 export type { TaskFilteringStrategy } from './TaskFilteringStrategy';
 
-// Strategy implementations  
+// Strategy implementations
 export { ServerSideFilteringStrategy } from './ServerSideFilteringStrategy';
 export { ClientSideFilteringStrategy } from './ClientSideFilteringStrategy';
 export { HybridFilteringStrategy } from './HybridFilteringStrategy';
+export { RestCrossProjectFilteringStrategy } from './RestCrossProjectFilteringStrategy';
 
 // Context for strategy selection
 export { FilteringContext } from './FilteringContext';

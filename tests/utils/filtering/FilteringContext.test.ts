@@ -21,12 +21,20 @@ jest.mock('../../../src/utils/filtering/HybridFilteringStrategy', () => ({
   }))
 }));
 
+jest.mock('../../../src/utils/filtering/RestCrossProjectFilteringStrategy', () => ({
+  RestCrossProjectFilteringStrategy: jest.fn().mockImplementation(() => ({
+    execute: jest.fn()
+  }))
+}));
+
 import { ClientSideFilteringStrategy } from '../../../src/utils/filtering/ClientSideFilteringStrategy';
 import { HybridFilteringStrategy } from '../../../src/utils/filtering/HybridFilteringStrategy';
+import { RestCrossProjectFilteringStrategy } from '../../../src/utils/filtering/RestCrossProjectFilteringStrategy';
 
 describe('FilteringContext', () => {
   let mockClientStrategy: jest.Mocked<ClientSideFilteringStrategy>;
   let mockHybridStrategy: jest.Mocked<HybridFilteringStrategy>;
+  let mockRestCrossProjectStrategy: jest.Mocked<RestCrossProjectFilteringStrategy>;
 
   const mockTask: Task = {
     id: 1,
@@ -71,8 +79,13 @@ describe('FilteringContext', () => {
       execute: jest.fn().mockResolvedValue(mockResult)
     } as any;
 
+    mockRestCrossProjectStrategy = {
+      execute: jest.fn().mockResolvedValue(mockResult)
+    } as any;
+
     (ClientSideFilteringStrategy as jest.MockedClass<typeof ClientSideFilteringStrategy>).mockImplementation(() => mockClientStrategy);
     (HybridFilteringStrategy as jest.MockedClass<typeof HybridFilteringStrategy>).mockImplementation(() => mockHybridStrategy);
+    (RestCrossProjectFilteringStrategy as jest.MockedClass<typeof RestCrossProjectFilteringStrategy>).mockImplementation(() => mockRestCrossProjectStrategy);
   });
 
   describe('strategy selection', () => {
@@ -145,6 +158,28 @@ describe('FilteringContext', () => {
       expect(ClientSideFilteringStrategy).toHaveBeenCalled();
       expect(HybridFilteringStrategy).not.toHaveBeenCalled();
     });
+
+    it('should use RestCrossProjectFilteringStrategy when crossProject is true', () => {
+      new FilteringContext({ enableServerSide: false, crossProject: true });
+
+      expect(RestCrossProjectFilteringStrategy).toHaveBeenCalled();
+      expect(ClientSideFilteringStrategy).not.toHaveBeenCalled();
+      expect(HybridFilteringStrategy).not.toHaveBeenCalled();
+    });
+
+    it('should prioritize crossProject over enableServerSide', () => {
+      new FilteringContext({ enableServerSide: true, crossProject: true });
+
+      expect(RestCrossProjectFilteringStrategy).toHaveBeenCalled();
+      expect(HybridFilteringStrategy).not.toHaveBeenCalled();
+    });
+
+    it('should not use RestCrossProjectFilteringStrategy when crossProject is false', () => {
+      new FilteringContext({ enableServerSide: false, crossProject: false });
+
+      expect(RestCrossProjectFilteringStrategy).not.toHaveBeenCalled();
+      expect(ClientSideFilteringStrategy).toHaveBeenCalled();
+    });
   });
 
   describe('execute', () => {
@@ -161,6 +196,14 @@ describe('FilteringContext', () => {
       const result = await context.execute(baseParams);
 
       expect(mockHybridStrategy.execute).toHaveBeenCalledWith(baseParams);
+      expect(result).toEqual(mockResult);
+    });
+
+    it('should delegate execution to the REST cross-project strategy when crossProject is set', async () => {
+      const context = new FilteringContext({ enableServerSide: false, crossProject: true });
+      const result = await context.execute(baseParams);
+
+      expect(mockRestCrossProjectStrategy.execute).toHaveBeenCalledWith(baseParams);
       expect(result).toEqual(mockResult);
     });
 

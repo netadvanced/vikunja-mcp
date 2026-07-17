@@ -331,8 +331,25 @@ vikunja_tasks.unassign({
   assignees: [2, 4]  // Removes only these users
 })
 
-// List all assignees for a task
+// List all assignees for a task (calls the dedicated
+// GET /tasks/{taskID}/assignees endpoint, not GET /tasks/{id})
 vikunja_tasks.list-assignees({ id: 123 })
+
+// Search assignees by username with pagination
+vikunja_tasks.list-assignees({ id: 123, search: "ali", page: 1, perPage: 20 })
+
+// List a task's attachments
+vikunja_tasks.list-attachments({ id: 123 })
+
+// Get metadata (filename, size, mime, created, author) for one attachment
+vikunja_tasks.get-attachment-info({ id: 123, attachmentId: 5 })
+
+// Delete an attachment
+vikunja_tasks.delete-attachment({ id: 123, attachmentId: 5 })
+
+// Get a direct download URL for an attachment (MCP has no binary channel,
+// so this returns the URL + auth guidance instead of the file itself)
+vikunja_tasks.download-attachment({ id: 123, attachmentId: 5 })
 
 // Add a comment to a task
 vikunja_tasks.comment({
@@ -851,6 +868,53 @@ vikunja_tasks.list-labels({ id: 123 })
 // Returns: Task info with detailed label data including colors and descriptions
 ```
 
+### Task Position & By-Index Lookup Examples
+
+```typescript
+// --- Task Position ---
+
+// Move a task to a new position in its project's list view
+// projectId and projectViewId auto-resolve from the task when omitted
+vikunja_tasks.set-position({ id: 123, position: 65536 })
+
+// Reposition within a specific view (e.g. the Kanban view)
+vikunja_tasks.set-position({
+  id: 123,
+  position: 5,
+  viewKind: "kanban"  // resolves the project's first Kanban view
+})
+
+// Explicit projectId/projectViewId skip auto-resolution entirely
+vikunja_tasks.set-position({
+  id: 123,
+  position: 5,
+  projectId: 5,
+  projectViewId: 10
+})
+
+// --- By-Index Lookup ---
+
+// Resolve a task by its human-facing per-project index (e.g. "PROJ-42")
+vikunja_tasks.get-by-index({ projectId: 5, index: 42 })
+// Note: indexes are reassigned when a task moves between projects — use the
+// returned task's `id` for long-lived references, not the index
+
+// --- Cross-Project Listing (direct REST GET /tasks) ---
+
+// Lists across every accessible project now call GET /tasks in one request
+// (falling back to per-project aggregation only if that call fails)
+vikunja_tasks.list({ allProjects: true, filter: "priority >= 3" })
+
+// Documented GET /tasks params forwarded for cross-project listing
+vikunja_tasks.list({
+  allProjects: true,
+  sort: "priority",
+  orderBy: "desc",
+  filterIncludeNulls: true,
+  expand: ["subtasks", "comments"]
+})
+```
+
 ### Team Management Examples
 
 ```typescript
@@ -1111,9 +1175,10 @@ This standardized format ensures:
 
 ### Authentication
 - `vikunja_auth` - Authentication management
-  - `connect` - Initialize connection with API token
+  - `connect` - Initialize connection with API token. Performs a verification round trip before reporting success: an unauthenticated `GET /info` call validates the URL is reachable and returns the server version (surfaced as `serverVersion` in the response), then a cheap authenticated call validates the credential itself (`GET /user` for JWT sessions, `GET /projects?per_page=1` for API-token sessions, since `tk_*` tokens cannot use `/user` — see docs/VIKUNJA_API_ISSUES.md #2). If either step fails, the session is rolled back and a clear error is thrown instead of silently "succeeding" with a bad URL or token.
   - `status` - Check authentication status
   - `refresh` - Report token-refresh status: API tokens (`tk_*`) are long-lived and need no refresh; JWTs expire and must be replaced by reconnecting with a new token (Vikunja's token-refresh endpoint relies on a login cookie this server does not hold)
+  - `info` - Fetch the connected Vikunja server's `GET /info` payload (version, frontend URL, motd, enabled features, ...). Requires an active session.
 
 ### Task Management ✅
 - `vikunja_tasks` - Task operations (fully implemented)
@@ -1122,6 +1187,12 @@ This standardized format ensures:
     - Support for pagination, search, sorting
     - Filter by completion status
     - Apply saved filters with `filterId` parameter
+    - Cross-project listing (no `projectId`, or `allProjects: true`) calls the
+      documented `GET /tasks` endpoint directly (one call), falling back to
+      per-project aggregation only if that call fails
+    - `orderBy` (`'asc' | 'desc'`), `filterTimezone`, `filterIncludeNulls`,
+      and `expand` (`'subtasks' | 'buckets' | 'reactions' | 'comments'`, can
+      be repeated) are forwarded to `GET /tasks` for cross-project listing
   - `create` - Create a new task
     - Required: title, projectId
     - Optional: description, dueDate, priority, labels, assignees
@@ -1135,6 +1206,8 @@ This standardized format ensures:
   - `delete` - Delete a task by ID
   - `assign` - Bulk assign users to tasks
   - `unassign` - Remove users from tasks
+  - `list-assignees` - List a task's assignees via the dedicated `GET /tasks/{taskID}/assignees` endpoint
+    - Optional: `search` (username search, `s` query param), `page`, `perPage`
   - `comment` - List or add comments to tasks
   - `bulk-update` - Update multiple tasks at once
     - Required: taskIds array, field name, value
@@ -1148,7 +1221,17 @@ This standardized format ensures:
     - Handles partial failures gracefully
     - ⚠️ Performance: Makes individual delete calls for each task
     - Recommended: Process in batches of 20 or fewer tasks
-  - `attach` - Not implemented (file handling not available in MCP)
+  - `attach` - Upload a file attachment to a task (`filePath` or base64 `fileContent`)
+  - `list-attachments` - List a task's attachments (file name, size, mime, created, author), with optional `page`/`perPage`
+  - `get-attachment-info` - Get metadata for one attachment by `attachmentId` (derived from the list response — there is no dedicated single-attachment metadata endpoint)
+  - `delete-attachment` - Delete an attachment by `attachmentId`
+  - `download-attachment` - **Cannot deliver the file itself** — MCP has no binary content channel. Returns the direct download URL (optionally with a `previewSize` of `sm`/`md`/`lg`/`xl`) plus the `Authorization: Bearer <token>` header guidance needed to fetch it yourself.
+  - `set-bucket` - Move a task into a Kanban bucket; `projectId`/`viewId` auto-resolve when omitted
+  - `set-position` - Update a task's ordering within a project view (`position` is a float — see the Vikunja docs on inserting between two existing positions)
+    - `projectId` auto-resolves from the task, `projectViewId` auto-resolves to the project's first view of `viewKind` (default `'list'`) when omitted
+  - `get-by-index` - Look up a task by its human-facing per-project index (e.g. the `42` in `PROJ-42`)
+    - Required: `projectId`, `index`
+    - Task indexes are reassigned when a task moves between projects — use the returned task's `id` for long-lived references
 
 ### Batch Import ✅
 - `vikunja_batch_import` - Import multiple tasks from CSV or JSON (fully implemented)
@@ -1305,6 +1388,7 @@ This standardized format ensures:
   - `settings` - Get current user settings
   - `update-settings` - Update user settings
     - Optional: name, language, timezone, weekStart, frontendSettings
+  - `timezones` - List the Vikunja instance's valid IANA time zone names (`GET /user/timezones`). Call this before `update-settings` with a `timezone` value — the valid set is instance-dependent (it depends on the OS Vikunja runs on) and the server rejects unrecognized zone names.
   - **Note:** User operations require JWT authentication. When using API token authentication, these tools will not be available.
 
 ### Webhook Management ✅
@@ -1417,12 +1501,57 @@ This standardized format ensures:
   - **Returns:** The server's confirmation message (`models.Message`), not the export file
   - **Note:** Export must be requested first via `vikunja_request_user_export`. Per the Vikunja API spec, this endpoint never returns the export archive's contents, and the MCP protocol has no binary-attachment support — retrieve the actual exported file from the Vikunja web UI or a direct API client using the same credentials.
 
+### API Token Management ⚠️ Deny-by-default
+
+> **Reserved/disabled by default.** `vikunja_tokens` is only registered when
+> the `tokenManagement` module config key is explicitly set to `true` (see
+> [Module Gating & Secrets](#module-gating--secrets) below) — it does not
+> appear to the AI client out of the box, since it is credential-adjacent.
+- `vikunja_tokens` - Manage the current user's Vikunja API tokens
+  - `list` - List existing tokens (`GET /tokens`)
+    - Optional: page, perPage, search
+  - `create` - Create a new API token (`PUT /tokens`)
+    - Required: title, permissions (map of resource group → allowed actions, e.g. `{"tasks":["read_all","update"]}`; valid keys/values come from the server's `GET /routes`)
+    - Optional: expiresAt (ISO 8601), ownerId (bot token owner)
+    - **Note:** the token's secret value is only ever returned in this response — it cannot be retrieved again afterwards.
+  - `delete` - Delete a token by id (`DELETE /tokens/{tokenID}`)
+    - Required: tokenId
+  - **Note:** `/tokens` shares its authentication scheme with other user-scoped endpoints that have historically rejected `tk_*` API tokens (see docs/VIKUNJA_API_ISSUES.md #2) — a call made with an API-token session may be rejected server-side even though the tool itself is registered for both session types.
+
+### Instance Admin ⚠️ Deny-by-default + JWT-only
+
+> **Reserved/disabled by default, and JWT-only.** `vikunja_admin` requires
+> BOTH the `admin` module config key to be explicitly set to `true` AND an
+> active JWT session — module config can only narrow what authentication
+> already allows, never expand it, so API-token sessions never see this tool
+> regardless of config.
+- `vikunja_admin` - Instance-administrator operations **[Requires JWT authentication]**
+  - `overview` - Instance-wide counts (users, projects, tasks, teams, shares) plus license info (`GET /admin/overview`)
+  - `list-projects` - List every project on the instance regardless of ownership (`GET /admin/projects`)
+    - Optional: page, perPage, search
+  - `set-project-owner` - Reassign a project's owner (`PATCH /admin/projects/{id}/owner`)
+    - Required: projectId, ownerId
+  - `list-users` - List every user on the instance, including admin-only fields (`is_admin`, `status`) (`GET /admin/users`)
+    - Optional: search, page, perPage
+  - `create-user` - Create a local user account, bypassing public registration (`POST /admin/users`)
+    - Required: username, email, password
+    - Optional: name, language, isAdmin, skipEmailConfirm
+  - `set-user-admin` - Promote or demote a user's instance-admin flag (`PATCH /admin/users/{id}/admin`)
+    - Required: userId, isAdmin
+    - **Note:** the server refuses to demote the last remaining admin.
+  - `set-user-status` - Change a user's status without requiring login (`PATCH /admin/users/{id}/status`)
+    - Required: userId, status (`active` | `email-confirmation-required` | `disabled` | `account-locked`)
+  - `delete-user` - Delete a user (`DELETE /admin/users/{id}`)
+    - Required: userId, **`confirm: true`**
+    - Optional: mode (`now` for immediate deletion, `scheduled` — the default — to trigger the email-confirmation self-deletion flow)
+    - **Irreversible in `now` mode.** The tool refuses to run without an explicit `confirm: true` argument.
+
 
 
 
 ## Known Limitations
 
-1. **File Attachments**: The `attach` subcommand is not implemented due to MCP protocol limitations
+1. **File Attachments**: Upload (`attach`), list (`list-attachments`), metadata (`get-attachment-info`), and delete (`delete-attachment`) are implemented. `download-attachment` cannot deliver the file's bytes — the Vikunja API returns raw `application/octet-stream` for downloads, and MCP has no binary content channel — so it returns the direct download URL and auth guidance for the caller to fetch it themselves instead.
 2. **Team Operations**: node-vikunja only implements list/create/delete for teams, so get/update/members go through direct REST calls (see `src/utils/vikunja-rest.ts`). The admin-toggle member operation is a true toggle server-side — it cannot set an explicit admin value in one call.
 3. **Pagination**: Some endpoints may not fully support pagination parameters due to API limitations
 4. **Authentication Issues**: Some Vikunja API endpoints have known authentication issues:
@@ -1507,12 +1636,26 @@ For detailed rate limiting configuration, see [`docs/RATE_LIMITING.md`](docs/RAT
 #### Module Gating & Secrets
 
 Individual tool modules (tasks, projects, labels, teams, users, webhooks, filters,
-templates, export, batch-import) can be enabled/disabled via an optional
-`vikunja-mcp.config.json` file and/or `VIKUNJA_MCP_MODULE_*` environment variables
-(env always wins). Sensitive variables like `VIKUNJA_API_TOKEN` also support a
-`VIKUNJA_API_TOKEN_FILE` variant for Docker/Swarm secrets. See
-[`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) for the full reference, defaults,
-and a Docker Swarm example.
+templates, export, batch-import, notifications, subscriptions, reactions) can be
+enabled/disabled via an optional `vikunja-mcp.config.json` file and/or
+`VIKUNJA_MCP_MODULE_*` environment variables (env always wins). Sensitive variables
+like `VIKUNJA_API_TOKEN` also support a `VIKUNJA_API_TOKEN_FILE` variant for
+Docker/Swarm secrets. See [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) for the
+full reference, defaults, and a Docker Swarm example.
+
+> ⚠️ **Deny-by-default modules.** Two modules are **OFF by default** and must be
+> explicitly opted into — an operator has to deliberately enable them before the AI
+> client ever sees the corresponding tool:
+>
+> | Module key | Env var | Gates | Default |
+> |---|---|---|---|
+> | `tokenManagement` | `VIKUNJA_MCP_MODULE_TOKEN_MANAGEMENT` | `vikunja_tokens` (API token CRUD) | **OFF** |
+> | `admin` | `VIKUNJA_MCP_MODULE_ADMIN` | `vikunja_admin` (instance-admin operations) — also requires an active **JWT** session; config can only narrow auth, never expand it | **OFF** |
+>
+> A third reserved key, `userDeletion` (`VIKUNJA_MCP_MODULE_USER_DELETION`), is also
+> deny-by-default but has no tool implementing it yet. Enable either implemented key
+> with, e.g., `VIKUNJA_MCP_MODULE_TOKEN_MANAGEMENT=true` or
+> `{"modules": {"admin": true}}` in `vikunja-mcp.config.json`.
 
 ## Roadmap
 

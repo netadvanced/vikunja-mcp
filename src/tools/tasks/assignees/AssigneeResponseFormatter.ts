@@ -3,7 +3,7 @@
  * Handles response formatting for assignee operations
  */
 
-import type { StandardTaskResponse, MinimalTask, ResponseMetadata, TaskWithAssignees } from '../../../types';
+import type { StandardTaskResponse, ResponseMetadata, TaskWithAssignees } from '../../../types';
 import { createStandardResponse } from '../../../types';
 import { formatAorpAsMarkdown } from '../../../utils/response-factory';
 
@@ -39,22 +39,6 @@ export const AssigneeResponseFormatter = {
       metadata: {
         timestamp: new Date().toISOString(),
         affectedFields: ['assignees'],
-      },
-    };
-  },
-
-  /**
-   * Format list assignees operation response
-   */
-  formatListAssigneesResponse(minimalTask: MinimalTask, assigneeCount: number): StandardTaskResponse {
-    return {
-      success: true,
-      operation: 'get',
-      message: `Task has ${assigneeCount} assignee(s)`,
-      task: minimalTask,
-      metadata: {
-        timestamp: new Date().toISOString(),
-        count: assigneeCount,
       },
     };
   },

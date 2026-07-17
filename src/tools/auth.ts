@@ -15,19 +15,93 @@ import { createSecureConnectionMessage } from '../utils/security';
 import { wrapAuthError } from '../utils/error-handler';
 import { createStandardResponse } from '../utils/response-factory';
 import { formatMcpResponse } from '../utils/simple-response';
+import { vikunjaRestRequest } from '../utils/vikunja-rest';
 
 interface AuthArgs {
-  subcommand: 'connect' | 'status' | 'refresh' | 'disconnect';
+  subcommand: 'connect' | 'status' | 'refresh' | 'disconnect' | 'info';
   apiUrl?: string | undefined;
   apiToken?: string | undefined;
+}
+
+/**
+ * Shape of `GET /info` (`shared.VikunjaInfos` per the OpenAPI spec). Only the
+ * fields this tool actually surfaces are declared; the endpoint returns
+ * several more (motd, legal, enabled_pro_features, ...) that pass through
+ * untouched via the index signature for the 'info' subcommand's full-payload
+ * response.
+ */
+interface VikunjaInfoResponse {
+  version?: string;
+  frontend_url?: string;
+  [key: string]: unknown;
+}
+
+/**
+ * Verifies a freshly-connected session actually works, per the audit finding
+ * that 'connect' previously never contacted the server (bad URL/token only
+ * surfaced on the first real tool call — see docs/API-COVERAGE.md, "Auth,
+ * API tokens, and service/meta info", MEDIUM severity).
+ *
+ * Two round trips, in order:
+ * 1. `GET /info` — documented as requiring no authentication, so a failure
+ *    here means the URL itself is unreachable/wrong (DNS, connection
+ *    refused, wrong path, non-Vikunja server), independent of credentials.
+ *    Also returns the server version, surfaced in the connect response.
+ * 2. A cheap authenticated call to validate the credential itself. JWTs are
+ *    verified against `GET /user`; API tokens (`tk_*`) cannot use `/user`
+ *    (per docs/VIKUNJA_API_ISSUES.md #2, user-scoped endpoints reject `tk_`
+ *    tokens even when valid) so `GET /projects` with `per_page=1` is used
+ *    instead — a minimal authenticated call that both token types accept.
+ *
+ * On failure of either step, the caller's freshly-created session is rolled
+ * back (`authManager.disconnect()`) so a failed 'connect' does not leave a
+ * broken session behind, and a clear, actionable MCPError is thrown.
+ */
+async function verifyConnection(
+  authManager: AuthManager,
+  apiUrl: string,
+  authType: 'api-token' | 'jwt',
+): Promise<string | undefined> {
+  let info: VikunjaInfoResponse;
+  try {
+    info = await vikunjaRestRequest<VikunjaInfoResponse>(authManager, 'GET', '/info');
+  } catch (error) {
+    authManager.disconnect();
+    throw new MCPError(
+      ErrorCode.AUTH_REQUIRED,
+      `Could not reach a Vikunja server at ${apiUrl}: ${
+        error instanceof Error ? error.message : String(error)
+      }. Check the URL (it should point at the API, e.g. .../api/v1) and network connectivity.`,
+    );
+  }
+
+  try {
+    if (authType === 'jwt') {
+      await vikunjaRestRequest(authManager, 'GET', '/user');
+    } else {
+      await vikunjaRestRequest(authManager, 'GET', '/projects?per_page=1');
+    }
+  } catch (error) {
+    authManager.disconnect();
+    throw new MCPError(
+      ErrorCode.AUTH_REQUIRED,
+      `Vikunja server at ${apiUrl} was reachable, but the provided ${
+        authType === 'jwt' ? 'JWT' : 'API'
+      } token was rejected: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+
+  return typeof info.version === 'string' ? info.version : undefined;
 }
 
 export function registerAuthTool(server: McpServer, authManager: AuthManager, _clientFactory?: VikunjaClientFactory): void {
   server.tool(
     'vikunja_auth',
-    'Manage authentication with Vikunja API (connect, status, refresh, disconnect)',
+    'Manage authentication with Vikunja API (connect, status, refresh, disconnect, info)',
     {
-      subcommand: z.enum(['connect', 'status', 'refresh', 'disconnect']),
+      subcommand: z.enum(['connect', 'status', 'refresh', 'disconnect', 'info']),
       apiUrl: z.string().url().optional(),
       apiToken: z.string().optional(),
     },
@@ -65,11 +139,22 @@ export function registerAuthTool(server: McpServer, authManager: AuthManager, _c
             const detectedAuthType = authManager.getAuthType();
             logger.info('Successfully connected to Vikunja - authType: %s', detectedAuthType);
 
+            // Verify the connection actually works before reporting success —
+            // see verifyConnection()'s doc comment for why this is a
+            // two-step round trip (unauthenticated /info, then a cheap
+            // authenticated call). Throws (and rolls back the session) on
+            // failure.
+            const serverVersion = await verifyConnection(authManager, args.apiUrl, detectedAuthType);
+
             const response = createStandardResponse(
               'auth-connect',
               'Successfully connected to Vikunja',
               { authenticated: true },
-              { apiUrl: args.apiUrl, authType: authManager.getAuthType() },
+              {
+                apiUrl: args.apiUrl,
+                authType: authManager.getAuthType(),
+                ...(serverVersion !== undefined ? { serverVersion } : {}),
+              },
             );
             return {
               content: formatMcpResponse(response),
@@ -143,6 +228,33 @@ export function registerAuthTool(server: McpServer, authManager: AuthManager, _c
               'Successfully disconnected from Vikunja',
               { authenticated: false },
               { previouslyConnected: true },
+            );
+            return {
+              content: formatMcpResponse(response),
+            };
+          }
+
+          case 'info': {
+            // GET /info needs no auth server-side, but this subcommand
+            // still requires an active session (like 'refresh') so it has a
+            // server URL to ask.
+            if (!authManager.isAuthenticated()) {
+              throw new MCPError(
+                ErrorCode.AUTH_REQUIRED,
+                'Authentication required. Please use vikunja_auth.connect first.',
+              );
+            }
+            const info = await vikunjaRestRequest<VikunjaInfoResponse>(
+              authManager,
+              'GET',
+              '/info',
+            );
+
+            const response = createStandardResponse(
+              'auth-info',
+              'Vikunja server info retrieved successfully',
+              { info },
+              typeof info.version === 'string' ? { serverVersion: info.version } : undefined,
             );
             return {
               content: formatMcpResponse(response),

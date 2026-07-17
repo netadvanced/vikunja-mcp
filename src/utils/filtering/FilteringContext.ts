@@ -12,6 +12,7 @@ import type { TaskFilteringStrategy } from './TaskFilteringStrategy';
 import type { FilteringParams, FilteringResult, StrategyConfig } from './types';
 import { ClientSideFilteringStrategy } from './ClientSideFilteringStrategy';
 import { HybridFilteringStrategy } from './HybridFilteringStrategy';
+import { RestCrossProjectFilteringStrategy } from './RestCrossProjectFilteringStrategy';
 
 export class FilteringContext {
   private strategy: TaskFilteringStrategy;
@@ -39,8 +40,19 @@ export class FilteringContext {
    * a self-healing path: with it off, every filtered list fetched a raw page
    * and filtered it in memory, so `done`/`filter` were applied *after*
    * pagination and matching tasks were scattered unpredictably across pages.
+   *
+   * - crossProject -> RestCrossProjectFilteringStrategy (direct REST GET
+   *   /tasks, one call, falling back to per-project aggregation on
+   *   failure) takes priority over `enableServerSide`: it is strictly
+   *   better than the N+1 aggregation whether or not a filter is present.
+   * - enableServerSide (single-project) -> HybridFilteringStrategy.
+   * - otherwise -> ClientSideFilteringStrategy.
    */
   private getStrategy(config: StrategyConfig): TaskFilteringStrategy {
+    if (config.crossProject) {
+      return new RestCrossProjectFilteringStrategy();
+    }
+
     if (config.enableServerSide) {
       return new HybridFilteringStrategy();
     }

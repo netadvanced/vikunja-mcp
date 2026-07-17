@@ -68,6 +68,14 @@ jest.mock('../../src/tools/reactions', () => ({
   registerReactionsTool: jest.fn(),
 }));
 
+jest.mock('../../src/tools/tokens', () => ({
+  registerTokensTool: jest.fn(),
+}));
+
+jest.mock('../../src/tools/admin', () => ({
+  registerAdminTool: jest.fn(),
+}));
+
 // Import mocked functions
 import { registerAuthTool } from '../../src/tools/auth';
 import { registerTasksTool } from '../../src/tools/tasks';
@@ -83,6 +91,8 @@ import { registerExportTool } from '../../src/tools/export';
 import { registerNotificationsTool } from '../../src/tools/notifications';
 import { registerSubscriptionsTool } from '../../src/tools/subscriptions';
 import { registerReactionsTool } from '../../src/tools/reactions';
+import { registerTokensTool } from '../../src/tools/tokens';
+import { registerAdminTool } from '../../src/tools/admin';
 
 describe('Tool Registration', () => {
   let mockServer: jest.Mocked<McpServer>;
@@ -468,16 +478,116 @@ describe('Tool Registration', () => {
       expect(registerExportTool).not.toHaveBeenCalled();
     });
 
-    it('should keep dangerous/reserved modules unregistered by default (no tool wired to them yet)', () => {
-      // No VIKUNJA_MCP_MODULE_ADMIN/etc set — defaults apply (deny-by-default).
-      // There is currently no registration function for these reserved
-      // modules; this test documents that registerTools succeeds without
-      // attempting to register anything for them.
+    it('should keep userDeletion unregistered by default (no tool wired to it yet)', () => {
+      // No VIKUNJA_MCP_MODULE_USER_DELETION set — defaults apply
+      // (deny-by-default). There is currently no registration function for
+      // this reserved module; this test documents that registerTools
+      // succeeds without attempting to register anything for it.
       const mockClientFactory = { test: 'factory' };
       mockAuthManager.isAuthenticated.mockReturnValue(true);
       mockAuthManager.getAuthType.mockReturnValue('jwt');
 
       expect(() => registerTools(mockServer, mockAuthManager, mockClientFactory)).not.toThrow();
+    });
+
+    describe('tokenManagement module (deny-by-default)', () => {
+      it('should NOT register vikunja_tokens by default', () => {
+        const mockClientFactory = { test: 'factory' };
+        mockAuthManager.isAuthenticated.mockReturnValue(true);
+        mockAuthManager.getAuthType.mockReturnValue('jwt');
+
+        registerTools(mockServer, mockAuthManager, mockClientFactory);
+
+        expect(registerTokensTool).not.toHaveBeenCalled();
+      });
+
+      it('should register vikunja_tokens when explicitly enabled with JWT auth', () => {
+        process.env.VIKUNJA_MCP_MODULE_TOKEN_MANAGEMENT = 'true';
+        const mockClientFactory = { test: 'factory' };
+        mockAuthManager.isAuthenticated.mockReturnValue(true);
+        mockAuthManager.getAuthType.mockReturnValue('jwt');
+
+        registerTools(mockServer, mockAuthManager, mockClientFactory);
+
+        expect(registerTokensTool).toHaveBeenCalledTimes(1);
+        expect(registerTokensTool).toHaveBeenCalledWith(mockServer, mockAuthManager, mockClientFactory);
+      });
+
+      it('should register vikunja_tokens when explicitly enabled with API-token auth (not JWT-gated)', () => {
+        process.env.VIKUNJA_MCP_MODULE_TOKEN_MANAGEMENT = 'true';
+        const mockClientFactory = { test: 'factory' };
+        mockAuthManager.isAuthenticated.mockReturnValue(true);
+        mockAuthManager.getAuthType.mockReturnValue('api-token');
+
+        registerTools(mockServer, mockAuthManager, mockClientFactory);
+
+        expect(registerTokensTool).toHaveBeenCalledTimes(1);
+      });
+
+      it('should not register vikunja_tokens without a clientFactory even when enabled', () => {
+        process.env.VIKUNJA_MCP_MODULE_TOKEN_MANAGEMENT = 'true';
+        mockAuthManager.isAuthenticated.mockReturnValue(true);
+        mockAuthManager.getAuthType.mockReturnValue('jwt');
+
+        registerTools(mockServer, mockAuthManager, undefined);
+
+        expect(registerTokensTool).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('admin module (deny-by-default + JWT-only)', () => {
+      it('should NOT register vikunja_admin by default', () => {
+        const mockClientFactory = { test: 'factory' };
+        mockAuthManager.isAuthenticated.mockReturnValue(true);
+        mockAuthManager.getAuthType.mockReturnValue('jwt');
+
+        registerTools(mockServer, mockAuthManager, mockClientFactory);
+
+        expect(registerAdminTool).not.toHaveBeenCalled();
+      });
+
+      it('should register vikunja_admin when enabled AND JWT-authenticated', () => {
+        process.env.VIKUNJA_MCP_MODULE_ADMIN = 'true';
+        const mockClientFactory = { test: 'factory' };
+        mockAuthManager.isAuthenticated.mockReturnValue(true);
+        mockAuthManager.getAuthType.mockReturnValue('jwt');
+
+        registerTools(mockServer, mockAuthManager, mockClientFactory);
+
+        expect(registerAdminTool).toHaveBeenCalledTimes(1);
+        expect(registerAdminTool).toHaveBeenCalledWith(mockServer, mockAuthManager, mockClientFactory);
+      });
+
+      it('should stay unregistered when enabled but authenticated with an API token (config narrows auth, never expands it)', () => {
+        process.env.VIKUNJA_MCP_MODULE_ADMIN = 'true';
+        const mockClientFactory = { test: 'factory' };
+        mockAuthManager.isAuthenticated.mockReturnValue(true);
+        mockAuthManager.getAuthType.mockReturnValue('api-token');
+
+        registerTools(mockServer, mockAuthManager, mockClientFactory);
+
+        expect(registerAdminTool).not.toHaveBeenCalled();
+      });
+
+      it('should stay unregistered when JWT-authenticated but the module is left at its default (off)', () => {
+        const mockClientFactory = { test: 'factory' };
+        mockAuthManager.isAuthenticated.mockReturnValue(true);
+        mockAuthManager.getAuthType.mockReturnValue('jwt');
+
+        registerTools(mockServer, mockAuthManager, mockClientFactory);
+
+        expect(registerAdminTool).not.toHaveBeenCalled();
+      });
+
+      it('should stay unregistered when enabled but not authenticated at all', () => {
+        process.env.VIKUNJA_MCP_MODULE_ADMIN = 'true';
+        const mockClientFactory = { test: 'factory' };
+        mockAuthManager.isAuthenticated.mockReturnValue(false);
+
+        registerTools(mockServer, mockAuthManager, mockClientFactory);
+
+        expect(registerAdminTool).not.toHaveBeenCalled();
+      });
     });
 
     it('should fail safe to default module gating (and log clearly) when config loading throws', () => {

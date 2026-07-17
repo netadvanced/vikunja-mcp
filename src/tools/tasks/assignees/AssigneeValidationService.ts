@@ -66,9 +66,18 @@ export const AssigneeValidationService = {
   },
 
   /**
-   * Validate input for list assignees operation
+   * Validate input for list assignees operation. `search`/`page`/`perPage`
+   * map onto the dedicated `GET /tasks/{taskID}/assignees` endpoint's
+   * documented `s`/`page`/`per_page` query params — id validation for
+   * page/perPage happens in AssigneeOperationsService.fetchAssigneesViaRest,
+   * which is the only place that knows the field names used on the wire.
    */
-  validateListInput(args: { id?: number }): { taskId: number } {
+  validateListInput(args: {
+    id?: number;
+    search?: string;
+    page?: number;
+    perPage?: number;
+  }): { taskId: number; search?: string; page?: number; perPage?: number } {
     if (args.id === undefined) {
       throw new MCPError(
         ErrorCode.VALIDATION_ERROR,
@@ -79,6 +88,9 @@ export const AssigneeValidationService = {
 
     return {
       taskId: args.id,
+      ...(args.search !== undefined && { search: args.search }),
+      ...(args.page !== undefined && { page: args.page }),
+      ...(args.perPage !== undefined && { perPage: args.perPage }),
     };
   },
 };

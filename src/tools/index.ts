@@ -38,6 +38,8 @@ import { registerExportTool } from './export';
 import { registerNotificationsTool } from './notifications';
 import { registerSubscriptionsTool } from './subscriptions';
 import { registerReactionsTool } from './reactions';
+import { registerTokensTool } from './tokens';
+import { registerAdminTool } from './admin';
 
 // Re-export for testing
 export {
@@ -61,6 +63,8 @@ export {
   registerNotificationsTool,
   registerSubscriptionsTool,
   registerReactionsTool,
+  registerTokensTool,
+  registerAdminTool,
 };
 
 /**
@@ -179,6 +183,17 @@ export function registerTools(
       registerReactionsTool(server, authManager, clientFactory);
     }
 
+    // Register API-token-management tool. Reserved/deny-by-default (see
+    // DANGEROUS_MODULE_KEYS in src/config/types.ts) — only gated by the
+    // 'tokenManagement' config key, no auth-type restriction (unlike
+    // users/export/admin): the underlying /tokens endpoints may reject
+    // API-token sessions server-side (see src/tools/tokens.ts's doc
+    // comment), but that is a runtime concern for the tool to report, not a
+    // registration-time gate.
+    if (isModuleEnabled(modules.tokenManagement)) {
+      registerTokensTool(server, authManager, clientFactory);
+    }
+
     // Register user and export tools conditionally (preserving backward compatibility)
     // NOTE: The permission infrastructure is available for future migration.
     // Module config can only narrow this JWT-only gate, never expand it.
@@ -188,6 +203,14 @@ export function registerTools(
     }
     if (jwtAuthenticated && isModuleEnabled(modules.export)) {
       registerExportTool(server, authManager, clientFactory);
+    }
+
+    // Register instance-admin tool. Reserved/deny-by-default AND JWT-only:
+    // both the 'admin' module config key and JWT auth must allow it (config
+    // can only narrow what auth permits, never expand it — same composition
+    // as users/export above).
+    if (jwtAuthenticated && isModuleEnabled(modules.admin)) {
+      registerAdminTool(server, authManager, clientFactory);
     }
   }
 }

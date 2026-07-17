@@ -12,6 +12,7 @@ import type {
 import type { GetTasksParams } from 'node-vikunja';
 import type { AorpBuilderConfig } from '../../../types';
 import type { SimpleFilterStorage } from '../../../storage';
+import type { AuthManager } from '../../../auth/AuthManager';
 
 /**
  * Arguments for filtering operations
@@ -26,6 +27,14 @@ export interface FilteringArgs {
   filterId?: string;
   allProjects?: boolean;
   done?: boolean;
+  /** GET /tasks `order_by` param. Only honored for cross-project listing (direct REST). */
+  orderBy?: 'asc' | 'desc';
+  /** GET /tasks `filter_timezone` param. Only honored for cross-project listing (direct REST). */
+  filterTimezone?: string;
+  /** GET /tasks `filter_include_nulls` param. Only honored for cross-project listing (direct REST). */
+  filterIncludeNulls?: boolean;
+  /** GET /tasks `expand` param (repeatable). Only honored for cross-project listing (direct REST). */
+  expand?: string[];
 }
 
 /**
@@ -36,6 +45,8 @@ export interface FilteringParams {
   filterExpression: FilterExpression | null;
   filterString: string | undefined;
   params: GetTasksParams;
+  /** See `utils/filtering/types.ts`'s `FilteringParams.authManager` doc comment. */
+  authManager?: AuthManager;
 }
 
 /**

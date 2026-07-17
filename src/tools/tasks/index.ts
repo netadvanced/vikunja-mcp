@@ -26,7 +26,16 @@ import { handleComment } from './comments';
 import { addReminder, removeReminder, listReminders } from './reminders';
 import { applyLabels, removeLabels, listTaskLabels } from './labels';
 import { attachSchemaFields, handleAttach, type TaskAttachArgs } from './attach';
+import {
+  listAttachments,
+  getAttachmentInfo,
+  deleteAttachment,
+  downloadAttachment,
+  type AttachmentSubcommandArgs,
+} from './attachments';
 import { setTaskBucket } from './buckets';
+import { setTaskPosition } from './position';
+import { getTaskByIndex } from './by-index';
 
 
 /**
@@ -44,10 +53,18 @@ async function getSessionStorage(authManager: AuthManager): ReturnType<typeof st
 async function listTasks(
   args: TaskListingArgs,
   storage: Awaited<ReturnType<typeof storageManager.getStorage>>,
+  authManager: AuthManager,
 ): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   try {
-    // Execute the complete filtering workflow using the orchestrator
-    const filteringResult = await TaskFilteringOrchestrator.executeTaskFiltering(args, storage);
+    // Execute the complete filtering workflow using the orchestrator.
+    // authManager is threaded through for cross-project listing's
+    // direct-REST GET /tasks strategy (RestCrossProjectFilteringStrategy).
+    const filteringResult = await TaskFilteringOrchestrator.executeTaskFiltering(
+      args,
+      storage,
+      {},
+      authManager,
+    );
 
     // Determine filtering method message
     let filteringMessage = '';
@@ -111,7 +128,8 @@ export function registerTasksTool(
 ): void {
   server.tool(
     'vikunja_tasks',
-    'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach files, comment, bulk operations, set Kanban bucket)',
+    'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach/list/delete files, comment, bulk operations, set Kanban bucket, set position, lookup by per-project index). ' +
+      'download-attachment cannot deliver file bytes through MCP (no binary channel) — it returns the direct download URL and auth guidance instead.',
     {
       subcommand: z.enum([
         'create',
@@ -123,6 +141,10 @@ export function registerTasksTool(
         'unassign',
         'list-assignees',
         'attach',
+        'list-attachments',
+        'get-attachment-info',
+        'delete-attachment',
+        'download-attachment',
         'comment',
         'bulk-create',
         'bulk-update',
@@ -137,6 +159,8 @@ export function registerTasksTool(
         'remove-label',
         'list-labels',
         'set-bucket',
+        'set-position',
+        'get-by-index',
       ]),
       // Task creation/update fields
       title: z.string().optional(),
@@ -154,6 +178,17 @@ export function registerTasksTool(
       // these params and therefore send them as strings over JSON-RPC.
       bucketId: z.coerce.number().optional(),
       viewId: z.coerce.number().optional(),
+      // Task position fields (set-position subcommand). position is a
+      // float64 per the API (see models.TaskPosition) - see docs on
+      // spreading tasks between two positions - so it is not coerced to an
+      // integer. projectViewId is auto-resolved from projectId + viewKind
+      // when omitted, mirroring set-bucket's resolve-by-name friendliness.
+      position: z.coerce.number().optional(),
+      projectViewId: z.coerce.number().optional(),
+      viewKind: z.enum(['list', 'gantt', 'table', 'kanban']).optional(),
+      // By-index lookup field (get-by-index subcommand): the task's
+      // human-facing per-project index (e.g. the "42" in "PROJ-42").
+      index: z.coerce.number().optional(),
       // Recurring task fields
       repeatAfter: z.number().min(0).optional(),
       repeatMode: z.enum(['day', 'week', 'month', 'year']).optional(),
@@ -168,6 +203,14 @@ export function registerTasksTool(
       // List specific filters
       allProjects: z.boolean().optional(),
       done: z.boolean().optional(),
+      // GET /tasks query params honored for cross-project listing (direct
+      // REST — see RestCrossProjectFilteringStrategy). Single-project
+      // listing still goes through node-vikunja's getProjectTasks, which
+      // does not support these, so they are silently unused in that case.
+      orderBy: z.enum(['asc', 'desc']).optional(),
+      filterTimezone: z.string().optional(),
+      filterIncludeNulls: z.boolean().optional(),
+      expand: z.array(z.enum(['subtasks', 'buckets', 'reactions', 'comments'])).optional(),
       // Comment fields
       comment: z.string().optional(),
       commentId: z.number().optional(),
@@ -199,6 +242,11 @@ export function registerTasksTool(
       reminderIndex: z.number().optional(),
       // Attach subcommand fields (filePath, fileContent, filename)
       ...attachSchemaFields,
+      // Attachments read-side fields (list-attachments, get-attachment-info,
+      // delete-attachment, download-attachment). page/perPage are shared
+      // with the generic query fields above.
+      attachmentId: z.number().optional(),
+      previewSize: z.enum(['sm', 'md', 'lg', 'xl']).optional(),
       // Add relation schema
       ...relationSchema,
       // Session ID for AORP response tracking
@@ -225,7 +273,7 @@ export function registerTasksTool(
           case 'list': {
             // Get session-scoped storage for filter operations (only when needed)
             const storage = await getSessionStorage(authManager);
-            return listTasks(args as Parameters<typeof listTasks>[0], storage);
+            return listTasks(args as Parameters<typeof listTasks>[0], storage, authManager);
           }
 
           case 'create':
@@ -247,13 +295,25 @@ export function registerTasksTool(
             return unassignUsers(args as Parameters<typeof unassignUsers>[0]);
 
           case 'list-assignees':
-            return listAssignees(args as Parameters<typeof listAssignees>[0]);
+            return listAssignees(args as Parameters<typeof listAssignees>[0], authManager);
 
           case 'comment':
             return handleComment(args as Parameters<typeof handleComment>[0]);
 
           case 'attach':
             return handleAttach(args as TaskAttachArgs, authManager);
+
+          case 'list-attachments':
+            return listAttachments(args as AttachmentSubcommandArgs, authManager);
+
+          case 'get-attachment-info':
+            return getAttachmentInfo(args as AttachmentSubcommandArgs, authManager);
+
+          case 'delete-attachment':
+            return deleteAttachment(args as AttachmentSubcommandArgs, authManager);
+
+          case 'download-attachment':
+            return downloadAttachment(args as AttachmentSubcommandArgs, authManager);
 
           case 'bulk-update':
             return bulkUpdateTasks(args as Parameters<typeof bulkUpdateTasks>[0]);
@@ -295,6 +355,12 @@ export function registerTasksTool(
 
           case 'set-bucket':
             return setTaskBucket(args as Parameters<typeof setTaskBucket>[0], authManager);
+
+          case 'set-position':
+            return setTaskPosition(args as Parameters<typeof setTaskPosition>[0], authManager);
+
+          case 'get-by-index':
+            return getTaskByIndex(args as Parameters<typeof getTaskByIndex>[0], authManager);
 
           default:
             throw new MCPError(

@@ -7,10 +7,21 @@ import type { Task, GetTasksParams } from 'node-vikunja';
 import type { FilterExpression } from '../../../types/filters';
 import type { TaskListingArgs, TaskFilterExecutionResult } from '../types/filters';
 import type { TaskFilterStorage, FilteringParams, FilteringMetadata, FilteringArgs } from '../types/filters';
+import type { AuthManager } from '../../../auth/AuthManager';
 import { FilteringContext } from '../../../utils/filtering';
 import { validateTaskCountLimit, createTaskLimitExceededMessage, logMemoryUsage } from '../../../utils/memory';
 import { MCPError, ErrorCode } from '../../../types';
 import { logger } from '../../../utils/logger';
+
+/**
+ * True when a task listing spans every accessible project: no `projectId`
+ * supplied, or `allProjects: true`. Matches the predicate already used
+ * consistently by `ClientSideFilteringStrategy`/`ServerSideFilteringStrategy`
+ * to pick their single-project vs. aggregate-across-projects branch.
+ */
+function isCrossProjectListing(args: TaskListingArgs): boolean {
+  return args.projectId === undefined || args.allProjects === true;
+}
 
 /**
  * Executes filtering operations on tasks with comprehensive error handling
@@ -24,19 +35,25 @@ export const FilterExecutor = {
     filterExpression: FilterExpression | null,
     filterString: string | undefined,
     params: GetTasksParams,
-    _storage: TaskFilterStorage
+    _storage: TaskFilterStorage,
+    authManager?: AuthManager
   ): Promise<TaskFilterExecutionResult> {
     try {
-      // Execute filtering using strategy pattern
+      // Execute filtering using strategy pattern. Cross-project listings
+      // always route through the direct-REST GET /tasks strategy (falling
+      // back to per-project aggregation on failure) regardless of whether a
+      // filter is present — see RestCrossProjectFilteringStrategy.
       const filteringContext = new FilteringContext({
-        enableServerSide: Boolean(filterString)
+        enableServerSide: Boolean(filterString),
+        crossProject: isCrossProjectListing(args)
       });
 
       const filteringParams: FilteringParams = {
         args: args as FilteringArgs,
         filterExpression,
         filterString,
-        params
+        params,
+        ...(authManager !== undefined ? { authManager } : {})
       };
 
       const filteringResult = await filteringContext.execute(filteringParams);
