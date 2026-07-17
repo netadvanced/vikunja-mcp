@@ -28,7 +28,9 @@
     "version:patch": "npm version patch",
     "version:minor": "npm version minor",
     "version:major": "npm version major",
-    "test:mcp": "tsx scripts/test-mcp.ts"
+    "test:mcp": "tsx scripts/test-mcp.ts",
+    "fetch:api-spec": "curl -sS https://try.vikunja.io/api/v1/docs.json -o docs/vikunja-openapi.json && jq -e . docs/vikunja-openapi.json > /dev/null",
+    "generate:api-types": "node scripts/generate-api-types.mjs"
   },
   "keywords": [
     "mcp",
@@ -83,7 +85,9 @@
     "globals": "^16.3.0",
     "jest": "^30.0.5",
     "markdown-it": "^14.1.0",
+    "openapi-typescript": "^7.13.0",
     "prettier": "^3.0.0",
+    "swagger2openapi": "^7.0.8",
     "ts-jest": "^29.4.1",
     "tsx": "^4.0.0",
     "typescript": "^5.0.0"
