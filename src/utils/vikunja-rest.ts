@@ -34,7 +34,7 @@ type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
  * `apiUrl` already includes the `/api/v{n}` prefix (depends on how
  * `VIKUNJA_URL` was configured).
  */
-function resolveBaseUrl(apiUrl: string): string {
+export function resolveBaseUrl(apiUrl: string): string {
   const trimmed = apiUrl.replace(/\/+$/, '');
   return /\/api\/v\d+$/.test(trimmed) ? trimmed : `${trimmed}/api/v1`;
 }
@@ -390,6 +390,45 @@ export interface VikunjaView {
 }
 
 /**
+ * Resolves the first view of a given kind (`list`, `gantt`, `table`, or
+ * `kanban`) for a project. Vikunja projects have several views; most
+ * per-view operations only make sense against one particular kind, so
+ * callers that do not already know the view id can use this to find it.
+ * Returns the full view (not just its id) so callers that need extra
+ * fields — e.g. `done_bucket_id` — don't have to fetch it again.
+ *
+ * @param authManager - Active auth manager
+ * @param projectId - Project whose view should be resolved
+ * @param viewKind - The view kind to look for
+ * @returns The project's first view of that kind
+ * @throws MCPError when the project has no view of that kind
+ */
+export async function resolveViewIdByKind(
+  authManager: AuthManager,
+  projectId: number,
+  viewKind: 'list' | 'gantt' | 'table' | 'kanban',
+): Promise<VikunjaView> {
+  const views = await vikunjaRestRequest<VikunjaView[]>(
+    authManager,
+    'GET',
+    `/projects/${projectId}/views`,
+  );
+  const view = Array.isArray(views)
+    ? views.find((candidate) => candidate.view_kind === viewKind)
+    : undefined;
+  if (!view) {
+    const label = viewKind === 'kanban' ? 'Kanban' : viewKind;
+    throw new MCPError(
+      ErrorCode.NOT_FOUND,
+      viewKind === 'kanban'
+        ? `Project ${projectId} has no Kanban view, so it has no buckets`
+        : `Project ${projectId} has no ${label} view`,
+    );
+  }
+  return view;
+}
+
+/**
  * Resolves the Kanban view of a project.
  *
  * Vikunja projects have several views (list, gantt, table, kanban). Bucket
@@ -407,21 +446,7 @@ export async function resolveKanbanView(
   authManager: AuthManager,
   projectId: number,
 ): Promise<VikunjaView> {
-  const views = await vikunjaRestRequest<VikunjaView[]>(
-    authManager,
-    'GET',
-    `/projects/${projectId}/views`,
-  );
-  const kanban = Array.isArray(views)
-    ? views.find((view) => view.view_kind === 'kanban')
-    : undefined;
-  if (!kanban) {
-    throw new MCPError(
-      ErrorCode.NOT_FOUND,
-      `Project ${projectId} has no Kanban view, so it has no buckets`,
-    );
-  }
-  return kanban;
+  return resolveViewIdByKind(authManager, projectId, 'kanban');
 }
 
 /**

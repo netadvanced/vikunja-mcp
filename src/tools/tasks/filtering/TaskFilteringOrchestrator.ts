@@ -10,6 +10,7 @@ import { FilterExecutor } from './FilterExecutor';
 import { MCPError, ErrorCode } from '../../../types';
 import { logger } from '../../../utils/logger';
 import type { SimpleFilterStorage } from '../../../storage';
+import type { AuthManager } from '../../../auth/AuthManager';
 
 /**
  * Main orchestrator for task filtering operations
@@ -22,12 +23,15 @@ export const TaskFilteringOrchestrator = {
    * @param args - Task listing arguments including filters
    * @param storage - Storage interface for saved filters
    * @param config - Optional validation configuration
+   * @param authManager - Active auth manager, required by cross-project
+   *   listing's direct-REST GET /tasks strategy
    * @returns Promise resolving to filtering result with metadata
    */
   async executeTaskFiltering(
     args: TaskListingArgs,
     storage: SimpleFilterStorage,
-    config: FilterValidationConfig = {}
+    config: FilterValidationConfig = {},
+    authManager?: AuthManager
   ): Promise<TaskFilterExecutionResult> {
     try {
       logger.debug('Starting task filtering orchestration', {
@@ -57,7 +61,8 @@ export const TaskFilteringOrchestrator = {
         validationResult.filterExpression,
         validationResult.filterString,
         params,
-        storage
+        storage,
+        authManager
       );
 
       // Step 4: Post-process and validate results

@@ -12,6 +12,7 @@ import { MCPError } from '../../src/types';
 import type { Task } from 'node-vikunja';
 import type { MockVikunjaClient, MockAuthManager, MockServer } from '../types/mocks';
 import { parseMarkdown } from '../utils/markdown';
+import { circuitBreakerRegistry } from '../../src/utils/retry';
 
 // Import the function we're mocking
 import { getClientFromContext } from '../../src/client';
@@ -24,6 +25,44 @@ jest.mock('../../src/client', () => ({
 }));
 jest.mock('../../src/auth/AuthManager');
 jest.mock('../../src/utils/logger');
+
+// Cross-project listing (no projectId / allProjects) now goes through the
+// direct-REST GET /tasks strategy first (RestCrossProjectFilteringStrategy)
+// rather than node-vikunja's getAllTasks. Mock global fetch so those tests
+// exercise the real primary path instead of falling back and hitting the
+// (deliberately incomplete) mockClient.projects stub.
+const mockFetch = jest.fn();
+global.fetch = mockFetch as unknown as typeof fetch;
+
+/** Minimal Response-like object for the REST helper. */
+function mockRestResponse(opts: { ok?: boolean; status?: number; statusText?: string; text?: string }): Response {
+  const { ok = true, status = 200, statusText = 'OK', text = '' } = opts;
+  return {
+    ok,
+    status,
+    statusText,
+    text: jest.fn(async () => text),
+  } as unknown as Response;
+}
+
+/** Mocks a single successful `GET /tasks` REST call returning `tasks`. */
+function mockRestTasksSuccess(tasks: Task[]): void {
+  mockFetch.mockResolvedValueOnce(mockRestResponse({ text: JSON.stringify(tasks) }));
+}
+
+/**
+ * Builds the expected `GET /tasks` URL from ordered query entries, using
+ * `URLSearchParams` (as the production code does) rather than
+ * `encodeURIComponent` so percent-encoding matches exactly (e.g. spaces as
+ * `+`, not `%20`).
+ */
+function expectedTasksUrl(entries: Array<[string, string]>): string {
+  const query = new URLSearchParams();
+  for (const [key, value] of entries) {
+    query.set(key, value);
+  }
+  return `https://api.vikunja.test/api/v1/tasks?${query.toString()}`;
+}
 
 describe('Tasks Tool - SQL-like Filter Syntax', () => {
   let mockClient: MockVikunjaClient;
@@ -65,6 +104,12 @@ describe('Tasks Tool - SQL-like Filter Syntax', () => {
   beforeEach(async () => {
     // Reset all mocks
     jest.clearAllMocks();
+    mockFetch.mockReset();
+    // vikunjaRestRequest protects every call with a process-wide named
+    // circuit breaker; clear accumulated stats between tests so a
+    // deliberately failing scenario doesn't trip the breaker for a later
+    // test sharing the same auto-derived breaker name.
+    circuitBreakerRegistry.clear();
 
     // Create fresh mock instances
     mockClient = {
@@ -119,7 +164,7 @@ describe('Tasks Tool - SQL-like Filter Syntax', () => {
     // Get the tool handler
     expect(mockServer.tool).toHaveBeenCalledWith(
       'vikunja_tasks',
-      'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach files, comment, bulk operations, set Kanban bucket)',
+      'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach/list/delete files, comment, bulk operations, set Kanban bucket, set position, lookup by per-project index). download-attachment cannot deliver file bytes through MCP (no binary channel) — it returns the direct download URL and auth guidance instead.',
       expect.any(Object),
       expect.any(Function),
     );
@@ -137,17 +182,22 @@ describe('Tasks Tool - SQL-like Filter Syntax', () => {
       const filter = '(priority >= 4)';
 
       // Mock successful response - the API should handle the filter correctly
-      mockClient.tasks.getAllTasks.mockResolvedValue([mockHighPriorityTask]);
+      mockRestTasksSuccess([mockHighPriorityTask]);
 
       const result = await callTool('list', { filter });
 
-      // Server-side filtering is attempted first: the raw filter string is
-      // passed straight through to the API alongside pagination.
-      expect(mockClient.tasks.getAllTasks).toHaveBeenCalledWith({
-        filter,
-        page: 1,
-        per_page: 1000,
-      });
+      // Cross-project listing goes straight to the direct-REST GET /tasks
+      // endpoint, with the raw filter string passed through as a query param.
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      const [url] = mockFetch.mock.calls[0] as [string];
+      expect(url).toBe(
+        expectedTasksUrl([
+          ['page', '1'],
+          ['per_page', '1000'],
+          ['filter', filter],
+        ]),
+      );
+      expect(mockClient.tasks.getAllTasks).not.toHaveBeenCalled();
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
@@ -160,8 +210,9 @@ describe('Tasks Tool - SQL-like Filter Syntax', () => {
       // This is the exact filter from the issue report - too complex to convert
       const filter = '(priority >= 4 && done = false)';
 
-      // Mock error response since complex filters can't be converted
-      mockClient.tasks.getAllTasks.mockRejectedValue(new Error('Internal Server Error'));
+      // The direct REST call fails, and so does the per-project aggregation
+      // fallback (this file's mock client stubs `projects` as `{}`).
+      mockFetch.mockRejectedValue(new Error('mock: REST GET /tasks unavailable'));
 
       await expect(callTool('list', { filter })).rejects.toThrow(MCPError);
     });
@@ -169,8 +220,7 @@ describe('Tasks Tool - SQL-like Filter Syntax', () => {
     it('should handle filter without parentheses', async () => {
       const filter = 'priority >= 4 && done = false';
 
-      // Complex filter can't be converted
-      mockClient.tasks.getAllTasks.mockRejectedValue(new Error('Internal Server Error'));
+      mockFetch.mockRejectedValue(new Error('mock: REST GET /tasks unavailable'));
 
       await expect(callTool('list', { filter })).rejects.toThrow(MCPError);
     });
@@ -178,17 +228,20 @@ describe('Tasks Tool - SQL-like Filter Syntax', () => {
     it('should handle simple filter expressions', async () => {
       const filter = 'priority >= 4';
 
-      mockClient.tasks.getAllTasks.mockResolvedValue([mockHighPriorityTask]);
+      mockRestTasksSuccess([mockHighPriorityTask]);
 
       const result = await callTool('list', { filter });
 
-      // Server-side filtering is attempted first: the raw filter string is
-      // passed straight through to the API alongside pagination.
-      expect(mockClient.tasks.getAllTasks).toHaveBeenCalledWith({
-        filter,
-        page: 1,
-        per_page: 1000,
-      });
+      // Cross-project listing goes straight to the direct-REST GET /tasks
+      // endpoint, with the raw filter string passed through as a query param.
+      const [url] = mockFetch.mock.calls[0] as [string];
+      expect(url).toBe(
+        expectedTasksUrl([
+          ['page', '1'],
+          ['per_page', '1000'],
+          ['filter', filter],
+        ]),
+      );
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
@@ -198,8 +251,7 @@ describe('Tasks Tool - SQL-like Filter Syntax', () => {
     it('should handle complex filter with multiple conditions', async () => {
       const filter = "(priority >= 3 && priority <= 5) || (done = true && updated > '2024-01-01')";
 
-      // Complex filter can't be converted
-      mockClient.tasks.getAllTasks.mockRejectedValue(new Error('Internal Server Error'));
+      mockFetch.mockRejectedValue(new Error('mock: REST GET /tasks unavailable'));
 
       await expect(callTool('list', { filter })).rejects.toThrow(MCPError);
     });
@@ -226,7 +278,7 @@ describe('Tasks Tool - SQL-like Filter Syntax', () => {
     it('should combine filter with other query parameters', async () => {
       const filter = '(priority >= 4 && done = false)';
 
-      mockClient.tasks.getAllTasks.mockResolvedValue([mockHighPriorityTask]);
+      mockRestTasksSuccess([mockHighPriorityTask]);
 
       const result = await callTool('list', {
         filter,
@@ -236,13 +288,16 @@ describe('Tasks Tool - SQL-like Filter Syntax', () => {
         search: 'urgent',
       });
 
-      expect(mockClient.tasks.getAllTasks).toHaveBeenCalledWith({
-        filter,
-        page: 2,
-        per_page: 20,
-        sort_by: 'priority',
-        s: 'urgent',
-      });
+      const [url] = mockFetch.mock.calls[0] as [string];
+      expect(url).toBe(
+        expectedTasksUrl([
+          ['page', '2'],
+          ['per_page', '20'],
+          ['s', 'urgent'],
+          ['sort_by', 'priority'],
+          ['filter', filter],
+        ]),
+      );
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
@@ -252,8 +307,9 @@ describe('Tasks Tool - SQL-like Filter Syntax', () => {
     it('should handle API errors gracefully', async () => {
       const filter = '(priority >= 4 && done = false)';
 
-      // Simulate the Internal Server Error from the issue
-      mockClient.tasks.getAllTasks.mockRejectedValue(new Error('Internal Server Error'));
+      // Simulate the failure: direct REST fails, and so does the
+      // per-project aggregation fallback.
+      mockFetch.mockRejectedValue(new Error('Internal Server Error'));
 
       await expect(callTool('list', { filter })).rejects.toThrow(MCPError);
       await expect(callTool('list', { filter })).rejects.toMatchObject({
@@ -304,13 +360,20 @@ describe('Tasks Tool - SQL-like Filter Syntax', () => {
 
     testCases.forEach(({ filter, description, expected }) => {
       it(`should handle ${description}`, async () => {
-        mockClient.tasks.getAllTasks.mockResolvedValue([mockHighPriorityTask]);
+        mockRestTasksSuccess([mockHighPriorityTask]);
 
         const result = await callTool('list', { filter });
 
-        // Server-side filtering is attempted first: the raw filter string is
-        // passed straight through to the API alongside pagination.
-        expect(mockClient.tasks.getAllTasks).toHaveBeenCalledWith({ filter, ...expected });
+        // Cross-project listing goes straight to the direct-REST GET /tasks
+        // endpoint, with the raw filter string passed through as a query param.
+        const [url] = mockFetch.mock.calls[0] as [string];
+        expect(url).toBe(
+          expectedTasksUrl([
+            ['page', String(expected.page)],
+            ['per_page', String(expected.per_page)],
+            ['filter', filter],
+          ]),
+        );
 
         const markdown = result.content[0].text;
         const parsed = parseMarkdown(markdown);
@@ -331,17 +394,20 @@ describe('Tasks Tool - SQL-like Filter Syntax', () => {
 
     testCases.forEach(({ filter, description }) => {
       it(`should handle ${description}`, async () => {
-        mockClient.tasks.getAllTasks.mockResolvedValue([mockHighPriorityTask]);
+        mockRestTasksSuccess([mockHighPriorityTask]);
 
         const result = await callTool('list', { filter });
 
-        // Server-side filtering is attempted first: the raw filter string is
-        // passed straight through to the API alongside pagination.
-        expect(mockClient.tasks.getAllTasks).toHaveBeenCalledWith({
-          filter,
-          page: 1,
-          per_page: 1000,
-        });
+        // Cross-project listing goes straight to the direct-REST GET /tasks
+        // endpoint, with the raw filter string passed through as a query param.
+        const [url] = mockFetch.mock.calls[0] as [string];
+        expect(url).toBe(
+          expectedTasksUrl([
+            ['page', '1'],
+            ['per_page', '1000'],
+            ['filter', filter],
+          ]),
+        );
 
         const markdown = result.content[0].text;
         const parsed = parseMarkdown(markdown);

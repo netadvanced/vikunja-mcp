@@ -30,6 +30,11 @@ export function registerTaskAssigneesTool(
       // Task and user identification
       id: z.number(),
       assignees: z.array(z.number()).optional(),
+      // list-assignees: forwarded to GET /tasks/{taskID}/assignees's
+      // documented s/page/per_page query params.
+      search: z.string().optional(),
+      page: z.number().optional(),
+      perPage: z.number().optional(),
     },
     async (args) => {
       try {
@@ -62,7 +67,15 @@ export function registerTaskAssigneesTool(
             });
 
           case 'list-assignees':
-            return listAssignees(args);
+            return listAssignees(
+              {
+                id: args.id,
+                ...(args.search !== undefined && { search: args.search }),
+                ...(args.page !== undefined && { page: args.page }),
+                ...(args.perPage !== undefined && { perPage: args.perPage }),
+              },
+              authManager,
+            );
 
           default:
             throw new MCPError(

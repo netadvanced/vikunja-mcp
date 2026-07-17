@@ -22,6 +22,7 @@ import { getClientFromContext } from '../../src/client';
 import { extractTasksData, extractTaskData, expectAorpSuccess, expectAorpError, getAorpData, getAorpMetadata } from '../utils/aorp-test-helpers';
 import { parseMarkdown } from '../utils/markdown';
 import * as retryUtils from '../../src/utils/retry';
+import { circuitBreakerRegistry } from '../../src/utils/retry';
 
 // Mock the modules
 jest.mock('../../src/client', () => ({
@@ -196,7 +197,7 @@ describe('Tasks Tool', () => {
     // Get the tasks tool handler
     expect(mockServer.tool).toHaveBeenCalledWith(
       'vikunja_tasks',
-      'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach files, comment, bulk operations, set Kanban bucket)',
+      'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach/list/delete files, comment, bulk operations, set Kanban bucket, set position, lookup by per-project index). download-attachment cannot deliver file bytes through MCP (no binary channel) — it returns the direct download URL and auth guidance instead.',
       expect.any(Object),
       expect.any(Function),
     );
@@ -1346,33 +1347,59 @@ describe('Tasks Tool', () => {
   });
 
   describe('list-assignees subcommand', () => {
+    // list-assignees calls the dedicated GET /tasks/{taskID}/assignees
+    // endpoint directly via the REST helper (not node-vikunja's
+    // client.tasks.getTask), so these tests mock global fetch rather than
+    // mockClient.
+    let fetchMock: jest.Mock;
+    let originalFetch: typeof fetch;
+
+    const restOk = (body: unknown): Response =>
+      ({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: jest.fn(async () => JSON.stringify(body)),
+      }) as unknown as Response;
+
+    beforeEach(() => {
+      originalFetch = globalThis.fetch;
+      fetchMock = jest.fn();
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+      // Every list-assignees call shares one auto-derived breaker name
+      // ('vikunja-rest-tasks-assignees'); clear the process-wide registry
+      // so one test's failure doesn't count against another's.
+      circuitBreakerRegistry.clear();
+    });
+
+    afterEach(() => {
+      globalThis.fetch = originalFetch;
+    });
+
     it('should list assignees for a task', async () => {
-      const taskWithAssignees = {
-        ...mockTask,
-        assignees: [mockUser, { id: 2, username: 'user2', email: 'user2@example.com' }],
-      };
-      mockClient.tasks.getTask.mockResolvedValue(taskWithAssignees);
+      fetchMock.mockResolvedValue(
+        restOk([mockUser, { id: 2, username: 'user2', email: 'user2@example.com' }]),
+      );
 
       const result = await callTool('list-assignees', {
         id: 1,
       });
 
-      expect(mockClient.tasks.getTask).toHaveBeenCalledWith(1);
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://api.vikunja.test/api/v1/tasks/1/assignees',
+        expect.objectContaining({ method: 'GET' }),
+      );
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
       const aorpStatus = parsed.getAorpStatus();
       expect(aorpStatus.type).toBe('success');
       expect(markdown).toContain('get');
-      expect(markdown).toContain('Task has 2 assignee(s)');
+      expect(markdown).toContain('Task 1 has 2 assignee(s)');
     });
 
     it('should handle task with no assignees', async () => {
-      const taskWithoutAssignees = {
-        ...mockTask,
-        assignees: [],
-      };
-      mockClient.tasks.getTask.mockResolvedValue(taskWithoutAssignees);
+      fetchMock.mockResolvedValue(restOk([]));
 
       const result = await callTool('list-assignees', {
         id: 1,
@@ -1382,13 +1409,32 @@ describe('Tasks Tool', () => {
       const parsed = parseMarkdown(markdown);
       const aorpStatus = parsed.getAorpStatus();
       expect(aorpStatus.type).toBe('success');
-      expect(markdown).toContain('Task has 0 assignee(s)');
+      expect(markdown).toContain('Task 1 has 0 assignee(s)');
+    });
+
+    it('forwards search/page/perPage as s/page/per_page query params', async () => {
+      fetchMock.mockResolvedValue(restOk([mockUser]));
+
+      await callTool('list-assignees', {
+        id: 1,
+        search: 'ali',
+        page: 2,
+        perPage: 10,
+      });
+
+      const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+      const parsedUrl = new URL(url);
+      expect(parsedUrl.pathname).toBe('/api/v1/tasks/1/assignees');
+      expect(parsedUrl.searchParams.get('s')).toBe('ali');
+      expect(parsedUrl.searchParams.get('page')).toBe('2');
+      expect(parsedUrl.searchParams.get('per_page')).toBe('10');
     });
 
     it('should validate task ID is required', async () => {
       await expect(callTool('list-assignees', {})).rejects.toThrow(
         'Task id is required for list-assignees operation',
       );
+      expect(fetchMock).not.toHaveBeenCalled();
     });
 
     it('should validate task ID format', async () => {
@@ -1403,41 +1449,45 @@ describe('Tasks Tool', () => {
       );
     });
 
-    it('should handle API errors', async () => {
-      mockClient.tasks.getTask.mockRejectedValue(new Error('API Error'));
+    it('should handle a non-OK HTTP response', async () => {
+      fetchMock.mockResolvedValue({
+        ok: false,
+        status: 500,
+        statusText: 'Internal Server Error',
+        text: jest.fn(async () => 'boom'),
+      } as unknown as Response);
 
       await expect(
         callTool('list-assignees', {
           id: 1,
         }),
-      ).rejects.toThrow('Failed to list task assignees: API Error');
+      ).rejects.toThrow(
+        'Vikunja REST request failed (GET /tasks/1/assignees): HTTP 500 Internal Server Error — boom',
+      );
     });
 
-    it('should handle non-Error API errors', async () => {
-      mockClient.tasks.getTask.mockRejectedValue('Network failure');
+    it('should handle non-Error network failures', async () => {
+      fetchMock.mockRejectedValue('Network failure');
 
       await expect(
         callTool('list-assignees', {
           id: 1,
         }),
-      ).rejects.toThrow('Failed to list task assignees: Network failure');
+      ).rejects.toThrow(
+        'Vikunja REST request failed (GET /tasks/1/assignees): Network failure',
+      );
     });
 
-    it('should only return minimal task data with assignees', async () => {
-      const taskWithAssignees = {
-        ...mockTask,
-        assignees: [mockUser],
-      };
-      mockClient.tasks.getTask.mockResolvedValue(taskWithAssignees);
+    it('returns id/username/name/email per assignee and nothing else', async () => {
+      fetchMock.mockResolvedValue(restOk([mockUser]));
 
       const result = await callTool('list-assignees', {
         id: 1,
       });
 
       const markdown = result.content[0].text;
-      const parsed = parseMarkdown(markdown);
-      // Should only include id, title, and assignees
-      // Should not include other task fields
+      expect(markdown).toContain(String(mockUser.id));
+      expect(markdown).toContain(mockUser.username);
     });
   });
 
@@ -2627,7 +2677,7 @@ describe('Tasks Tool', () => {
     it('should register the vikunja_tasks tool', () => {
       expect(mockServer.tool).toHaveBeenCalledWith(
         'vikunja_tasks',
-        'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach files, comment, bulk operations, set Kanban bucket)',
+        'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach/list/delete files, comment, bulk operations, set Kanban bucket, set position, lookup by per-project index). download-attachment cannot deliver file bytes through MCP (no binary channel) — it returns the direct download URL and auth guidance instead.',
         expect.any(Object),
         expect.any(Function),
       );

@@ -12,6 +12,7 @@ import { registerTasksTool } from '../../src/tools/tasks';
 import { getClientFromContext } from '../../src/client';
 import { createMockTestableAuthManager } from '../utils/test-utils';
 import type { MockVikunjaClient, MockAuthManager, MockServer } from '../types/mocks';
+import { circuitBreakerRegistry } from '../../src/utils/retry';
 
 // Mock dependencies
 jest.mock('../../src/client');
@@ -27,6 +28,16 @@ jest.mock('../../src/utils/logger', () => ({
 
 const mockGetClientFromContext = getClientFromContext as jest.MockedFunction<typeof getClientFromContext>;
 
+// Cross-project listing (no projectId / allProjects) now attempts the
+// direct-REST GET /tasks endpoint first (RestCrossProjectFilteringStrategy)
+// before falling back to the per-project aggregation this file's attack
+// scenarios exercise. Default global.fetch to a fast, deterministic
+// rejection so every 'list' call below falls back to that aggregation
+// immediately, rather than depending on real (and environment-dependent)
+// network failure timing.
+const mockFetch = jest.fn();
+global.fetch = mockFetch as unknown as typeof fetch;
+
 describe('Integration Memory Exhaustion Attack Tests', () => {
   let mockServer: MockServer;
   let mockAuthManager: MockAuthManager;
@@ -36,6 +47,13 @@ describe('Integration Memory Exhaustion Attack Tests', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockFetch.mockReset();
+    mockFetch.mockRejectedValue(new Error('mock: REST GET /tasks unavailable'));
+    // vikunjaRestRequest protects every call with a process-wide named
+    // circuit breaker; clear accumulated stats between tests so a
+    // deliberately failing scenario doesn't trip the breaker for a later
+    // test sharing the same auto-derived breaker name.
+    circuitBreakerRegistry.clear();
     process.env = { ...originalEnv };
     process.env.VIKUNJA_MAX_TASKS_LIMIT = '100'; // Low limit for attack testing
 
@@ -118,7 +136,7 @@ describe('Integration Memory Exhaustion Attack Tests', () => {
     // Get the tool handler
     expect(mockServer.tool).toHaveBeenCalledWith(
       'vikunja_tasks',
-      'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach files, comment, bulk operations, set Kanban bucket)',
+      'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach/list/delete files, comment, bulk operations, set Kanban bucket, set position, lookup by per-project index). download-attachment cannot deliver file bytes through MCP (no binary channel) — it returns the direct download URL and auth guidance instead.',
       expect.any(Object),
       expect.any(Function),
     );

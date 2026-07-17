@@ -9,6 +9,7 @@ import { registerTasksTool } from '../../src/tools/tasks';
 import { getClientFromContext } from '../../src/client';
 import { createMockTestableAuthManager } from '../utils/test-utils';
 import type { MockVikunjaClient, MockAuthManager, MockServer } from '../types/mocks';
+import { circuitBreakerRegistry } from '../../src/utils/retry';
 
 // Mock dependencies
 jest.mock('../../src/client');
@@ -24,6 +25,27 @@ jest.mock('../../src/utils/logger', () => ({
 
 const mockGetClientFromContext = getClientFromContext as jest.MockedFunction<typeof getClientFromContext>;
 
+// Cross-project listing (no projectId / allProjects) now attempts the
+// direct-REST GET /tasks endpoint first (RestCrossProjectFilteringStrategy)
+// before falling back to the per-project aggregation this file's tests
+// exercise. Default global.fetch to a fast, deterministic rejection so
+// every 'list' call below falls back to that aggregation immediately,
+// rather than depending on real (and environment-dependent) network
+// failure timing.
+const mockFetch = jest.fn();
+global.fetch = mockFetch as unknown as typeof fetch;
+
+/** Minimal Response-like object for the REST helper. */
+function mockRestResponse(opts: { ok?: boolean; status?: number; statusText?: string; text?: string }): Response {
+  const { ok = true, status = 200, statusText = 'OK', text = '' } = opts;
+  return {
+    ok,
+    status,
+    statusText,
+    text: jest.fn(async () => text),
+  } as unknown as Response;
+}
+
 describe('Tasks Memory Protection', () => {
   let mockServer: MockServer;
   let mockAuthManager: MockAuthManager;
@@ -34,6 +56,13 @@ describe('Tasks Memory Protection', () => {
   beforeEach(() => {
     process.env = { ...originalEnv };
     jest.clearAllMocks();
+    mockFetch.mockReset();
+    mockFetch.mockRejectedValue(new Error('mock: REST GET /tasks unavailable'));
+    // vikunjaRestRequest protects every call with a process-wide named
+    // circuit breaker; clear accumulated stats between tests so a
+    // deliberately failing scenario doesn't trip the breaker for a later
+    // test sharing the same auto-derived breaker name.
+    circuitBreakerRegistry.clear();
 
     // Setup mock client
     mockClient = {
@@ -114,7 +143,7 @@ describe('Tasks Memory Protection', () => {
     // Get the tool handler
     expect(mockServer.tool).toHaveBeenCalledWith(
       'vikunja_tasks',
-      'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach files, comment, bulk operations, set Kanban bucket)',
+      'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach/list/delete files, comment, bulk operations, set Kanban bucket, set position, lookup by per-project index). download-attachment cannot deliver file bytes through MCP (no binary channel) — it returns the direct download URL and auth guidance instead.',
       expect.any(Object),
       expect.any(Function),
     );
@@ -474,7 +503,12 @@ describe('Tasks Memory Protection', () => {
         priority: i % 5 + 1 // Priority 1-5
       })) as Task[];
 
-      mockClient.tasks.getAllTasks.mockResolvedValue(mockTasks);
+      // Cross-project listing (no projectId) attempts the direct-REST GET
+      // /tasks endpoint first; the mock succeeds, so no per-project
+      // aggregation fallback is needed and node-vikunja's getAllTasks
+      // (which calls the non-existent GET /tasks/all) is never invoked.
+      mockFetch.mockReset();
+      mockFetch.mockResolvedValueOnce(mockRestResponse({ text: JSON.stringify(mockTasks) }));
 
       const result = await toolHandler({
         subcommand: 'list',
@@ -482,10 +516,10 @@ describe('Tasks Memory Protection', () => {
         filter: 'priority > 3'
       });
 
-      // A filter is present, so the hybrid strategy attempts server-side
-      // filtering first via getAllTasks; the mock succeeds, so no client-side
-      // fallback is needed.
-      expect(mockClient.tasks.getAllTasks).toHaveBeenCalled();
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      const [url] = mockFetch.mock.calls[0] as [string];
+      expect(url).toContain('filter=' + encodeURIComponent('priority > 3').replace(/%20/g, '+'));
+      expect(mockClient.tasks.getAllTasks).not.toHaveBeenCalled();
       expect(result.content[0].text).toContain('**success:** true');
       expect(result.content[0].text).toContain('**serverSideFilteringUsed:** true');
     });
