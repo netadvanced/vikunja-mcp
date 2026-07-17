@@ -21,11 +21,10 @@ export const AuthConfigSchema = z.object({
 
 export type AuthConfig = z.infer<typeof AuthConfigSchema>;
 
-// Logging Configuration Schema - AORP requires comprehensive logging
+// Logging Configuration Schema
 export const LoggingConfigSchema = z.object({
-  // AORP requires comprehensive logging for operational monitoring and resilience
   level: z.enum(['error', 'warn', 'info', 'debug']).default('info'),
-  // AORP always requires debug information for resilience - no configuration option
+  debug: z.boolean().default(false),
   environment: z.nativeEnum(Environment).default(Environment.DEVELOPMENT),
 });
 
@@ -40,9 +39,10 @@ const RateLimitSettingsSchema = z.object({
   executionTimeout: z.number().int().positive().default(30000), // 30 seconds
 });
 
-// Rate Limiting Configuration Schema - AORP always enabled
+// Rate Limiting Configuration Schema
 export const RateLimitConfigSchema = z.object({
-  // AORP requires rate limiting to be always enabled for operational resilience
+  // Global enable/disable switch for rate limiting
+  enabled: z.boolean().default(true),
 
   // Default tool limits
   default: RateLimitSettingsSchema.default({
@@ -83,8 +83,14 @@ export const RateLimitConfigSchema = z.object({
 
 export type RateLimitConfig = z.infer<typeof RateLimitConfigSchema>;
 
-// AORP is always enabled - no feature flags needed
-export type FeatureFlagsConfig = Record<string, never>;
+// Feature Flags Configuration Schema
+export const FeatureFlagsConfigSchema = z.object({
+  enableServerSideFiltering: z.boolean().default(true),
+  enableAdvancedMetrics: z.boolean().default(false),
+  enableExperimentalFeatures: z.boolean().default(false),
+});
+
+export type FeatureFlagsConfig = z.infer<typeof FeatureFlagsConfigSchema>;
 
 // Complete Application Configuration Schema
 export const ApplicationConfigSchema = z.object({
@@ -92,7 +98,7 @@ export const ApplicationConfigSchema = z.object({
   auth: AuthConfigSchema.default({}),
   logging: LoggingConfigSchema.default({}),
   rateLimiting: RateLimitConfigSchema.default({}),
-  // AORP is always enabled - no feature flags needed
+  featureFlags: FeatureFlagsConfigSchema.default({}),
 });
 
 export type ApplicationConfig = z.infer<typeof ApplicationConfigSchema>;
