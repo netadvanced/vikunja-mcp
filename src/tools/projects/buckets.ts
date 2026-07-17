@@ -14,6 +14,7 @@ import { MCPError, ErrorCode } from '../../types';
 import { validateId } from '../../utils/validation';
 import { createStandardResponse, formatAorpAsMarkdown } from '../../utils/response-factory';
 import { vikunjaRestRequest, resolveKanbanView } from '../../utils/vikunja-rest';
+import type { components } from '../../types/generated/vikunja-openapi';
 
 export interface ListBucketsArgs {
   /** Project whose Kanban buckets should be listed. */
@@ -24,13 +25,11 @@ export interface ListBucketsArgs {
   sessionId?: string;
 }
 
-interface VikunjaBucket {
-  id: number;
-  title: string;
-  project_view_id?: number;
-  position?: number;
-  limit?: number;
-}
+// Sourced from the vendored OpenAPI spec (docs/vikunja-openapi.json) —
+// see docs/API-SPEC.md. All fields are optional per the spec (the API does
+// not mark any Bucket property `required`), which matches the actual GET
+// response shape more accurately than a hand-rolled interface would.
+type VikunjaBucket = components['schemas']['models.Bucket'];
 
 /**
  * Lists the Kanban buckets of a project.
