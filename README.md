@@ -1070,8 +1070,9 @@ This standardized format ensures:
     - Optional: description, parentProjectId, isArchived, hexColor (format: #RRGGBB)
     - Validates parent project hierarchy depth (max 10 levels)
   - `update` - Update existing project
-    - Supports partial updates
+    - Supports partial updates (fetches current project and merges; omitted fields are preserved)
     - Can update all project fields including hexColor (format: #RRGGBB)
+    - Omitting `parentProjectId` leaves the current parent unchanged (use `move` to reparent or detach)
     - Validates parent project hierarchy depth when changing parent
   - `delete` - Delete a project by ID
   - `archive` - Archive a project
