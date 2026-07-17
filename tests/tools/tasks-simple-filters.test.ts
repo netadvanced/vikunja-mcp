@@ -1,17 +1,26 @@
 /**
- * Tests for simplified filtering approach
- * These tests validate that simple filter parsing and application works correctly
+ * Tests for the current filter parsing + client-side application pipeline.
+ *
+ * This suite previously exercised `parseSimpleFilter`/`applyClientSideFilter`
+ * from src/utils/filters.ts, a single-condition ("SimpleFilter") API that
+ * predates the Zod-based grammar and no longer exists. The equivalent
+ * functionality today is `parseFilterString` (src/utils/filters.ts), which
+ * parses a filter string into a `FilterExpression` tree, combined with
+ * `applyFilter` (src/tools/tasks/filtering/evaluators.ts, re-exported from
+ * src/tools/tasks/filtering), which evaluates that expression against a list
+ * of tasks. The old bracketed-array syntax (`labels in [1, 2]`) and its
+ * JSON.parse-based sanitization no longer apply either: the current grammar
+ * uses a comma-separated value list for `in`/`not in` (`labels in 1, 2`).
  */
 
 import { describe, it, expect } from '@jest/globals';
 import type { Task } from 'node-vikunja';
-import { parseSimpleFilter, applyClientSideFilter } from '../../src/utils/filters';
-
-// Import the private function for testing by re-implementing the test cases
-// This tests the security validation indirectly through parseSimpleFilter
+import { parseFilterString } from '../../src/utils/filters';
+import { applyFilter } from '../../src/tools/tasks/filtering';
+import type { FilterExpression } from '../../src/types/filters';
 
 // Mock data
-const mockTasks: Task[] = [
+const mockTasks: Partial<Task>[] = [
   {
     id: 1,
     title: 'Completed Task',
@@ -22,40 +31,8 @@ const mockTasks: Task[] = [
     project_id: 1,
     created: '2024-01-01T10:00:00Z',
     updated: '2024-01-15T10:00:00Z',
-    labels: [1, 2],
-    assignees: [1],
-    position: 0,
-    kanban_position: 0,
-    reminder_dates: [],
-    subscription: null,
-    percent_done: 100,
-    identifier: 'TASK-1',
-    index: 1,
-    related_tasks: null,
-    attachment_count: 0,
-    comment_count: 0,
-    cover_image_attachment_id: null,
-    is_favorite: false,
-    parent_task_id: null,
-    hex_color: '',
-    color: '',
-    start_date: null,
-    end_date: null,
-    repeat_after: 0,
-    repeat_mode: 0,
-    repeat_from: null,
-    repeat_until: null,
-    remap_subtasks_on_repeat: false,
-    subtasks: [],
-    bucket_id: 0,
-    created_by: {
-      id: 1,
-      name: 'Test User',
-      username: 'testuser',
-      email: 'test@example.com',
-      created: '2024-01-01T10:00:00Z',
-      updated: '2024-01-01T10:00:00Z'
-    }
+    labels: [{ id: 1 }, { id: 2 }] as Task['labels'],
+    assignees: [{ id: 1 }] as Task['assignees'],
   },
   {
     id: 2,
@@ -67,40 +44,8 @@ const mockTasks: Task[] = [
     project_id: 1,
     created: '2024-01-10T10:00:00Z',
     updated: '2024-01-10T10:00:00Z',
-    labels: [2],
-    assignees: [2],
-    position: 1,
-    kanban_position: 1,
-    reminder_dates: [],
-    subscription: null,
-    percent_done: 0,
-    identifier: 'TASK-2',
-    index: 2,
-    related_tasks: null,
-    attachment_count: 0,
-    comment_count: 0,
-    cover_image_attachment_id: null,
-    is_favorite: false,
-    parent_task_id: null,
-    hex_color: '',
-    color: '',
-    start_date: null,
-    end_date: null,
-    repeat_after: 0,
-    repeat_mode: 0,
-    repeat_from: null,
-    repeat_until: null,
-    remap_subtasks_on_repeat: false,
-    subtasks: [],
-    bucket_id: 0,
-    created_by: {
-      id: 1,
-      name: 'Test User',
-      username: 'testuser',
-      email: 'test@example.com',
-      created: '2024-01-01T10:00:00Z',
-      updated: '2024-01-01T10:00:00Z'
-    }
+    labels: [{ id: 2 }] as Task['labels'],
+    assignees: [{ id: 2 }] as Task['assignees'],
   },
   {
     id: 3,
@@ -108,397 +53,159 @@ const mockTasks: Task[] = [
     description: 'Not important and not done',
     done: false,
     priority: 1,
-    due_date: null,
+    due_date: null as unknown as string,
     project_id: 2,
     created: '2024-01-20T10:00:00Z',
     updated: '2024-01-20T10:00:00Z',
-    labels: [],
-    assignees: [],
-    position: 2,
-    kanban_position: 2,
-    reminder_dates: [],
-    subscription: null,
-    percent_done: 25,
-    identifier: 'TASK-3',
-    index: 3,
-    related_tasks: null,
-    attachment_count: 0,
-    comment_count: 0,
-    cover_image_attachment_id: null,
-    is_favorite: false,
-    parent_task_id: null,
-    hex_color: '',
-    color: '',
-    start_date: null,
-    end_date: null,
-    repeat_after: 0,
-    repeat_mode: 0,
-    repeat_from: null,
-    repeat_until: null,
-    remap_subtasks_on_repeat: false,
-    subtasks: [],
-    bucket_id: 0,
-    created_by: {
-      id: 1,
-      name: 'Test User',
-      username: 'testuser',
-      email: 'test@example.com',
-      created: '2024-01-01T10:00:00Z',
-      updated: '2024-01-01T10:00:00Z'
-    }
-  }
+    labels: [] as Task['labels'],
+    assignees: [] as Task['assignees'],
+  },
 ];
 
-describe('Simplified Filter Parsing', () => {
-  describe('parseSimpleFilter', () => {
-    it('should parse simple equality filter', () => {
-      const result = parseSimpleFilter('done = true');
-      expect(result).toEqual({
+/**
+ * Parses a filter string and applies it to the given tasks, asserting that
+ * parsing succeeded so callers get a clear failure if the filter syntax
+ * itself is invalid rather than an obscure downstream assertion failure.
+ */
+function filterTasks(tasks: Partial<Task>[], filterStr: string): Task[] {
+  const { expression, error } = parseFilterString(filterStr);
+  expect(error).toBeUndefined();
+  expect(expression).not.toBeNull();
+  return applyFilter(tasks as Task[], expression as FilterExpression);
+}
+
+describe('Filter Parsing and Application', () => {
+  describe('parseFilterString', () => {
+    it('should parse a simple equality filter', () => {
+      const { expression } = parseFilterString('done = true');
+      expect(expression?.groups[0]?.conditions[0]).toEqual({
         field: 'done',
         operator: '=',
-        value: true
+        value: true,
       });
     });
 
-    it('should parse comparison filter with priority', () => {
-      const result = parseSimpleFilter('priority > 3');
-      expect(result).toEqual({
+    it('should parse a comparison filter with priority', () => {
+      const { expression } = parseFilterString('priority > 3');
+      expect(expression?.groups[0]?.conditions[0]).toEqual({
         field: 'priority',
         operator: '>',
-        value: 3
+        value: 3,
       });
     });
 
-    it('should parse string filter with quotes', () => {
-      const result = parseSimpleFilter('title = "High Priority Task"');
-      expect(result).toEqual({
+    it('should parse a quoted string filter', () => {
+      const { expression } = parseFilterString('title = "High Priority Task"');
+      expect(expression?.groups[0]?.conditions[0]).toEqual({
         field: 'title',
         operator: '=',
-        value: 'High Priority Task'
+        value: 'High Priority Task',
       });
     });
 
-    it('should parse like operator for substring matching', () => {
-      const result = parseSimpleFilter('title like "Task"');
-      expect(result).toEqual({
+    it('should parse the like operator for substring matching', () => {
+      const { expression } = parseFilterString('title like "Task"');
+      expect(expression?.groups[0]?.conditions[0]).toEqual({
         field: 'title',
         operator: 'like',
-        value: 'Task'
+        value: 'Task',
       });
     });
 
-    it('should handle array operators', () => {
-      const result = parseSimpleFilter('labels in [1, 2]');
-      expect(result).toEqual({
+    it('should parse comma-separated values for the in operator', () => {
+      const { expression } = parseFilterString('labels in 1, 2');
+      expect(expression?.groups[0]?.conditions[0]).toEqual({
         field: 'labels',
         operator: 'in',
-        value: [1, 2]
+        value: ['1', '2'],
       });
     });
 
-    it('should return null for invalid syntax', () => {
-      const result = parseSimpleFilter('invalid filter syntax');
-      expect(result).toBeNull();
+    it('should return a null expression and an error for invalid syntax', () => {
+      const { expression, error } = parseFilterString('invalid filter syntax');
+      expect(expression).toBeNull();
+      expect(error).toBeDefined();
     });
 
-    it('should return null for empty filter', () => {
-      const result = parseSimpleFilter('');
-      expect(result).toBeNull();
+    it('should return a null expression and an error for an empty filter', () => {
+      const { expression, error } = parseFilterString('');
+      expect(expression).toBeNull();
+      expect(error?.message).toBe('Filter string cannot be empty');
+    });
+
+    it('should reject a legacy snake_case field name (due_date is not a valid field)', () => {
+      const { expression, error } = parseFilterString('due_date < 2024-01-31');
+      expect(expression).toBeNull();
+      expect(error).toBeDefined();
     });
   });
 
-  describe('applyClientSideFilter', () => {
+  describe('applyFilter', () => {
     it('should filter tasks by done status', () => {
-      const filter = parseSimpleFilter('done = true');
-      const result = applyClientSideFilter(mockTasks, filter);
+      const result = filterTasks(mockTasks, 'done = true');
       expect(result).toHaveLength(1);
-      expect(result[0].id).toBe(1);
+      expect(result[0]?.id).toBe(1);
     });
 
     it('should filter tasks by priority comparison', () => {
-      const filter = parseSimpleFilter('priority > 3');
-      const result = applyClientSideFilter(mockTasks, filter);
+      const result = filterTasks(mockTasks, 'priority > 3');
       expect(result).toHaveLength(1);
-      expect(result[0].id).toBe(2);
+      expect(result[0]?.id).toBe(2);
     });
 
     it('should filter tasks by title substring', () => {
-      const filter = parseSimpleFilter('title like "High Priority"');
-      const result = applyClientSideFilter(mockTasks, filter);
+      const result = filterTasks(mockTasks, 'title like "High Priority"');
       expect(result).toHaveLength(1);
-      expect(result[0].id).toBe(2);
+      expect(result[0]?.id).toBe(2);
     });
 
-    it('should handle array field filtering', () => {
-      const filter = parseSimpleFilter('labels in [1]');
-      const result = applyClientSideFilter(mockTasks, filter);
+    it('should filter tasks by label id membership', () => {
+      const result = filterTasks(mockTasks, 'labels in 1');
       expect(result).toHaveLength(1);
-      expect(result[0].id).toBe(1);
+      expect(result[0]?.id).toBe(1);
     });
 
-    it('should return all tasks when filter is null', () => {
-      const result = applyClientSideFilter(mockTasks, null);
+    it('should return all tasks for an always-true condition', () => {
+      const result = filterTasks(mockTasks, 'priority >= 0');
       expect(result).toHaveLength(3);
     });
 
     it('should handle due date comparisons', () => {
-      const filter = parseSimpleFilter('due_date < 2024-01-31');
-      const result = applyClientSideFilter(mockTasks, filter);
-      // Should include only tasks with due dates before Jan 31, 2024
-      // Task 1: 2024-01-15 (before) ✓
-      // Task 2: 2024-02-01 (after) ✗
-      // Task 3: null (excluded from date comparisons) ✗
+      const result = filterTasks(mockTasks, 'dueDate < 2024-01-31');
+      // Task 1: 2024-01-15 (before) - included
+      // Task 2: 2024-02-01 (after) - excluded
+      // Task 3: no due date (unset dates only match !=) - excluded
       expect(result).toHaveLength(1);
-      expect(result[0].id).toBe(1);
+      expect(result[0]?.id).toBe(1);
     });
 
-    it('should handle null values', () => {
-      const filter = parseSimpleFilter('due_date = null');
-      const result = applyClientSideFilter(mockTasks, filter);
-      expect(result).toHaveLength(1);
-      expect(result[0].id).toBe(3);
+    it('should treat tasks with no due date as only matching the != operator', () => {
+      const result = filterTasks(mockTasks, 'dueDate != 2024-01-15');
+      expect(result.map((t) => t.id).sort()).toEqual([2, 3]);
     });
   });
 
-  describe('Integration Tests', () => {
-    it('should handle simple filtering scenarios', () => {
-      // Find all incomplete high priority tasks (using single filter)
-      const filter = parseSimpleFilter('done = false');
-      const result = applyClientSideFilter(mockTasks, filter);
-      // Should find task 2 and task 3 (both incomplete)
-      expect(result).toHaveLength(2);
-      expect(result.map(t => t.id).sort()).toEqual([2, 3]);
+  describe('Integration scenarios', () => {
+    it('should find incomplete tasks', () => {
+      const result = filterTasks(mockTasks, 'done = false');
+      expect(result.map((t) => t.id).sort()).toEqual([2, 3]);
     });
 
-    it('should handle date filtering properly', () => {
-      // Find tasks due before January 31, 2024
-      const filter = parseSimpleFilter('due_date < 2024-01-31');
-      const result = applyClientSideFilter(mockTasks, filter);
-      // Should find only task 1 (due Jan 15)
-      expect(result).toHaveLength(1);
-      expect(result[0].id).toBe(1);
-    });
+    it('should support progressive filtering by re-applying filterTasks', () => {
+      // Step 1: high priority tasks
+      const highPriority = filterTasks(mockTasks, 'priority > 2');
+      expect(highPriority).toHaveLength(2);
 
-    it('should demonstrate progressive filtering', () => {
-      // Step 1: Find tasks with high priority
-      const filter1 = parseSimpleFilter('priority > 2');
-      const result1 = applyClientSideFilter(mockTasks, filter1);
-      // Should find task 1 (priority 3) and task 2 (priority 5)
-      expect(result1).toHaveLength(2);
-
-      // Step 2: From high priority tasks, find incomplete ones
-      const filter2 = parseSimpleFilter('done = false');
-      const finalResult = applyClientSideFilter(result1, filter2);
-      // Should find only task 2 (high priority and incomplete)
+      // Step 2: from those, find incomplete ones
+      const finalResult = filterTasks(highPriority, 'done = false');
       expect(finalResult).toHaveLength(1);
-      expect(finalResult[0].id).toBe(2);
-    });
-  });
-
-  describe('JSON Injection Security Tests', () => {
-    it('should reject malicious object injection attempts', () => {
-      // Attempt to inject an object instead of array
-      const maliciousPayloads = [
-        '{"__proto__": {"polluted": true}}',
-        '{"constructor": {"prototype": {"polluted": true}}}',
-        '{"toString": "hacked"}',
-        '{"valueOf": "hacked"}',
-        '{"key": "value"}'
-      ];
-
-      maliciousPayloads.forEach(payload => {
-        const result = parseSimpleFilter(`labels in ${payload}`);
-        expect(result).toBeNull();
-      });
+      expect(finalResult[0]?.id).toBe(2);
     });
 
-    it('should reject arrays with nested objects', () => {
-      const maliciousArrays = [
-        '[{"__proto__": {"polluted": true}}]',
-        '[{"constructor": {"prototype": {"polluted": true}}}]',
-        '[{"nested": {"object": "here"}}]',
-        '[{"key": "value"}, {"another": "object"}]',
-        '[{"function": "() => { console.log(\\"hacked\\") }"}]'
-      ];
-
-      maliciousArrays.forEach(payload => {
-        const result = parseSimpleFilter(`labels in ${payload}`);
-        expect(result).toBeNull();
-      });
-    });
-
-    it('should reject prototype pollution attempts', () => {
-      const pollutionPayloads = [
-        '["__proto__"]',
-        '["constructor", "prototype"]',
-        '["__proto__", "polluted"]',
-        '[{"__proto__": {"polluted": "yes"}}]'
-      ];
-
-      pollutionPayloads.forEach(payload => {
-        const result = parseSimpleFilter(`labels in ${payload}`);
-        expect(result).toBeNull();
-      });
-    });
-
-    it('should reject oversized arrays', () => {
-      // Create an array with more than 100 items
-      const oversizedArray = '[' + Array.from({length: 101}, (_, i) => i).join(', ') + ']';
-      const result = parseSimpleFilter(`labels in ${oversizedArray}`);
-      expect(result).toBeNull();
-    });
-
-    it('should reject arrays with functions or code', () => {
-      const functionPayloads = [
-        '[() => { console.log("hacked") }]',
-        '[function() { return "malicious"; }]',
-        '[{"key": "function() { return \\"hacked\\"; }"}]',
-        '[{"func": "() => {}"}]'
-      ];
-
-      functionPayloads.forEach(payload => {
-        const result = parseSimpleFilter(`labels in ${payload}`);
-        expect(result).toBeNull();
-      });
-    });
-
-    it('should reject malformed JSON', () => {
-      const malformedPayloads = [
-        '[1, 2, 3',      // Missing closing bracket
-        '[1, 2, ]',      // Trailing comma
-        '[, 1, 2]',      // Leading comma
-        '[1 2 3]',       // Missing commas
-        '[invalid]',     // Invalid token
-        '[1.2.3]',       // Invalid number
-        '[]]'           // Extra bracket
-      ];
-
-      malformedPayloads.forEach(payload => {
-        const result = parseSimpleFilter(`labels in ${payload}`);
-        expect(result).toBeNull();
-      });
-    });
-
-    it('should reject overly long array strings', () => {
-      // Create a string longer than 200 characters
-      const longArray = '[' + Array.from({length: 50}, (_, i) => `"item${i}"`).join(', ') + ']';
-      expect(longArray.length).toBeGreaterThan(200);
-
-      const result = parseSimpleFilter(`labels in ${longArray}`);
-      expect(result).toBeNull();
-    });
-
-    it('should still accept valid arrays within limits', () => {
-      const validArrays = [
-        '[1, 2, 3]',
-        '["a", "b", "c"]',
-        '[1]',
-        '[]',
-        '[0, -1, 999999999]',
-        '["valid", "strings", "here"]'
-      ];
-
-      validArrays.forEach(payload => {
-        const result = parseSimpleFilter(`labels in ${payload}`);
-        expect(result).not.toBeNull();
-        if (result) {
-          expect(Array.isArray(result.value)).toBe(true);
-        }
-      });
-    });
-
-    it('should accept arrays at the size limit (within constraints)', () => {
-      // Create an array that fits within 200 characters but has many items
-      const maxSizeArray = '[' + Array.from({length: 50}, (_, i) => i).join(',') + ']';
-      const result = parseSimpleFilter(`labels in ${maxSizeArray}`);
-      expect(result).not.toBeNull();
-      if (result) {
-        expect(Array.isArray(result.value)).toBe(true);
-        expect(result.value).toHaveLength(50);
-      }
-    });
-
-    it('should reject arrays with dangerous string patterns', () => {
-      const dangerousPayloads = [
-        '["function malicious() {}"]',
-        '["() => { console.log(\\"hacked\\") }"]',
-        '["constructor.prototype.polluted"]',
-        '["__proto__.polluted"]',
-        '["eval(malicious)"]',
-        '["prototype.hack"]'
-      ];
-
-      dangerousPayloads.forEach(payload => {
-        const result = parseSimpleFilter(`labels in ${payload}`);
-        expect(result).toBeNull();
-      });
-    });
-
-    it('should reject arrays with invalid numbers', () => {
-      const invalidNumberPayloads = [
-        '[Infinity]',
-        '[-Infinity]',
-        '[NaN]',
-        '[1.7976931348623157e+308]', // Very large number
-        '[999999999999999999999]' // Very large integer
-      ];
-
-      invalidNumberPayloads.forEach(payload => {
-        const result = parseSimpleFilter(`labels in ${payload}`);
-        expect(result).toBeNull();
-      });
-    });
-
-    it('should accept arrays with valid safe numbers', () => {
-      const validNumberPayloads = [
-        '[0]',
-        '[-1]',
-        '[2147483647]', // Max 32-bit int
-        '[-2147483648]', // Min 32-bit int
-        '[3.14159]',
-        '[1.23, 4.56, 7.89]'
-      ];
-
-      validNumberPayloads.forEach(payload => {
-        const result = parseSimpleFilter(`labels in ${payload}`);
-        expect(result).not.toBeNull();
-        if (result) {
-          expect(Array.isArray(result.value)).toBe(true);
-        }
-      });
-    });
-
-    it('should accept arrays with null values', () => {
-      const result = parseSimpleFilter('labels in [1, null, "test"]');
-      expect(result).not.toBeNull();
-      if (result) {
-        expect(Array.isArray(result.value)).toBe(true);
-        expect(result.value).toEqual([1, null, "test"]);
-      }
-    });
-
-    it('should handle edge cases properly', () => {
-      // Test that empty arrays are allowed
-      const result1 = parseSimpleFilter('labels in []');
-      expect(result1).not.toBeNull();
-      if (result1) {
-        expect(Array.isArray(result1.value)).toBe(true);
-        expect(result1.value).toHaveLength(0);
-      }
-
-      // Test that single item arrays work
-      const result2 = parseSimpleFilter('labels in [42]');
-      expect(result2).not.toBeNull();
-      if (result2) {
-        expect(result2.value).toEqual([42]);
-      }
-
-      // Test that mixed type arrays work
-      const result3 = parseSimpleFilter('labels in [1, "test", null]');
-      expect(result3).not.toBeNull();
-      if (result3) {
-        expect(result3.value).toEqual([1, "test", null]);
-      }
+    it('should support combined AND/OR conditions in a single expression', () => {
+      const result = filterTasks(mockTasks, '(priority > 2 && done = false) || labels in 1');
+      // (priority > 2 && !done): task 2. labels in 1: task 1.
+      expect(result.map((t) => t.id).sort()).toEqual([1, 2]);
     });
   });
 });

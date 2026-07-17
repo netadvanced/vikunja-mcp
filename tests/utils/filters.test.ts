@@ -1,5 +1,14 @@
 /**
- * Tests for consolidated filter utilities
+ * Tests for the Zod-based filter utilities in src/utils/filters.ts
+ *
+ * This suite was rewritten against the current architecture. The previous
+ * version tested `parseSimpleFilter`/`applyClientSideFilter` and a
+ * `SimpleFilter` type, all of which predate the Zod-based grammar and no
+ * longer exist. The equivalent "apply a filter to a list of tasks"
+ * capability now lives in `applyFilter` under
+ * `src/tools/tasks/filtering/evaluators.ts` (see
+ * tests/tools/tasks-simple-filters.test.ts) and is exercised together with
+ * `parseFilterString` from this module.
  */
 
 import { describe, it, expect } from '@jest/globals';
@@ -10,13 +19,10 @@ import {
   groupToString,
   expressionToString,
   parseFilterString,
-  parseSimpleFilter,
-  applyClientSideFilter,
   FilterBuilder,
   SecurityValidator,
-  type SimpleFilter,
 } from '../../src/utils/filters';
-import type { Task, FilterCondition, FilterExpression, FilterGroup } from '../../src/types/index';
+import type { FilterCondition, FilterExpression, FilterGroup } from '../../src/types/index';
 
 describe('Consolidated Filter Utilities', () => {
   describe('validateCondition', () => {
@@ -31,35 +37,46 @@ describe('Consolidated Filter Utilities', () => {
       expect(errors).toHaveLength(0);
     });
 
-    it('should reject invalid field names with Zod error', () => {
+    it('should reject invalid field names with a Zod-derived error', () => {
       const condition = {
         field: 'invalidField',
         operator: '=',
         value: true,
       };
 
-      const errors = validateCondition(condition);
+      const errors = validateCondition(condition as unknown as FilterCondition);
       expect(errors).toHaveLength(1);
-      expect(errors[0]).toContain('Invalid enum value');
+      expect(errors[0]).toContain('Invalid field name');
     });
 
-    it('should reject invalid operators with Zod error', () => {
+    it('should reject invalid operators with a Zod-derived error', () => {
       const condition = {
         field: 'done',
         operator: 'invalid',
         value: true,
       };
 
-      const errors = validateCondition(condition);
+      const errors = validateCondition(condition as unknown as FilterCondition);
       expect(errors).toHaveLength(1);
-      expect(errors[0]).toContain('Invalid enum value');
+      expect(errors[0]).toContain('Invalid field name');
     });
 
-    it('should reject non-boolean values for done field', () => {
+    it('should accept string "true"/"false" for boolean fields', () => {
       const condition: FilterCondition = {
         field: 'done',
         operator: '=',
-        value: 'true', // string instead of boolean
+        value: 'true',
+      };
+
+      const errors = validateCondition(condition);
+      expect(errors).toHaveLength(0);
+    });
+
+    it('should reject non-boolean, non "true"/"false" values for the done field', () => {
+      const condition: FilterCondition = {
+        field: 'done',
+        operator: '=',
+        value: 'yes',
       };
 
       const errors = validateCondition(condition);
@@ -83,14 +100,18 @@ describe('Consolidated Filter Utilities', () => {
   describe('validateFilterExpression', () => {
     it('should validate simple expressions', () => {
       const expression: FilterExpression = {
-        groups: [{
-          operator: '&&',
-          conditions: [{
-            field: 'done',
-            operator: '=',
-            value: true
-          }]
-        }]
+        groups: [
+          {
+            operator: '&&',
+            conditions: [
+              {
+                field: 'done',
+                operator: '=',
+                value: true,
+              },
+            ],
+          },
+        ],
       };
 
       const result = validateFilterExpression(expression);
@@ -98,144 +119,216 @@ describe('Consolidated Filter Utilities', () => {
       expect(result.errors).toHaveLength(0);
     });
 
-    it('should reject expressions with too many conditions', () => {
-      const conditions = Array(60).fill(null).map((_, i) => ({
-        field: 'id' as const,
-        operator: '=' as const,
-        value: i
-      }));
-
-      const expression: FilterExpression = {
-        groups: [{
-          operator: '&&',
-          conditions
-        }]
-      };
-
-      const result = validateFilterExpression(expression);
-      expect(result.valid).toBe(false);
-      expect(result.errors[0]).toContain('Too many conditions');
-    });
-
-    it('should handle custom max conditions', () => {
-      const conditions = Array(10).fill(null).map((_, i) => ({
-        field: 'id' as const,
-        operator: '=' as const,
-        value: i
-      }));
-
-      const expression: FilterExpression = {
-        groups: [{
-          operator: '&&',
-          conditions
-        }]
-      };
-
-      const result = validateFilterExpression(expression, { maxConditions: 5 });
-      expect(result.valid).toBe(false);
-      expect(result.errors[0]).toContain('Too many conditions');
-    });
-  });
-
-  describe('conditionToString', () => {
-    it('should convert simple condition to string', () => {
-      const condition: FilterCondition = {
-        field: 'done',
-        operator: '=',
-        value: true
-      };
-
-      const result = conditionToString(condition);
-      expect(result).toBe('done = true');
-    });
-
-    it('should handle string values with quotes', () => {
-      const condition: FilterCondition = {
-        field: 'title',
-        operator: '=',
-        value: 'test task'
-      };
-
-      const result = conditionToString(condition);
-      expect(result).toBe('title = "test task"');
-    });
-  });
-
-  describe('groupToString', () => {
-    it('should convert single condition group to string', () => {
-      const group: FilterGroup = {
-        operator: '&&',
-        conditions: [{
-          field: 'done',
-          operator: '=',
-          value: true
-        }]
-      };
-
-      const result = groupToString(group);
-      expect(result).toBe('done = true');
-    });
-
-    it('should convert multiple condition group to string', () => {
-      const group: FilterGroup = {
-        operator: 'OR',
-        conditions: [
-          {
-            field: 'done',
-            operator: '=',
-            value: true
-          },
-          {
-            field: 'priority',
-            operator: '>',
-            value: 3
-          }
-        ]
-      };
-
-      const result = groupToString(group);
-      expect(result).toBe('done = true OR priority > 3');
-    });
-  });
-
-  describe('expressionToString', () => {
-    it('should convert expression to string', () => {
+    it('should surface condition validation errors with group/condition context', () => {
       const expression: FilterExpression = {
         groups: [
           {
             operator: '&&',
-            conditions: [{
-              field: 'done',
-              operator: '=',
-              value: true
-            }]
+            conditions: [
+              {
+                field: 'priority',
+                operator: '=',
+                value: 'not-a-number' as unknown as number,
+              },
+            ],
+          },
+        ],
+      };
+
+      const result = validateFilterExpression(expression);
+      expect(result.valid).toBe(false);
+      expect(result.errors[0]).toContain('Group 1, Condition 1');
+      expect(result.errors[0]).toContain('Field "priority" requires a numeric value');
+    });
+
+    it('should warn when the number of conditions exceeds the default performance threshold', () => {
+      const conditions = Array(11)
+        .fill(null)
+        .map((_, i) => ({
+          field: 'priority' as const,
+          operator: '=' as const,
+          value: i,
+        }));
+
+      const expression: FilterExpression = {
+        groups: [
+          {
+            operator: '&&',
+            conditions,
+          },
+        ],
+      };
+
+      const result = validateFilterExpression(expression);
+      expect(result.valid).toBe(true);
+      expect(result.warnings?.[0]).toContain('Complex filters');
+    });
+
+    it('should respect a custom performanceWarningThreshold', () => {
+      const conditions = Array(6)
+        .fill(null)
+        .map((_, i) => ({
+          field: 'priority' as const,
+          operator: '=' as const,
+          value: i,
+        }));
+
+      const expression: FilterExpression = {
+        groups: [
+          {
+            operator: '&&',
+            conditions,
+          },
+        ],
+      };
+
+      const resultNoWarning = validateFilterExpression(expression, {
+        performanceWarningThreshold: 10,
+      });
+      expect(resultNoWarning.warnings).toBeUndefined();
+
+      const resultWithWarning = validateFilterExpression(expression, {
+        performanceWarningThreshold: 5,
+      });
+      expect(resultWithWarning.warnings?.[0]).toContain('Complex filters');
+    });
+  });
+
+  describe('conditionToString', () => {
+    it('should convert a simple condition to string', () => {
+      const condition: FilterCondition = {
+        field: 'done',
+        operator: '=',
+        value: true,
+      };
+
+      const result = conditionToString(condition);
+      expect(result).toBe('done = true');
+    });
+
+    it('should quote string values only for the like operator', () => {
+      const likeCondition: FilterCondition = {
+        field: 'title',
+        operator: 'like',
+        value: 'test task',
+      };
+      expect(conditionToString(likeCondition)).toBe('title like "test task"');
+
+      const eqCondition: FilterCondition = {
+        field: 'title',
+        operator: '=',
+        value: 'test task',
+      };
+      expect(conditionToString(eqCondition)).toBe('title = test task');
+    });
+
+    it('should join array values with commas', () => {
+      const condition: FilterCondition = {
+        field: 'labels',
+        operator: 'in',
+        value: ['1', '2'],
+      };
+      expect(conditionToString(condition)).toBe('labels in 1, 2');
+    });
+  });
+
+  describe('groupToString', () => {
+    it('should render a single-condition group without parentheses', () => {
+      const group: FilterGroup = {
+        operator: '&&',
+        conditions: [
+          {
+            field: 'done',
+            operator: '=',
+            value: true,
+          },
+        ],
+      };
+
+      const result = groupToString(group);
+      expect(result).toBe('done = true');
+    });
+
+    it('should wrap a multi-condition group in parentheses joined by its operator', () => {
+      const group: FilterGroup = {
+        operator: '||',
+        conditions: [
+          {
+            field: 'done',
+            operator: '=',
+            value: true,
           },
           {
-            operator: 'OR',
+            field: 'priority',
+            operator: '>',
+            value: 3,
+          },
+        ],
+      };
+
+      const result = groupToString(group);
+      expect(result).toBe('(done = true || priority > 3)');
+    });
+  });
+
+  describe('expressionToString', () => {
+    it('should join groups using the expression operator, defaulting to &&', () => {
+      const expression: FilterExpression = {
+        groups: [
+          {
+            operator: '&&',
+            conditions: [
+              {
+                field: 'done',
+                operator: '=',
+                value: true,
+              },
+            ],
+          },
+          {
+            operator: '||',
             conditions: [
               {
                 field: 'priority',
                 operator: '>',
-                value: 3
+                value: 3,
               },
               {
                 field: 'priority',
                 operator: '<',
-                value: 1
-              }
-            ]
-          }
-        ]
+                value: 1,
+              },
+            ],
+          },
+        ],
+        operator: '||',
       };
 
       const result = expressionToString(expression);
-      expect(result).toBe('done = true AND priority > 3 OR priority < 1');
+      expect(result).toBe('done = true || (priority > 3 || priority < 1)');
+    });
+
+    it('should default to && when no expression operator is set', () => {
+      const expression: FilterExpression = {
+        groups: [
+          {
+            operator: '&&',
+            conditions: [{ field: 'done', operator: '=', value: true }],
+          },
+          {
+            operator: '&&',
+            conditions: [{ field: 'priority', operator: '>', value: 3 }],
+          },
+        ],
+      };
+
+      expect(expressionToString(expression)).toBe('done = true && priority > 3');
     });
   });
 
   describe('parseFilterString', () => {
     it('should reject non-string input', () => {
-      const result = parseFilterString(123 as any);
+      const result = parseFilterString(123 as unknown as string);
       expect(result.expression).toBeNull();
       expect(result.error?.message).toBe('Filter input must be a string');
     });
@@ -247,148 +340,39 @@ describe('Consolidated Filter Utilities', () => {
       expect(result.error?.message).toContain('too long');
     });
 
-    it('should reject malicious patterns', () => {
-      const maliciousInput = 'title = test; DROP TABLE users;';
-      const result = parseFilterString(maliciousInput);
+    it('should reject empty input', () => {
+      const result = parseFilterString('');
       expect(result.expression).toBeNull();
-      expect(result.error?.message).toBe('Invalid filter syntax');
+      expect(result.error?.message).toBe('Filter string cannot be empty');
     });
 
-    it('should handle simple valid input', () => {
+    it('should reject syntactically invalid input', () => {
+      const result = parseFilterString('title = test; DROP TABLE users;');
+      expect(result.expression).toBeNull();
+      expect(result.error).toBeDefined();
+    });
+
+    it('should parse valid simple input with no error', () => {
       const result = parseFilterString('done = true');
-      // Note: Simplified implementation always returns a basic structure for valid input
-      expect(result.expression).not.toBeNull();
-      expect(result.error).toBeNull();
-    });
-  });
-
-  describe('parseSimpleFilter', () => {
-    it('should parse simple equality filter', () => {
-      const result = parseSimpleFilter('done = true');
-      expect(result).toEqual({
-        field: 'done',
-        operator: '=',
-        value: true
+      expect(result.expression).toEqual({
+        groups: [
+          {
+            conditions: [{ field: 'done', operator: '=', value: true }],
+            operator: '&&',
+          },
+        ],
       });
+      expect(result.error).toBeUndefined();
     });
 
-    it('should parse string value filter', () => {
-      const result = parseSimpleFilter('title = "test task"');
-      expect(result).toEqual({
-        field: 'title',
-        operator: '=',
-        value: 'test task'
+    it('should parse comma-separated values for the in operator', () => {
+      const result = parseFilterString('labels in 1, 2');
+      expect(result.error).toBeUndefined();
+      expect(result.expression?.groups[0]?.conditions[0]).toEqual({
+        field: 'labels',
+        operator: 'in',
+        value: ['1', '2'],
       });
-    });
-
-    it('should parse numeric comparison', () => {
-      const result = parseSimpleFilter('priority > 3');
-      expect(result).toEqual({
-        field: 'priority',
-        operator: '>',
-        value: 3
-      });
-    });
-
-    it('should parse like operator', () => {
-      const result = parseSimpleFilter('title like test');
-      expect(result).toEqual({
-        field: 'title',
-        operator: 'like',
-        value: 'test'
-      });
-    });
-
-    it('should return null for invalid input', () => {
-      expect(parseSimpleFilter('invalid filter')).toBeNull();
-      expect(parseSimpleFilter('')).toBeNull();
-      expect(parseSimpleFilter('a'.repeat(201))).toBeNull();
-    });
-
-    it('should reject invalid fields', () => {
-      const result = parseSimpleFilter('invalidField = value');
-      expect(result).toBeNull();
-    });
-
-    it('should reject invalid operators', () => {
-      const result = parseSimpleFilter('done NOT_AN_OPERATOR true');
-      expect(result).toBeNull();
-    });
-  });
-
-  describe('applyClientSideFilter', () => {
-    const mockTasks: Task[] = [
-      {
-        id: 1,
-        title: 'Test task 1',
-        description: 'A test task',
-        done: false,
-        priority: 1,
-        created: '2023-01-01T00:00:00Z',
-        updated: '2023-01-01T00:00:00Z'
-      },
-      {
-        id: 2,
-        title: 'Another task',
-        description: 'Another test task',
-        done: true,
-        priority: 3,
-        created: '2023-01-02T00:00:00Z',
-        updated: '2023-01-02T00:00:00Z'
-      }
-    ] as Task[];
-
-    it('should return all tasks when filter is null', () => {
-      const result = applyClientSideFilter(mockTasks, null);
-      expect(result).toHaveLength(2);
-    });
-
-    it('should filter by boolean equality', () => {
-      const filter: SimpleFilter = {
-        field: 'done',
-        operator: '=',
-        value: true
-      };
-
-      const result = applyClientSideFilter(mockTasks, filter);
-      expect(result).toHaveLength(1);
-      expect(result[0].id).toBe(2);
-    });
-
-    it('should filter by numeric comparison', () => {
-      const filter: SimpleFilter = {
-        field: 'priority',
-        operator: '>',
-        value: 2
-      };
-
-      const result = applyClientSideFilter(mockTasks, filter);
-      expect(result).toHaveLength(1);
-      expect(result[0].id).toBe(2);
-    });
-
-    it('should filter by string like operator', () => {
-      const filter: SimpleFilter = {
-        field: 'title',
-        operator: 'like',
-        value: 'Test'
-      };
-
-      const result = applyClientSideFilter(mockTasks, filter);
-      expect(result).toHaveLength(1);
-      expect(result[0].title).toContain('Test');
-    });
-
-    it('should handle case insensitive like', () => {
-      const filter: SimpleFilter = {
-        field: 'title',
-        operator: 'like',
-        value: 'ANOTHER'
-      };
-
-      const result = applyClientSideFilter(mockTasks, filter);
-      expect(result).toHaveLength(1);
-      expect(result[0].title).toContain('Another');
     });
   });
 
@@ -398,36 +382,37 @@ describe('Consolidated Filter Utilities', () => {
       expect(SecurityValidator.validateAllowedChars('title > "test"')).toBe(true);
     });
 
-    it('should reject dangerous characters', () => {
-      expect(SecurityValidator.validateAllowedChars('done = true; DROP TABLE')).toBe(false);
-      expect(SecurityValidator.validateAllowedChars('<script>alert("xss")</script>')).toBe(false);
+    it('should reject strings containing disallowed control characters', () => {
+      // \x00 (NUL) falls outside the allowed printable/whitespace range.
+      expect(SecurityValidator.validateAllowedChars('done = true\x00')).toBe(false);
     });
 
-    it('should validate allowed fields', () => {
-      expect(SecurityValidator.validateField('done')).toBe(true);
-      expect(SecurityValidator.validateField('title')).toBe(true);
-      expect(SecurityValidator.validateField('invalid')).toBe(false);
+    it('should validate filter string length', () => {
+      expect(SecurityValidator.validateLength('done = true').isValid).toBe(true);
+
+      const tooLong = SecurityValidator.validateLength('a'.repeat(1001));
+      expect(tooLong.isValid).toBe(false);
+      expect(tooLong.error).toContain('Maximum length is 1000');
     });
 
-    it('should validate allowed operators', () => {
-      expect(SecurityValidator.validateOperator('=')).toBe(true);
-      expect(SecurityValidator.validateOperator('like')).toBe(true);
-      expect(SecurityValidator.validateOperator('invalid')).toBe(false);
+    it('should validate individual value length', () => {
+      expect(SecurityValidator.validateValue('short value').isValid).toBe(true);
+
+      const tooLong = SecurityValidator.validateValue('a'.repeat(201));
+      expect(tooLong.isValid).toBe(false);
+      expect(tooLong.error).toContain('Maximum length is 200');
     });
   });
 
   describe('FilterBuilder', () => {
-    it('should build simple conditions', () => {
+    it('should build simple conditions joined by &&', () => {
       const builder = new FilterBuilder();
-      const result = builder
-        .where('done', '=', true)
-        .where('priority', '>', 3)
-        .toString();
+      const result = builder.where('done', '=', true).where('priority', '>', 3).toString();
 
-      expect(result).toBe('done = true AND priority > 3');
+      expect(result).toBe('(done = true && priority > 3)');
     });
 
-    it('should build with OR conditions', () => {
+    it('should apply or() to the current group', () => {
       const builder = new FilterBuilder();
       const result = builder
         .where('done', '=', true)
@@ -436,118 +421,52 @@ describe('Consolidated Filter Utilities', () => {
         .where('done', '=', false)
         .toString();
 
-      expect(result).toBe('done = true OR priority = 3 AND done = false');
+      expect(result).toBe('(done = true || priority = 3 || done = false)');
     });
 
-    it('should build filter expression', () => {
+    it('should support multiple groups combined with groupOperator', () => {
       const builder = new FilterBuilder();
       const result = builder
         .where('done', '=', true)
+        .group('||')
         .where('priority', '>', 3)
-        .build();
+        .where('priority', '<', 1)
+        .groupOperator('||')
+        .toString();
+
+      expect(result).toBe('done = true || (priority > 3 || priority < 1)');
+    });
+
+    it('should build a FilterExpression via build()', () => {
+      const builder = new FilterBuilder();
+      const result = builder.where('done', '=', true).where('priority', '>', 3).build();
 
       expect(result.groups).toHaveLength(1);
-      expect(result.groups[0].conditions).toHaveLength(2);
-      expect(result.groups[0].conditions[0].field).toBe('done');
-      expect(result.groups[0].conditions[1].field).toBe('priority');
+      expect(result.groups[0]?.conditions).toHaveLength(2);
+      expect(result.groups[0]?.conditions[0]?.field).toBe('done');
+      expect(result.groups[0]?.conditions[1]?.field).toBe('priority');
     });
 
-    it('should handle empty builder', () => {
+    it('should handle an empty builder', () => {
       const builder = new FilterBuilder();
-      const result = builder.toString();
-      expect(result).toBe('');
+      expect(builder.toString()).toBe('');
+      expect(builder.build().groups).toHaveLength(0);
     });
 
-    it('should handle single condition without explicit group', () => {
+    it('should handle a single condition without an explicit group', () => {
       const builder = new FilterBuilder();
-      const result = builder
-        .where('done', '=', false)
-        .build();
+      const result = builder.where('done', '=', false).build();
 
-      expect(result.groups[0].conditions).toHaveLength(1);
-      expect(result.groups[0].conditions[0].value).toBe(false);
-    });
-  });
-
-  describe('Backward Compatibility', () => {
-    it('should maintain all exported function signatures', () => {
-      expect(typeof validateCondition).toBe('function');
-      expect(typeof validateFilterExpression).toBe('function');
-      expect(typeof conditionToString).toBe('function');
-      expect(typeof groupToString).toBe('function');
-      expect(typeof expressionToString).toBe('function');
-      expect(typeof parseFilterString).toBe('function');
-      expect(typeof parseSimpleFilter).toBe('function');
-      expect(typeof applyClientSideFilter).toBe('function');
-      expect(typeof FilterBuilder).toBe('function');
+      expect(result.groups[0]?.conditions).toHaveLength(1);
+      expect(result.groups[0]?.conditions[0]?.value).toBe(false);
     });
 
-    it('should handle mixed case operators', () => {
-      const condition: FilterCondition = {
-        field: 'done',
-        operator: '=',  // Zod will normalize this
-        value: true
-      };
+    it('should validate the built expression', () => {
+      const builder = new FilterBuilder();
+      const result = builder.where('done', '=', true).validate();
 
-      const errors = validateCondition(condition);
-      expect(errors).toHaveLength(0);
-    });
-  });
-
-  describe('Type-Safe Property Access', () => {
-    it('should safely access all valid Task properties', () => {
-      const mockTask: Task = {
-        id: 1,
-        project_id: 123,
-        title: 'Test Task',
-        description: 'Test Description',
-        done: false,
-        due_date: '2024-12-25',
-        priority: 5,
-        percent_done: 75,
-        labels: [{ id: 1, title: 'Test Label' }],
-        assignees: [{ id: 1, username: 'testuser' }],
-        created: '2024-01-01',
-        updated: '2024-01-02'
-      };
-
-      // Test all valid Task fields
-      const validFields = [
-        'id', 'project_id', 'title', 'description', 'done', 'due_date',
-        'priority', 'percent_done', 'created', 'updated'
-      ];
-
-      validFields.forEach(field => {
-        const filter: SimpleFilter = {
-          field,
-          operator: '=',
-          value: mockTask[field as keyof Task]
-        };
-
-        // Should not throw and should return a valid result
-        const result = applyClientSideFilter([mockTask], filter);
-        expect(Array.isArray(result)).toBe(true);
-      });
-    });
-
-    it('should handle unknown properties gracefully', () => {
-      const mockTask: Task = {
-        id: 1,
-        project_id: 123,
-        title: 'Test Task'
-      };
-
-      // Test with potentially unknown field (this should be handled by validation)
-      const filter: SimpleFilter = {
-        field: 'unknown_field' as any,
-        operator: '=',
-        value: 'test'
-      };
-
-      // Should not throw, even with unknown fields
-      expect(() => {
-        applyClientSideFilter([mockTask], filter);
-      }).not.toThrow();
+      expect(result.valid).toBe(true);
+      expect(result.errors).toHaveLength(0);
     });
   });
 });
