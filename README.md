@@ -1111,9 +1111,10 @@ This standardized format ensures:
 
 ### Authentication
 - `vikunja_auth` - Authentication management
-  - `connect` - Initialize connection with API token
+  - `connect` - Initialize connection with API token. Performs a verification round trip before reporting success: an unauthenticated `GET /info` call validates the URL is reachable and returns the server version (surfaced as `serverVersion` in the response), then a cheap authenticated call validates the credential itself (`GET /user` for JWT sessions, `GET /projects?per_page=1` for API-token sessions, since `tk_*` tokens cannot use `/user` — see docs/VIKUNJA_API_ISSUES.md #2). If either step fails, the session is rolled back and a clear error is thrown instead of silently "succeeding" with a bad URL or token.
   - `status` - Check authentication status
   - `refresh` - Report token-refresh status: API tokens (`tk_*`) are long-lived and need no refresh; JWTs expire and must be replaced by reconnecting with a new token (Vikunja's token-refresh endpoint relies on a login cookie this server does not hold)
+  - `info` - Fetch the connected Vikunja server's `GET /info` payload (version, frontend URL, motd, enabled features, ...). Requires an active session.
 
 ### Task Management ✅
 - `vikunja_tasks` - Task operations (fully implemented)
@@ -1305,6 +1306,7 @@ This standardized format ensures:
   - `settings` - Get current user settings
   - `update-settings` - Update user settings
     - Optional: name, language, timezone, weekStart, frontendSettings
+  - `timezones` - List the Vikunja instance's valid IANA time zone names (`GET /user/timezones`). Call this before `update-settings` with a `timezone` value — the valid set is instance-dependent (it depends on the OS Vikunja runs on) and the server rejects unrecognized zone names.
   - **Note:** User operations require JWT authentication. When using API token authentication, these tools will not be available.
 
 ### Webhook Management ✅
@@ -1417,6 +1419,51 @@ This standardized format ensures:
   - **Returns:** The server's confirmation message (`models.Message`), not the export file
   - **Note:** Export must be requested first via `vikunja_request_user_export`. Per the Vikunja API spec, this endpoint never returns the export archive's contents, and the MCP protocol has no binary-attachment support — retrieve the actual exported file from the Vikunja web UI or a direct API client using the same credentials.
 
+### API Token Management ⚠️ Deny-by-default
+
+> **Reserved/disabled by default.** `vikunja_tokens` is only registered when
+> the `tokenManagement` module config key is explicitly set to `true` (see
+> [Module Gating & Secrets](#module-gating--secrets) below) — it does not
+> appear to the AI client out of the box, since it is credential-adjacent.
+- `vikunja_tokens` - Manage the current user's Vikunja API tokens
+  - `list` - List existing tokens (`GET /tokens`)
+    - Optional: page, perPage, search
+  - `create` - Create a new API token (`PUT /tokens`)
+    - Required: title, permissions (map of resource group → allowed actions, e.g. `{"tasks":["read_all","update"]}`; valid keys/values come from the server's `GET /routes`)
+    - Optional: expiresAt (ISO 8601), ownerId (bot token owner)
+    - **Note:** the token's secret value is only ever returned in this response — it cannot be retrieved again afterwards.
+  - `delete` - Delete a token by id (`DELETE /tokens/{tokenID}`)
+    - Required: tokenId
+  - **Note:** `/tokens` shares its authentication scheme with other user-scoped endpoints that have historically rejected `tk_*` API tokens (see docs/VIKUNJA_API_ISSUES.md #2) — a call made with an API-token session may be rejected server-side even though the tool itself is registered for both session types.
+
+### Instance Admin ⚠️ Deny-by-default + JWT-only
+
+> **Reserved/disabled by default, and JWT-only.** `vikunja_admin` requires
+> BOTH the `admin` module config key to be explicitly set to `true` AND an
+> active JWT session — module config can only narrow what authentication
+> already allows, never expand it, so API-token sessions never see this tool
+> regardless of config.
+- `vikunja_admin` - Instance-administrator operations **[Requires JWT authentication]**
+  - `overview` - Instance-wide counts (users, projects, tasks, teams, shares) plus license info (`GET /admin/overview`)
+  - `list-projects` - List every project on the instance regardless of ownership (`GET /admin/projects`)
+    - Optional: page, perPage, search
+  - `set-project-owner` - Reassign a project's owner (`PATCH /admin/projects/{id}/owner`)
+    - Required: projectId, ownerId
+  - `list-users` - List every user on the instance, including admin-only fields (`is_admin`, `status`) (`GET /admin/users`)
+    - Optional: search, page, perPage
+  - `create-user` - Create a local user account, bypassing public registration (`POST /admin/users`)
+    - Required: username, email, password
+    - Optional: name, language, isAdmin, skipEmailConfirm
+  - `set-user-admin` - Promote or demote a user's instance-admin flag (`PATCH /admin/users/{id}/admin`)
+    - Required: userId, isAdmin
+    - **Note:** the server refuses to demote the last remaining admin.
+  - `set-user-status` - Change a user's status without requiring login (`PATCH /admin/users/{id}/status`)
+    - Required: userId, status (`active` | `email-confirmation-required` | `disabled` | `account-locked`)
+  - `delete-user` - Delete a user (`DELETE /admin/users/{id}`)
+    - Required: userId, **`confirm: true`**
+    - Optional: mode (`now` for immediate deletion, `scheduled` — the default — to trigger the email-confirmation self-deletion flow)
+    - **Irreversible in `now` mode.** The tool refuses to run without an explicit `confirm: true` argument.
+
 
 
 
@@ -1507,12 +1554,26 @@ For detailed rate limiting configuration, see [`docs/RATE_LIMITING.md`](docs/RAT
 #### Module Gating & Secrets
 
 Individual tool modules (tasks, projects, labels, teams, users, webhooks, filters,
-templates, export, batch-import) can be enabled/disabled via an optional
-`vikunja-mcp.config.json` file and/or `VIKUNJA_MCP_MODULE_*` environment variables
-(env always wins). Sensitive variables like `VIKUNJA_API_TOKEN` also support a
-`VIKUNJA_API_TOKEN_FILE` variant for Docker/Swarm secrets. See
-[`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) for the full reference, defaults,
-and a Docker Swarm example.
+templates, export, batch-import, notifications, subscriptions, reactions) can be
+enabled/disabled via an optional `vikunja-mcp.config.json` file and/or
+`VIKUNJA_MCP_MODULE_*` environment variables (env always wins). Sensitive variables
+like `VIKUNJA_API_TOKEN` also support a `VIKUNJA_API_TOKEN_FILE` variant for
+Docker/Swarm secrets. See [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) for the
+full reference, defaults, and a Docker Swarm example.
+
+> ⚠️ **Deny-by-default modules.** Two modules are **OFF by default** and must be
+> explicitly opted into — an operator has to deliberately enable them before the AI
+> client ever sees the corresponding tool:
+>
+> | Module key | Env var | Gates | Default |
+> |---|---|---|---|
+> | `tokenManagement` | `VIKUNJA_MCP_MODULE_TOKEN_MANAGEMENT` | `vikunja_tokens` (API token CRUD) | **OFF** |
+> | `admin` | `VIKUNJA_MCP_MODULE_ADMIN` | `vikunja_admin` (instance-admin operations) — also requires an active **JWT** session; config can only narrow auth, never expand it | **OFF** |
+>
+> A third reserved key, `userDeletion` (`VIKUNJA_MCP_MODULE_USER_DELETION`), is also
+> deny-by-default but has no tool implementing it yet. Enable either implemented key
+> with, e.g., `VIKUNJA_MCP_MODULE_TOKEN_MANAGEMENT=true` or
+> `{"modules": {"admin": true}}` in `vikunja-mcp.config.json`.
 
 ## Roadmap
 

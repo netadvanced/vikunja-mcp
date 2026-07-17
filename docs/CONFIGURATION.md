@@ -190,14 +190,15 @@ requiring any config migration.
 | `notifications` | **ON** | Gates `vikunja_notifications` |
 | `subscriptions` | **ON** | Gates `vikunja_subscriptions` |
 | `reactions` | **ON** | Gates `vikunja_reactions` |
-| `admin` | **OFF** (reserved) | No tool implements this yet. Deny-by-default in case one ever does. |
+| `admin` | **OFF** ⚠️ | Gates `vikunja_admin` (instance-admin operations: overview, all-projects listing + owner reassignment, user list/create/delete, admin-flag + status toggles). Deny-by-default AND JWT-only — see [Composing with Auth-Type Gating](#composing-with-auth-type-gating). `delete-user` additionally requires an explicit `confirm: true` tool argument. |
 | `userDeletion` | **OFF** (reserved) | No tool implements this yet. Deny-by-default — destructive. |
-| `tokenManagement` | **OFF** (reserved) | No tool implements this yet. Deny-by-default — credential-adjacent. |
+| `tokenManagement` | **OFF** ⚠️ | Gates `vikunja_tokens` (API token list/create/delete for the connected account). Deny-by-default — credential-adjacent. No auth-type restriction at registration time (unlike `admin`/`users`/`export`), but the underlying `/tokens` endpoints may reject API-token sessions server-side — see `src/tools/tokens.ts`. |
 
 Ordinary modules default **ON** (matching pre-existing behavior — this system is
 additive, not a breaking change). The three reserved "dangerous" modules default **OFF**
-(deny-by-default) precisely because they don't have tools yet: when they eventually do,
-those tools ship already gated closed until an operator opts in.
+(deny-by-default): `admin` and `tokenManagement` now have tools wired to them and ship
+already gated closed until an operator opts in; `userDeletion` remains fully reserved
+(no tool yet) for the same reason.
 
 ### Module Env Var Overrides
 
@@ -232,19 +233,29 @@ As with every other setting, these env vars always win over the config file.
 
 Module config can only **narrow** what authentication already allows — it can never
 **expand** it. The `users` and `export` tools have always required JWT authentication
-(API-token auth excludes them for backward compatibility); module gating is applied *in
-addition to*, never instead of, that check:
+(API-token auth excludes them for backward compatibility); `admin` composes with the
+same JWT-only gate. Module gating is applied *in addition to*, never instead of, that
+check:
 
 ```typescript
 const jwtAuthenticated = authManager.isAuthenticated() && authManager.getAuthType() === 'jwt';
 if (jwtAuthenticated && isModuleEnabled(modules.users)) {
   registerUsersTool(server, authManager, clientFactory);
 }
+// ... and further down:
+if (jwtAuthenticated && isModuleEnabled(modules.admin)) {
+  registerAdminTool(server, authManager, clientFactory);
+}
 ```
 
 Setting `VIKUNJA_MCP_MODULE_USERS=true` while authenticated with an API token does
 **not** register the users tool — there is no config setting that can grant access auth
-doesn't already permit.
+doesn't already permit. The same is true of `VIKUNJA_MCP_MODULE_ADMIN=true`: with an
+API-token session, `vikunja_admin` stays unregistered regardless of the config value.
+`tokenManagement` is the one deny-by-default module that does **not** compose with the
+JWT-only gate — `vikunja_tokens` registers for either session type once its module key
+is enabled, since the underlying endpoints' auth requirement is a runtime server
+behavior rather than something this server enforces at registration time.
 
 ## Secrets Management
 
