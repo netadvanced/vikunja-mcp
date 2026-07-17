@@ -6,6 +6,7 @@
 import { MCPError, ErrorCode, createStandardResponse, getClientFromContext, logger, isAuthenticationError, RETRY_CONFIG, transformApiError, handleFetchError } from '../../index';
 import type { Assignee } from '../../types';
 import { withRetry } from '../../utils/retry';
+import { setTaskLabels } from '../../utils/label-bulk';
 import { BatchProcessor } from '../../utils/performance/batch-processor';
 import type { Task } from 'node-vikunja';
 import { convertRepeatConfiguration, applyFieldUpdate } from './validation';
@@ -99,8 +100,10 @@ export async function bulkUpdateTasks(args: BulkUpdateArgs): Promise<{ content: 
           catch (e) { if (isAuthenticationError(e)) throw new MCPError(ErrorCode.API_ERROR, `${AUTH_ERROR_MESSAGES.ASSIGNEE_REMOVE_PARTIAL} (Retried ${RETRY_CONFIG.AUTH_ERRORS.maxRetries} times)`); throw e; }
         }
       }
+      // Labels are never applied by Vikunja's task update payload; persist them
+      // explicitly via setTaskLabels (correct label_ids payload shape) — re-impl #49.
       if (args.field === 'labels' && Array.isArray(args.value)) {
-        await withRetry(() => client.tasks.updateTaskLabels(taskId, { label_ids: args.value as number[] }), { ...RETRY_CONFIG.AUTH_ERRORS, shouldRetry: isAuthenticationError });
+        await withRetry(() => setTaskLabels(client, taskId, args.value as number[]), { ...RETRY_CONFIG.AUTH_ERRORS, shouldRetry: isAuthenticationError });
       }
       return updated;
     });
@@ -195,7 +198,7 @@ export async function bulkCreateTasks(args: BulkCreateArgs): Promise<{ content: 
 
         try {
           const labels = t.labels;
-          if (labels && labels.length > 0) await withRetry(() => client.tasks.updateTaskLabels(createdId, { label_ids: labels }), { maxRetries: RETRY_CONFIG.AUTH_ERRORS.maxRetries ?? 3, timeout: (RETRY_CONFIG.AUTH_ERRORS.initialDelay ?? 1000) + (RETRY_CONFIG.AUTH_ERRORS.maxDelay ?? 10000), shouldRetry: isAuthenticationError });
+          if (labels && labels.length > 0) await withRetry(() => setTaskLabels(client, createdId, labels), { maxRetries: RETRY_CONFIG.AUTH_ERRORS.maxRetries ?? 3, timeout: (RETRY_CONFIG.AUTH_ERRORS.initialDelay ?? 1000) + (RETRY_CONFIG.AUTH_ERRORS.maxDelay ?? 10000), shouldRetry: isAuthenticationError });
           const assignees = t.assignees;
           if (assignees && assignees.length > 0) {
             try {

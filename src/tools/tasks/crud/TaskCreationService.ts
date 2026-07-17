@@ -166,6 +166,10 @@ export async function createTask(args: CreateTaskArgs): Promise<{ content: Array
       {
         timestamp: new Date().toISOString(),
         projectId: args.projectId,
+        // Reflect what was actually persisted, not merely what was requested:
+        // if label/assignee attachment fails the task creation is rolled back
+        // and this response is never reached, so these flags are only true
+        // once the corresponding step has genuinely succeeded.
         labelsAdded: creationState.labelsAdded,
         assigneesAdded: creationState.assigneesAdded,
       },

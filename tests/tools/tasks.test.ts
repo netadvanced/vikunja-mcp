@@ -195,7 +195,7 @@ describe('Tasks Tool', () => {
     // Get the tasks tool handler
     expect(mockServer.tool).toHaveBeenCalledWith(
       'vikunja_tasks',
-      'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach files, comment, bulk operations)',
+      'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach files, comment, bulk operations, set Kanban bucket)',
       expect.any(Object),
       expect.any(Function),
     );
@@ -980,7 +980,7 @@ describe('Tasks Tool', () => {
 
       // Labels are updated via updateTaskLabels
       expect(mockClient.tasks.updateTaskLabels).toHaveBeenCalledWith(1, {
-        label_ids: [1, 2],
+        labels: [{ id: 1 }, { id: 2 }],
       });
     });
 
@@ -1987,6 +1987,8 @@ describe('Tasks Tool', () => {
 
     it('should handle bulk update for labels field', async () => {
       mockClient.tasks.getTask.mockResolvedValue({ ...mockTask, labels: [] });
+      mockClient.tasks.updateTask.mockResolvedValue({ ...mockTask });
+      mockClient.tasks.updateTaskLabels.mockResolvedValue({});
 
       const result = await callTool('bulk-update', {
         taskIds: [1, 2],
@@ -1999,8 +2001,14 @@ describe('Tasks Tool', () => {
       const aorpStatus = parsed.getAorpStatus();
       expect(aorpStatus.type).toBe('success');
       expect(markdown).toContain('Successfully updated 2 tasks');
+      // Labels route through the field-preserving per-task path, never the
+      // native /tasks/bulk endpoint (which does not apply label relations).
       expect(mockClient.tasks.bulkUpdateTasks).not.toHaveBeenCalled();
       expect(mockClient.tasks.updateTask).toHaveBeenCalledTimes(2);
+      // setTaskLabels persists via updateTaskLabels with the { labels: [{ id }] } shape.
+      expect(mockClient.tasks.updateTaskLabels).toHaveBeenCalledWith(1, {
+        labels: [{ id: 1 }, { id: 2 }, { id: 3 }],
+      });
     });
 
     it('should handle bulk update for due_date field', async () => {
@@ -2408,7 +2416,7 @@ describe('Tasks Tool', () => {
       const result = await callTool('bulk-create', { projectId: 1, tasks });
 
       expect(mockClient.tasks.updateTaskLabels).toHaveBeenCalledWith(1, {
-        label_ids: [1, 2],
+        labels: [{ id: 1 }, { id: 2 }],
       });
       expect(mockClient.tasks.bulkAssignUsersToTask).toHaveBeenCalledWith(1, {
         user_ids: [3, 4],
@@ -2587,7 +2595,7 @@ describe('Tasks Tool', () => {
     it('should register the vikunja_tasks tool', () => {
       expect(mockServer.tool).toHaveBeenCalledWith(
         'vikunja_tasks',
-        'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach files, comment, bulk operations)',
+        'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach files, comment, bulk operations, set Kanban bucket)',
         expect.any(Object),
         expect.any(Function),
       );
