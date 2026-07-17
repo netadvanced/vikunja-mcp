@@ -1,15 +1,39 @@
 /**
  * Project Link Sharing Module
- * Handles link sharing operations for projects
+ *
+ * Handles link sharing operations for projects: `create-share`,
+ * `list-shares`, `get-share`, `delete-share`, `auth-share`.
+ *
+ * Migrated off node-vikunja (Wave D domain migration, tracking issue #28)
+ * onto `vikunjaRestRequest` + types generated from the vendored OpenAPI
+ * spec. node-vikunja's `LinkSharing` type is stale — it models
+ * `right`/`label`/`password_enabled`/`expires`, none of which the real API
+ * accepts or returns; the spec's `models.LinkSharing` uses `permission` and
+ * `name`, and has no `expires`/`password_enabled`/`shares` field at all. See
+ * docs/API_NOTES.md "Project Sharing" and docs/API-COVERAGE.md.
+ *
+ * Endpoints (verified against docs/vikunja-openapi.json):
+ *   - PUT    /projects/{project}/shares         create
+ *   - GET    /projects/{project}/shares         list
+ *   - GET    /projects/{project}/shares/{share} get
+ *   - DELETE /projects/{project}/shares/{share} delete
+ *   - POST   /shares/{share}/auth               auth
  */
 
-import type { LinkSharing } from 'node-vikunja';
-import { MCPError, ErrorCode, type CreateShareRequest } from '../../types';
-import { getClientFromContext } from '../../client';
+import type { AuthManager } from '../../auth/AuthManager';
+import { MCPError, ErrorCode } from '../../types';
+import { vikunjaRestRequest } from '../../utils/vikunja-rest';
 import { transformApiError } from '../../utils/error-handler';
 import { validateId } from './validation';
+import { resolvePermission, type PermissionInput } from './permission';
 import { createProjectResponse } from './response-formatter';
 import { formatAorpAsMarkdown } from '../../utils/response-factory';
+import type { components } from '../../types/generated/vikunja-openapi';
+
+type VikunjaLinkShare = components['schemas']['models.LinkSharing'];
+type VikunjaMessage = components['schemas']['models.Message'];
+type VikunjaAuthToken = components['schemas']['auth.Token'];
+type VikunjaProject = components['schemas']['models.Project'];
 
 // MCP response type
 type McpResponse = {
@@ -24,7 +48,7 @@ type McpResponse = {
  */
 export interface CreateShareArgs {
   projectId: number;
-  right: 'read' | 'write' | 'admin' | 0 | 1 | 2;
+  right: PermissionInput;
   name?: string;
   password?: string;
   verbosity?: string;
@@ -79,10 +103,26 @@ export interface AuthShareArgs {
 }
 
 /**
+ * Re-throws a REST-layer 404 as a friendlier "project not found" message;
+ * everything else is re-thrown unchanged (MCPError as-is, anything else
+ * through `transformApiError`).
+ */
+function rethrowProjectNotFound(error: unknown, projectId: number, context: string): never {
+  if (error instanceof MCPError) {
+    if (error.details?.statusCode === 404) {
+      throw new MCPError(ErrorCode.NOT_FOUND, `Project with ID ${projectId} not found`);
+    }
+    throw error;
+  }
+  throw transformApiError(error, context);
+}
+
+/**
  * Creates a new link share for a project
  */
 export async function createProjectShare(
-  args: CreateShareArgs
+  args: CreateShareArgs,
+  authManager: AuthManager,
 ): Promise<McpResponse> {
   const {
     projectId,
@@ -96,62 +136,30 @@ export async function createProjectShare(
 
   try {
     validateId(projectId, 'project id');
+    const numericRight = resolvePermission(right);
 
-    // Convert string rights to numeric rights for API
-    let numericRight: number;
-    if (right === undefined) {
-      throw new MCPError(
-        ErrorCode.VALIDATION_ERROR,
-        'Share right is required'
-      );
-    } else if (typeof right === 'string') {
-      const rightMap: Record<string, number> = { 'read': 0, 'write': 1, 'admin': 2 };
-      const normalizedRight = right.trim().toLowerCase();
+    // Verify the project exists before writing (verify-then-apply) so a
+    // missing project produces a friendly NOT_FOUND rather than whatever
+    // the shares endpoint itself happens to return for an absent project.
+    await vikunjaRestRequest<VikunjaProject>(authManager, 'GET', `/projects/${projectId}`);
 
-      if (!(normalizedRight in rightMap)) {
-        throw new MCPError(
-          ErrorCode.VALIDATION_ERROR,
-          'Share right must be one of: read, write, admin'
-        );
-      }
-      numericRight = rightMap[normalizedRight] || 0;
-    } else if (typeof right === 'number') {
-      if (![0, 1, 2].includes(right)) {
-        throw new MCPError(
-          ErrorCode.VALIDATION_ERROR,
-          'Invalid permission level. Use: 0=Read, 1=Write, 2=Admin'
-        );
-      }
-      numericRight = right;
-    } else {
-      throw new MCPError(
-        ErrorCode.VALIDATION_ERROR,
-        'Share right must be a string or number'
-      );
-    }
-
-    const client = await getClientFromContext();
-
-    // Verify the project exists
-    await client.projects.getProject(projectId);
-
-    // models.LinkSharing's request shape is {permission, name, password} —
-    // node-vikunja's LinkSharing type (right/label/password_enabled/expires)
-    // is stale, so the payload is built against our own CreateShareRequest
-    // and cast past node-vikunja's type at the call site below.
-    const shareData: CreateShareRequest = {
+    // models.LinkSharing's request shape is {permission, name, password}.
+    const body: { permission: number; name?: string; password?: string } = {
       permission: numericRight,
     };
-
     if (name !== undefined) {
-      shareData.name = name.trim();
+      body.name = name.trim();
     }
-
     if (password !== undefined) {
-      shareData.password = password;
+      body.password = password;
     }
 
-    const createdShare = await client.projects.createLinkShare(projectId, shareData as unknown as LinkSharing);
+    const createdShare = await vikunjaRestRequest<VikunjaLinkShare>(
+      authManager,
+      'PUT',
+      `/projects/${projectId}/shares`,
+      body,
+    );
 
     const result = createProjectResponse(
       'create_project_share',
@@ -176,16 +184,10 @@ export async function createProjectShare(
       ]
     };
   } catch (error) {
-    if (error instanceof MCPError) {
+    if (error instanceof MCPError && error.code === ErrorCode.VALIDATION_ERROR) {
       throw error;
     }
-
-    // Handle 404 errors specifically for share creation
-    if (error && typeof error === 'object' && 'statusCode' in error && error.statusCode === 404) {
-      throw new MCPError(ErrorCode.NOT_FOUND, `Project with ID ${projectId} not found`);
-    }
-
-    throw transformApiError(error, 'Failed to create share');
+    rethrowProjectNotFound(error, projectId, 'Failed to create share');
   }
 }
 
@@ -193,7 +195,8 @@ export async function createProjectShare(
  * Lists all link shares for a project
  */
 export async function listProjectShares(
-  args: ListSharesArgs
+  args: ListSharesArgs,
+  authManager: AuthManager,
 ): Promise<McpResponse> {
   const {
     projectId,
@@ -207,30 +210,31 @@ export async function listProjectShares(
   try {
     validateId(projectId, 'project id');
 
-    const client = await getClientFromContext();
+    // Verify the project exists first (same verify-then-apply shape as create).
+    await vikunjaRestRequest<VikunjaProject>(authManager, 'GET', `/projects/${projectId}`);
 
-    // Verify the project exists
-    await client.projects.getProject(projectId);
+    const params = new URLSearchParams();
+    if (page !== 1) params.set('page', String(page));
+    if (perPage !== 50) params.set('per_page', String(perPage));
+    const query = params.toString();
 
-    // Note: node-vikunja might not have a specific method for listing shares
-    // This implementation may need to be adjusted based on the actual API
-    const params: { page?: number; per_page?: number } = {};
-    if (page !== 1 || perPage !== 50) {
-      params.page = page;
-      params.per_page = perPage;
-    }
-    const shares = await client.projects.getLinkShares(projectId, params);
+    const shares = await vikunjaRestRequest<VikunjaLinkShare[]>(
+      authManager,
+      'GET',
+      `/projects/${projectId}/shares${query ? `?${query}` : ''}`,
+    );
+    const shareList = Array.isArray(shares) ? shares : [];
 
     const result = createProjectResponse(
       'list_project_shares',
-      `Retrieved ${Array.isArray(shares) ? shares.length : 0} shares for project ${projectId}`,
-      { shares },
+      `Retrieved ${shareList.length} shares for project ${projectId}`,
+      { shares: shareList },
       {
         projectId,
         page,
         perPage,
-        count: Array.isArray(shares) ? shares.length : 0,
-        totalShares: Array.isArray(shares) ? shares.length : 0
+        count: shareList.length,
+        totalShares: shareList.length
       },
       verbosity,
       useOptimizedFormat,
@@ -246,16 +250,10 @@ export async function listProjectShares(
       ]
     };
   } catch (error) {
-    if (error instanceof MCPError) {
+    if (error instanceof MCPError && error.code === ErrorCode.VALIDATION_ERROR) {
       throw error;
     }
-
-    // Handle 404 errors specifically for share listing
-    if (error && typeof error === 'object' && 'statusCode' in error && error.statusCode === 404) {
-      throw new MCPError(ErrorCode.NOT_FOUND, `Project with ID ${projectId} not found`);
-    }
-
-    throw transformApiError(error, 'Failed to list shares');
+    rethrowProjectNotFound(error, projectId, 'Failed to list shares');
   }
 }
 
@@ -263,7 +261,8 @@ export async function listProjectShares(
  * Gets a specific link share by ID
  */
 export async function getProjectShare(
-  args: GetShareArgs
+  args: GetShareArgs,
+  authManager: AuthManager,
 ): Promise<McpResponse> {
   const { shareId, projectId, verbosity, useOptimizedFormat, useAorp } = args;
 
@@ -282,14 +281,16 @@ export async function getProjectShare(
       );
     }
 
-    const client = await getClientFromContext();
-    const share = await client.projects.getLinkShare(projectId, Number(shareId));
+    const share = await vikunjaRestRequest<VikunjaLinkShare>(
+      authManager,
+      'GET',
+      `/projects/${projectId}/shares/${Number(shareId)}`,
+    );
 
-    const safeShareId = typeof shareId === 'string' ? shareId : 'Unknown';
-    const shareDisplayName = share.name || `Share #${safeShareId}`;
+    const shareDisplayName = share.name || `Share #${shareId}`;
     const result = createProjectResponse(
       'get_project_share',
-      `Retrieved link share: ${shareDisplayName as string}`,
+      `Retrieved link share: ${shareDisplayName}`,
       { share },
       { shareId },
       verbosity,
@@ -307,14 +308,11 @@ export async function getProjectShare(
     };
   } catch (error) {
     if (error instanceof MCPError) {
+      if (error.details?.statusCode === 404) {
+        throw new MCPError(ErrorCode.NOT_FOUND, `Share with ID ${shareId} not found for project ${projectId}`);
+      }
       throw error;
     }
-
-    // Handle 404 errors specifically for share retrieval
-    if (error && typeof error === 'object' && 'statusCode' in error && error.statusCode === 404) {
-      throw new MCPError(ErrorCode.NOT_FOUND, `Share with ID ${shareId} not found for project ${projectId}`);
-    }
-
     throw transformApiError(error, 'Failed to get share');
   }
 }
@@ -323,7 +321,8 @@ export async function getProjectShare(
  * Deletes a link share
  */
 export async function deleteProjectShare(
-  args: DeleteShareArgs
+  args: DeleteShareArgs,
+  authManager: AuthManager,
 ): Promise<McpResponse> {
   const { shareId, projectId, verbosity, useOptimizedFormat, useAorp } = args;
 
@@ -342,12 +341,19 @@ export async function deleteProjectShare(
       );
     }
 
-    const client = await getClientFromContext();
+    // Get share details before deletion so the response can report the
+    // share's name and project id.
+    const share = await vikunjaRestRequest<VikunjaLinkShare>(
+      authManager,
+      'GET',
+      `/projects/${projectId}/shares/${Number(shareId)}`,
+    );
 
-    // Get share details before deletion
-    const share = await client.projects.getLinkShare(projectId, Number(shareId));
-
-    await client.projects.deleteLinkShare(projectId, Number(shareId));
+    await vikunjaRestRequest<VikunjaMessage>(
+      authManager,
+      'DELETE',
+      `/projects/${projectId}/shares/${Number(shareId)}`,
+    );
 
     const result = createProjectResponse(
       'delete_project_share',
@@ -356,10 +362,10 @@ export async function deleteProjectShare(
         deleted: true,
         shareId,
         shareName: share.name,
-        projectId: share.project_id
+        projectId,
       },
       {
-        projectId: share.project_id,
+        projectId,
         shareId,
         shareName: share.name
       },
@@ -378,14 +384,11 @@ export async function deleteProjectShare(
     };
   } catch (error) {
     if (error instanceof MCPError) {
+      if (error.details?.statusCode === 404) {
+        throw new MCPError(ErrorCode.NOT_FOUND, `Share with ID ${shareId} not found for project ${projectId}`);
+      }
       throw error;
     }
-
-    // Handle 404 errors specifically for share deletion
-    if (error && typeof error === 'object' && 'statusCode' in error && error.statusCode === 404) {
-      throw new MCPError(ErrorCode.NOT_FOUND, `Share with ID ${shareId} not found for project ${projectId}`);
-    }
-
     throw transformApiError(error, 'Failed to delete share');
   }
 }
@@ -394,7 +397,8 @@ export async function deleteProjectShare(
  * Authenticates access to a shared project
  */
 export async function authProjectShare(
-  args: AuthShareArgs
+  args: AuthShareArgs,
+  authManager: AuthManager,
 ): Promise<McpResponse> {
   const { shareHash, password, verbosity, useOptimizedFormat, useAorp } = args;
 
@@ -406,12 +410,17 @@ export async function authProjectShare(
       );
     }
 
-    const client = await getClientFromContext();
-
-    // The authentication is done via the shares API
-    const authResult = await client.shares.getShareAuth(shareHash, {
-      password: password || '',
-    });
+    // v1.LinkShareAuth: {password}. Unauthenticated endpoint (no share-scoped
+    // JWT needed yet — this call obtains one), but vikunjaRestRequest is
+    // still used since it uses the same host/breaker/retry plumbing as every
+    // other authenticated call; the session's Authorization header is simply
+    // unused server-side for this specific route.
+    const authResult = await vikunjaRestRequest<VikunjaAuthToken>(
+      authManager,
+      'POST',
+      `/shares/${shareHash}/auth`,
+      { password: password || '' },
+    );
 
     const result = createProjectResponse(
       'auth_project_share',
@@ -437,17 +446,16 @@ export async function authProjectShare(
     };
   } catch (error) {
     if (error instanceof MCPError) {
-      throw error;
-    }
-
-    // Handle specific error status codes for share authentication
-    if (error && typeof error === 'object' && 'statusCode' in error) {
-      if (error.statusCode === 401) {
+      if (error.code === ErrorCode.VALIDATION_ERROR) {
+        throw error;
+      }
+      if (error.details?.statusCode === 401) {
         throw new MCPError(ErrorCode.VALIDATION_ERROR, `Invalid password for share`);
       }
-      if (error.statusCode === 404) {
+      if (error.details?.statusCode === 404) {
         throw new MCPError(ErrorCode.NOT_FOUND, `Share with hash ${shareHash} not found`);
       }
+      throw error;
     }
 
     throw transformApiError(error, 'Failed to authenticate to share');

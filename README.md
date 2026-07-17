@@ -685,6 +685,54 @@ vikunja_projects.auth-share({
   shareHash: "abc123def456",
   password: "securepassword123"
 })
+
+// --- Direct Project Sharing (users & teams) ---
+// Distinct from link shares above: grants access to a specific, named
+// account rather than anyone with a link. See docs/API-COVERAGE.md — this
+// was a HIGH-priority gap (only link sharing existed before Wave D).
+
+// Composite: share with a user by username. Resolves the username to a
+// user id, grants access, then verifies the grant actually landed.
+vikunja_projects.share-with-user({
+  projectId: 1,
+  username: "alice",
+  right: "write"   // 'read' | 'write' | 'admin', or 0 | 1 | 2
+})
+
+// Composite: share with a team by name (same resolve -> add -> verify shape).
+vikunja_projects.share-with-team({
+  projectId: 1,
+  teamName: "Engineering",
+  right: "admin"
+})
+
+// Opt into atomic rollback: if verification fails, the just-added grant is
+// removed rather than left in an unverified state. Default is best-effort
+// (the grant is left in place and reported for manual follow-up) — this is
+// still not a real transaction; see docs/ENDPOINT-PLAYBOOK.md §5.
+vikunja_projects.share-with-user({
+  projectId: 1,
+  username: "alice",
+  right: "write",
+  atomic: true
+})
+
+// Read composite: who has access to this project — direct users, direct
+// teams, and link shares — in one call.
+vikunja_projects.list-members({ projectId: 1 })
+
+// Primitives (fine-grained control; share-with-user/team are the
+// recommended path for the common case of "give this named user/team access"):
+vikunja_projects.list-project-users({ projectId: 1 })
+vikunja_projects.search-project-users({ projectId: 1, search: "ali" })
+vikunja_projects.add-project-user({ projectId: 1, username: "alice", right: "read" })
+vikunja_projects.update-project-user-permission({ projectId: 1, userId: 42, right: "admin" })
+vikunja_projects.remove-project-user({ projectId: 1, userId: 42 })
+
+vikunja_projects.list-project-teams({ projectId: 1 })
+vikunja_projects.add-project-team({ projectId: 1, teamId: 7, right: "write" })
+vikunja_projects.update-project-team-permission({ projectId: 1, teamId: 7, right: "read" })
+vikunja_projects.remove-project-team({ projectId: 1, teamId: 7 })
 ```
 
 ### Label Management Examples
@@ -1104,12 +1152,20 @@ This standardized format ensures:
     - `move` - Move a project to a new parent
       - Validates against circular references
       - Enforces maximum depth of 10 levels
-  - **Project Sharing**
+  - **Project Sharing — link shares** (anonymous/password links)
     - `create-share` - Create share link with permissions
     - `list-shares` - List all shares for a project
     - `get-share` - Get share details
     - `delete-share` - Remove a share link
     - `auth-share` - Authenticate to access a shared project
+  - **Project Sharing — direct user & team access** (New! Wave D)
+    - `share-with-user` - Composite: share with a user by **username** — resolves to an id, adds, then verifies the grant landed. Optional `atomic: true` removes the grant if verification fails (default best-effort; not a real transaction, see docs/ENDPOINT-PLAYBOOK.md §5)
+    - `share-with-team` - Composite: share with a team by **name** — same resolve → add → verify shape
+    - `list-members` - Read composite: direct users + direct teams + link shares for a project, in one call
+    - `list-project-users` / `search-project-users` - List users with direct access, or search for one to share with
+    - `add-project-user` / `update-project-user-permission` / `remove-project-user` - Primitives for fine-grained control
+    - `list-project-teams` - List teams with direct access
+    - `add-project-team` / `update-project-team-permission` / `remove-project-team` - Primitives for fine-grained control
 
 ### Label Management ✅
 - `vikunja_labels` - Label operations (fully implemented)

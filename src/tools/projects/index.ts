@@ -53,6 +53,33 @@ import {
   type AuthShareArgs
 } from './sharing';
 
+import {
+  listProjectUsers,
+  searchProjectUsers,
+  addProjectUser,
+  updateProjectUserPermission,
+  removeProjectUser,
+  listProjectTeams,
+  addProjectTeam,
+  updateProjectTeamPermission,
+  removeProjectTeam,
+  shareProjectWithUser,
+  shareProjectWithTeam,
+  listProjectMembers,
+  type ListProjectUsersArgs,
+  type SearchProjectUsersArgs,
+  type AddProjectUserArgs,
+  type UpdateProjectUserPermissionArgs,
+  type RemoveProjectUserArgs,
+  type ListProjectTeamsArgs,
+  type AddProjectTeamArgs,
+  type UpdateProjectTeamPermissionArgs,
+  type RemoveProjectTeamArgs,
+  type ShareWithUserArgs,
+  type ShareWithTeamArgs,
+  type ListMembersArgs
+} from './sharing-access';
+
 import { listBuckets, type ListBucketsArgs } from './buckets';
 
 /**
@@ -71,7 +98,14 @@ export function registerProjectsTool(
       subcommand: z.enum(['list', 'get', 'create', 'update', 'delete', 'archive', 'unarchive',
         'get-children', 'get-tree', 'get-breadcrumb', 'move',
         'create-share', 'list-shares', 'get-share', 'delete-share', 'auth-share',
-        'list-buckets'
+        'list-buckets',
+        // Direct user/team sharing — primitives
+        'list-project-users', 'search-project-users', 'add-project-user',
+        'update-project-user-permission', 'remove-project-user',
+        'list-project-teams', 'add-project-team',
+        'update-project-team-permission', 'remove-project-team',
+        // Direct user/team sharing — composites
+        'share-with-user', 'share-with-team', 'list-members',
       ]),
       // CRUD arguments
       id: z.number().positive().optional(),
@@ -90,13 +124,22 @@ export function registerProjectsTool(
       // z.coerce tolerates MCP clients whose cached tool schema predates
       // this param and therefore send it as a string over JSON-RPC.
       viewId: z.coerce.number().positive().optional(),
-      // Sharing arguments
+      // Sharing arguments (link shares + direct user/team sharing)
       projectId: z.number().positive().optional(),
       shareId: z.string().optional(),
       shareHash: z.string().optional(),
-      right: z.enum(['read', 'write', 'admin']).optional(),
+      right: z.union([z.enum(['read', 'write', 'admin']), z.literal(0), z.literal(1), z.literal(2)]).optional(),
       name: z.string().optional(),
       password: z.string().optional(),
+      // Direct user/team sharing arguments
+      username: z.string().optional(),
+      teamName: z.string().optional(),
+      userId: z.number().positive().optional(),
+      teamId: z.number().positive().optional(),
+      // Opt-in atomic rollback for share-with-user / share-with-team — see
+      // CompositeOperation (src/utils/composite-operation.ts) and
+      // docs/ENDPOINT-PLAYBOOK.md §5. Default false (best-effort).
+      atomic: z.boolean().optional(),
       // Session ID for AORP response tracking
       sessionId: z.string().optional(),
     },
@@ -180,7 +223,7 @@ export function registerProjectsTool(
             validateId(args.id, 'id');
             return await moveProject(args as MoveProjectArgs, context);
 
-          // Sharing operations
+          // Sharing operations — link shares
           case 'create-share':
             if (!args.projectId) {
               throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required');
@@ -188,13 +231,13 @@ export function registerProjectsTool(
             if (!args.right) {
               throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Share right is required');
             }
-            return await createProjectShare(args as CreateShareArgs);
+            return await createProjectShare(args as CreateShareArgs, authManager);
 
           case 'list-shares':
             if (!args.projectId) {
               throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required');
             }
-            return await listProjectShares(args as ListSharesArgs);
+            return await listProjectShares(args as ListSharesArgs, authManager);
 
           case 'get-share':
             if (args.shareId === undefined || args.shareId === null) {
@@ -203,7 +246,7 @@ export function registerProjectsTool(
             if (args.shareId.trim() === '') {
               throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Share ID must be a non-empty string');
             }
-            return await getProjectShare(args as GetShareArgs);
+            return await getProjectShare(args as GetShareArgs, authManager);
 
           case 'delete-share':
             if (args.shareId === undefined || args.shareId === null) {
@@ -212,7 +255,7 @@ export function registerProjectsTool(
             if (args.shareId.trim() === '') {
               throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Share ID must be a non-empty string');
             }
-            return await deleteProjectShare(args as DeleteShareArgs);
+            return await deleteProjectShare(args as DeleteShareArgs, authManager);
 
           case 'auth-share': {
             if (!args.shareHash) {
@@ -223,8 +266,125 @@ export function registerProjectsTool(
             };
             if (args.projectId !== undefined) authShareArgs.projectId = args.projectId;
             if (args.password !== undefined) authShareArgs.password = args.password;
-            return await authProjectShare(authShareArgs);
+            return await authProjectShare(authShareArgs, authManager);
           }
+
+          // Sharing operations — direct user access (primitives)
+          case 'list-project-users':
+            if (!args.projectId) {
+              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for list-project-users operation');
+            }
+            return await listProjectUsers(args as ListProjectUsersArgs, authManager);
+
+          case 'search-project-users':
+            if (!args.projectId) {
+              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for search-project-users operation');
+            }
+            return await searchProjectUsers(args as SearchProjectUsersArgs, authManager);
+
+          case 'add-project-user':
+            if (!args.projectId) {
+              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for add-project-user operation');
+            }
+            if (!args.username) {
+              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'username is required for add-project-user operation');
+            }
+            if (!args.right) {
+              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Share right is required for add-project-user operation');
+            }
+            return await addProjectUser(args as AddProjectUserArgs, authManager);
+
+          case 'update-project-user-permission':
+            if (!args.projectId) {
+              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for update-project-user-permission operation');
+            }
+            if (!args.userId) {
+              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'userId is required for update-project-user-permission operation');
+            }
+            if (!args.right) {
+              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Share right is required for update-project-user-permission operation');
+            }
+            return await updateProjectUserPermission(args as UpdateProjectUserPermissionArgs, authManager);
+
+          case 'remove-project-user':
+            if (!args.projectId) {
+              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for remove-project-user operation');
+            }
+            if (!args.userId) {
+              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'userId is required for remove-project-user operation');
+            }
+            return await removeProjectUser(args as RemoveProjectUserArgs, authManager);
+
+          // Sharing operations — direct team access (primitives)
+          case 'list-project-teams':
+            if (!args.projectId) {
+              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for list-project-teams operation');
+            }
+            return await listProjectTeams(args as ListProjectTeamsArgs, authManager);
+
+          case 'add-project-team':
+            if (!args.projectId) {
+              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for add-project-team operation');
+            }
+            if (!args.teamId) {
+              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'teamId is required for add-project-team operation');
+            }
+            if (!args.right) {
+              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Share right is required for add-project-team operation');
+            }
+            return await addProjectTeam(args as AddProjectTeamArgs, authManager);
+
+          case 'update-project-team-permission':
+            if (!args.projectId) {
+              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for update-project-team-permission operation');
+            }
+            if (!args.teamId) {
+              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'teamId is required for update-project-team-permission operation');
+            }
+            if (!args.right) {
+              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Share right is required for update-project-team-permission operation');
+            }
+            return await updateProjectTeamPermission(args as UpdateProjectTeamPermissionArgs, authManager);
+
+          case 'remove-project-team':
+            if (!args.projectId) {
+              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for remove-project-team operation');
+            }
+            if (!args.teamId) {
+              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'teamId is required for remove-project-team operation');
+            }
+            return await removeProjectTeam(args as RemoveProjectTeamArgs, authManager);
+
+          // Sharing operations — composites
+          case 'share-with-user':
+            if (!args.projectId) {
+              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for share-with-user operation');
+            }
+            if (!args.username) {
+              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'username is required for share-with-user operation');
+            }
+            if (!args.right) {
+              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Share right is required for share-with-user operation');
+            }
+            return await shareProjectWithUser(args as ShareWithUserArgs, authManager);
+
+          case 'share-with-team':
+            if (!args.projectId) {
+              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for share-with-team operation');
+            }
+            if (!args.teamName) {
+              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'teamName is required for share-with-team operation');
+            }
+            if (!args.right) {
+              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Share right is required for share-with-team operation');
+            }
+            return await shareProjectWithTeam(args as ShareWithTeamArgs, authManager);
+
+          case 'list-members':
+            if (!args.projectId) {
+              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for list-members operation');
+            }
+            return await listProjectMembers(args as ListMembersArgs, authManager);
 
           // Kanban bucket operations
           case 'list-buckets':
@@ -262,7 +422,7 @@ export function registerProjectsTool(
  */
 export function registerProjectTools(
   server: McpServer,
-  _authManager: AuthManager,
+  authManager: AuthManager,
   _clientFactory: VikunjaClientFactory
 ): void {
   // CRUD Operations
@@ -420,25 +580,25 @@ export function registerProjectTools(
               if (!args.right) {
                 throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Share right is required for create_share operation');
               }
-              return await createProjectShare(args as CreateShareArgs);
+              return await createProjectShare(args as CreateShareArgs, authManager);
 
             case 'list_shares':
               if (!args.projectId) {
                 throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for list_shares operation');
               }
-              return await listProjectShares(args as ListSharesArgs);
+              return await listProjectShares(args as ListSharesArgs, authManager);
 
             case 'get_share':
               if (!args.shareId) {
                 throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Share ID is required for get_share operation');
               }
-              return await getProjectShare(args as GetShareArgs);
+              return await getProjectShare(args as GetShareArgs, authManager);
 
             case 'delete_share':
               if (!args.shareId) {
                 throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Share ID is required for delete_share operation');
               }
-              return await deleteProjectShare(args as DeleteShareArgs);
+              return await deleteProjectShare(args as DeleteShareArgs, authManager);
 
             case 'auth_share': {
               if (!args.shareHash) {
@@ -449,7 +609,7 @@ export function registerProjectTools(
               };
               if (args.projectId !== undefined) authShareArgs.projectId = args.projectId;
               if (args.password !== undefined) authShareArgs.password = args.password;
-              return await authProjectShare(authShareArgs);
+              return await authProjectShare(authShareArgs, authManager);
             }
 
             default:
@@ -481,7 +641,19 @@ export type {
   ListSharesArgs,
   GetShareArgs,
   DeleteShareArgs,
-  AuthShareArgs
+  AuthShareArgs,
+  ListProjectUsersArgs,
+  SearchProjectUsersArgs,
+  AddProjectUserArgs,
+  UpdateProjectUserPermissionArgs,
+  RemoveProjectUserArgs,
+  ListProjectTeamsArgs,
+  AddProjectTeamArgs,
+  UpdateProjectTeamPermissionArgs,
+  RemoveProjectTeamArgs,
+  ShareWithUserArgs,
+  ShareWithTeamArgs,
+  ListMembersArgs
 };
 
 // Export all functions for direct use if needed
@@ -501,10 +673,24 @@ export {
   getProjectBreadcrumb,
   moveProject,
 
-  // Sharing
+  // Sharing — link shares
   createProjectShare,
   listProjectShares,
   getProjectShare,
   deleteProjectShare,
-  authProjectShare
+  authProjectShare,
+
+  // Sharing — direct user/team access
+  listProjectUsers,
+  searchProjectUsers,
+  addProjectUser,
+  updateProjectUserPermission,
+  removeProjectUser,
+  listProjectTeams,
+  addProjectTeam,
+  updateProjectTeamPermission,
+  removeProjectTeam,
+  shareProjectWithUser,
+  shareProjectWithTeam,
+  listProjectMembers
 };
