@@ -27,7 +27,7 @@ import type { AuthManager } from '../auth/AuthManager';
 import { MCPError, ErrorCode } from '../types';
 import { createCircuitBreaker, withRetry, isRetryableError, type RetryOptions } from './retry';
 
-type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE';
+type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
 /**
  * Resolves the API base URL for a session, normalizing whether or not
