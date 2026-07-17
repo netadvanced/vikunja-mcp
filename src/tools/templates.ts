@@ -50,7 +50,10 @@ interface TemplateData {
 export function registerTemplatesTool(server: McpServer, authManager: AuthManager, _clientFactory?: VikunjaClientFactory): void {
   server.tool(
     'vikunja_templates',
-    'Manage task templates for creating consistent tasks and project structures',
+    'Manage task templates for creating consistent tasks and project structures. ' +
+      'IMPORTANT: templates are stored in memory only, scoped to this server process — ' +
+      'they are not persisted to Vikunja and are lost on server restart. Durable ' +
+      'storage is tracked as future work.',
     {
       subcommand: z.enum(['create', 'list', 'get', 'update', 'delete', 'instantiate']),
       // Template fields

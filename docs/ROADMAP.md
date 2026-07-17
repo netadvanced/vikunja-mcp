@@ -84,7 +84,7 @@ Plus the remaining user-settings keepers (timezones, server-side export request)
 | Wave | Scope | Status |
 |---|---|---|
 | A / B | Test-suite repair + 16 audit bug fixes (PRs #31–#41) | ✅ merged 2026-07-17 |
-| A2 | Mop-up: remaining 68 failing tests → 0 (PRs #42–#45 + filters-suite PR) | 🔄 merging |
+| A2 | Mop-up: remaining 68 failing tests → 0 (PRs #42–#46) | ✅ merged 2026-07-17 — main @ e2df4ca, 0 failing tests, 2365 passed, 107 suites |
 | **C** | **Infrastructure**: vendored spec + generated types; REST helper retry/breaker; module config + secrets; saga helper; endpoint playbook | next |
 | **D** | **Capability build-out** (~8 domain groups above), each PR = new tools/subcommands **+ that domain's node-vikunja migration** | after C |
 | E | Finish line: `node-vikunja` removed from package.json; upstream courtesy reports; coverage ratchet; CI re-enable (owner's call); optional Docker packaging | after D |

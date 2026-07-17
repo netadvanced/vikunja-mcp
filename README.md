@@ -1134,7 +1134,11 @@ This standardized format ensures:
     - Returns detailed label information
 
 ### Project Templates ✅
-- `vikunja_templates` - Template operations (fully implemented)
+
+> **⚠️ Session-only storage:** Templates are stored in memory on the MCP
+> server process, not persisted to Vikunja. They are lost when the server
+> restarts. Durable storage is tracked as Wave D debt.
+- `vikunja_templates` - Template operations (fully implemented, session-only persistence — see warning above)
   - `create` - Create a template from existing project
     - Required: projectId, name
     - Optional: description, tags
@@ -1207,23 +1211,28 @@ This standardized format ensures:
   **Event Validation**: When creating or updating webhooks, the provided events are automatically validated against the list of available events from the API. Invalid events will result in a clear error message showing which events are invalid and listing all valid options. Valid events are cached for 5 minutes to improve performance.
 
 ### Filter Management ✅
-- `vikunja_filters` - Advanced filtering for tasks (fully implemented)
-  - `list` - List saved filters
+
+> **⚠️ Local-only, not Vikunja's saved filters:** `list`/`get`/`create`/
+> `update`/`delete` manage filters stored in memory on this MCP server
+> process. They are **not** Vikunja's server-side saved filters (there is no
+> `/filters` API round-trip, no sync, and no persistence across a server
+> restart). Wave D wires this tool to the real server-side `/filters`
+> endpoints.
+- `vikunja_filters` - Advanced filtering for tasks (fully implemented, local-only persistence — see warning above)
+  - `list` - List locally-stored filters
     - Optional: projectId (for project-specific filters), global flag
-  - `get` - Get a specific filter by ID
-  - `create` - Create a new saved filter
+  - `get` - Get a specific locally-stored filter by ID
+  - `create` - Create a new locally-stored filter
     - Required: name, filter (query string)
     - Optional: description, projectId, isGlobal
-  - `update` - Update an existing filter
+  - `update` - Update an existing locally-stored filter
     - Required: id
     - Optional: name, description, filter, projectId, isGlobal
-  - `delete` - Delete a saved filter
+  - `delete` - Delete a locally-stored filter
   - `build` - Build a filter string from conditions
     - Required: conditions array
     - Optional: groupOperator (&&, ||)
   - `validate` - Validate a filter string
-  
-  **Note:** Saved filters are currently stored in memory and will be lost when the MCP server restarts. For production use, consider implementing persistent storage.
 
 ### Data Export ✅
 

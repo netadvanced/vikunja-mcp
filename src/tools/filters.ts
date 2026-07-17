@@ -125,7 +125,12 @@ async function getSessionStorage(authManager: AuthManager): ReturnType<typeof st
 export function registerFiltersTool(server: McpServer, authManager: AuthManager, _clientFactory?: VikunjaClientFactory): void {
   server.tool(
     'vikunja_filters',
-    'Manage and build advanced filters for tasks and projects with validation',
+    'Manage and build advanced filters for tasks and projects with validation. ' +
+      "IMPORTANT: 'list'/'get'/'create'/'update'/'delete' manage filters stored " +
+      "locally in memory on this server process, not Vikunja's server-side saved " +
+      "filters (there is no server-side persistence or sync, and filters are lost " +
+      'on server restart). Use build/validate for one-off filter strings against ' +
+      'live task queries.',
     {
       action: z.enum(['list', 'get', 'create', 'update', 'delete', 'build', 'validate']),
       parameters: z.record(z.string(), z.unknown()),
