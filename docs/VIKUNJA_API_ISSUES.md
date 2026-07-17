@@ -92,18 +92,18 @@ curl -X GET 'https://your-vikunja-instance.com/api/v1/projects' \
 - Cannot use data export features
 - Batch import cannot assign tasks to users
 
-## 3. Team API Limited Functionality
+## 3. Team API — node-vikunja Coverage Gap (worked around via direct REST)
 
-**Description:** The team-related endpoints have limited functionality compared to other resources.
+**Description:** node-vikunja's `TeamService` only implements `getTeams`/`createTeam`/`deleteTeam`. `vikunja_teams` covers the rest (`get`, `update`, `members`) by calling the Vikunja REST API directly through `src/utils/vikunja-rest.ts`, per the OpenAPI spec:
 
-**Missing Endpoints:**
-- GET `/teams/{id}` - Cannot retrieve specific team details
-- PUT `/teams/{id}` - Cannot update team information
-- GET `/teams/{id}/members` - Cannot list team members
+- `GET /teams/{id}` — get a team by id.
+- `POST /teams/{id}` — update a team (**not** `PUT`; `PUT /teams/{id}` is not a defined route, only `PUT /teams` for create).
+- Team members are **embedded** in the `GET /teams/{id}` response as `.members` — there is no standalone `GET /teams/{id}/members` endpoint.
+- `PUT /teams/{id}/members` — add a member. The body's `username` field must be the member's real username string (the API deliberately rejects numeric user ids here, to prevent automated/enumerated user-id entry).
+- `DELETE /teams/{id}/members/{username}` — remove a member; the path segment is the username, not a numeric id.
+- `POST /teams/{id}/members/{username}/admin` — **toggles** the member's admin flag. It takes no request body and cannot set an explicit true/false value; callers that need to know the resulting state should re-check via `members list`.
 
-**Note:** DELETE `/teams/{id}` is available and has been implemented in the MCP server.
-
-**Impact:** Team management is partially limited, making it difficult to build complete team-based features.
+**Impact:** None once routed correctly — noted here because node-vikunja's own types/methods do not reflect this surface, so any future change to `vikunja_teams` should re-verify against the live OpenAPI spec rather than the client library.
 
 ## 4. Bulk Operations Not Implemented
 

@@ -1145,16 +1145,26 @@ This standardized format ensures:
     - Creates all tasks with labels from template
 
 ### Team Management ✅
-- `vikunja_teams` - Team operations (partially implemented)
+- `vikunja_teams` - Team operations (fully implemented via direct REST calls where node-vikunja has no client method)
   - `list` - List all teams with filters
     - Support for pagination and search
   - `create` - Create new team
     - Required: name
     - Optional: description
-  - `delete` - Delete a team by ID (with fallback API support)
-  - `get` - Not yet implemented in node-vikunja
-  - `update` - Not yet implemented in node-vikunja
-  - `members` - Not yet implemented in node-vikunja
+  - `get` - Get a team by ID
+  - `update` - Update a team's name/description
+    - Required: id
+    - Optional: name, description (at least one required)
+  - `delete` - Delete a team by ID
+  - `members` - Manage team membership (keyed by **username**, not numeric user id — this is deliberate on Vikunja's part to prevent automated/enumerated user-id entry)
+    - `list` - List a team's members (read from the team's embedded `members` array; there is no standalone list-members endpoint)
+    - `add` - Add a member by username
+      - Required: username
+      - Optional: admin (initial admin flag)
+    - `remove` - Remove a member by username
+      - Required: username
+    - `toggleAdmin` - **Toggles** a member's admin status (the API endpoint takes no body and always flips the current value; it cannot set an explicit true/false)
+      - Required: username
 
 ### User Management ✅
 - `vikunja_users` - User operations (fully implemented) **[Requires JWT authentication]**
@@ -1239,11 +1249,7 @@ This standardized format ensures:
 ## Known Limitations
 
 1. **File Attachments**: The `attach` subcommand is not implemented due to MCP protocol limitations
-2. **Team Operations**: Limited functionality due to incomplete node-vikunja API support:
-   - Cannot get team by ID
-   - Cannot update team information
-   - Cannot delete teams
-   - Cannot manage team members
+2. **Team Operations**: node-vikunja only implements list/create/delete for teams, so get/update/members go through direct REST calls (see `src/utils/vikunja-rest.ts`). The admin-toggle member operation is a true toggle server-side — it cannot set an explicit admin value in one call.
 3. **Pagination**: Some endpoints may not fully support pagination parameters due to API limitations
 4. **Authentication Issues**: Some Vikunja API endpoints have known authentication issues:
    - **User endpoints**: May fail with token errors even with valid tokens (known Vikunja API limitation)

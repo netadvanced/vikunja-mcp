@@ -9,7 +9,8 @@ import type { AuthManager } from '../auth/AuthManager';
 import type { VikunjaClientFactory } from '../client/VikunjaClientFactory';
 import { MCPError, ErrorCode, createStandardResponse } from '../types';
 import { getClientFromContext } from '../client';
-import { wrapToolError, handleStatusCodeError } from '../utils/error-handler';
+import { wrapToolError } from '../utils/error-handler';
+import { vikunjaRestRequest } from '../utils/vikunja-rest';
 import type { Team } from 'node-vikunja';
 import type { TypedVikunjaClient } from '../types/node-vikunja-extended';
 import { validateAndConvertId } from '../utils/validation';
@@ -22,6 +23,49 @@ interface TeamListParams {
 }
 
 // Use shared validateAndConvertId from utils/validation
+
+/**
+ * A team member as embedded in the `members` array of a `GET /teams/{id}`
+ * response (server-side `models.TeamUser`): the member's public user fields
+ * plus their team-admin flag. `team_id` is not exposed by the API.
+ */
+interface TeamMemberUser {
+  id: number;
+  name?: string;
+  username: string;
+  email?: string;
+  admin: boolean;
+  created?: string;
+  updated?: string;
+}
+
+/**
+ * `GET`/`POST /teams/{id}` response shape: a `Team` with its members
+ * embedded. node-vikunja's `Team` type does not model this field, so it is
+ * declared locally per the OpenAPI spec / server `models.Team` struct.
+ * (An intersection, not `extends`, because `Team`'s inherited index
+ * signature rejects an array-typed `members` property on a plain interface
+ * extension.)
+ */
+type TeamWithMembers = Team & { members?: TeamMemberUser[] };
+
+/**
+ * `models.TeamMember` — the team-membership row returned by
+ * `PUT /teams/{id}/members` (add) and `POST /teams/{id}/members/{username}/admin`
+ * (admin toggle).
+ */
+interface TeamMembership {
+  id: number;
+  username: string;
+  admin?: boolean;
+  created?: string;
+}
+
+/** `models.Message` — the generic `{ message: string }` envelope Vikunja
+ * returns from `DELETE /teams/{id}/members/{username}`. */
+interface VikunjaMessage {
+  message: string;
+}
 
 export function registerTeamsTool(server: McpServer, authManager: AuthManager, _clientFactory?: VikunjaClientFactory): void {
   server.tool(
@@ -42,8 +86,13 @@ export function registerTeamsTool(server: McpServer, authManager: AuthManager, _
       description: z.string().optional(),
 
       // Member operations
-      memberSubcommand: z.enum(['list', 'add', 'remove', 'update']).optional(),
-      userId: z.union([z.string(), z.number()]).optional(),
+      // 'toggleAdmin' matches the real API: POST /teams/{id}/members/{username}/admin
+      // takes no body and flips the member's admin flag rather than setting it.
+      memberSubcommand: z.enum(['list', 'add', 'remove', 'toggleAdmin']).optional(),
+      // Vikunja keys team membership by username, not numeric user id, to
+      // prevent automated/enumerated user-id entry (see the API's own docs
+      // for models.TeamMember.username).
+      username: z.string().min(1).optional(),
       admin: z.boolean().optional(),
     },
     async (args) => {
@@ -122,28 +171,14 @@ export function registerTeamsTool(server: McpServer, authManager: AuthManager, _
             }
 
             const teamId = validateAndConvertId(args.id, 'id');
-            const session = authManager.getSession();
 
-            // Make direct API call to get team
-            const response = await fetch(`${session.apiUrl}/teams/${teamId}`, {
-              method: 'GET',
-              headers: {
-                Authorization: `Bearer ${session.apiToken}`,
-                'Content-Type': 'application/json',
-              },
-            });
-
-            if (!response.ok) {
-              const errorText = await response.text();
-              throw handleStatusCodeError(
-                { statusCode: response.status, message: errorText },
-                'get team',
-                teamId,
-                `Failed to get team ${teamId}: ${errorText}`
-              );
-            }
-
-            const team = (await response.json()) as Team;
+            // node-vikunja's TeamService has no getTeam method; call the
+            // endpoint directly. GET /teams/{id} is the correct path/verb.
+            const team = await vikunjaRestRequest<Team>(
+              authManager,
+              'GET',
+              `/teams/${teamId}`,
+            );
 
             const standardResponse = createStandardResponse(
               'get-team',
@@ -176,32 +211,19 @@ export function registerTeamsTool(server: McpServer, authManager: AuthManager, _
               );
             }
 
-            const session = authManager.getSession();
             const updateData: Partial<Team> = {};
             if (args.name !== undefined) updateData.name = args.name;
             if (args.description !== undefined) updateData.description = args.description;
 
-            // Make direct API call to update team
-            const response = await fetch(`${session.apiUrl}/teams/${teamId}`, {
-              method: 'PUT',
-              headers: {
-                Authorization: `Bearer ${session.apiToken}`,
-                'Content-Type': 'application/json',
-              },
-              body: JSON.stringify(updateData),
-            });
-
-            if (!response.ok) {
-              const errorText = await response.text();
-              throw handleStatusCodeError(
-                { statusCode: response.status, message: errorText },
-                'update team',
-                teamId,
-                `Failed to update team ${teamId}: ${errorText}`
-              );
-            }
-
-            const team = (await response.json()) as Team;
+            // The API only routes team updates through POST /teams/{id};
+            // PUT is reserved for team creation (PUT /teams) and is not a
+            // defined route here — sending PUT 404s/405s against a real server.
+            const team = await vikunjaRestRequest<Team>(
+              authManager,
+              'POST',
+              `/teams/${teamId}`,
+              updateData,
+            );
 
             const standardResponse = createStandardResponse(
               'update-team',
@@ -227,48 +249,8 @@ export function registerTeamsTool(server: McpServer, authManager: AuthManager, _
 
             const teamId = validateAndConvertId(args.id, 'id');
 
-            // Check if deleteTeam method exists and is a function
-            if (!client.teams.deleteTeam || typeof client.teams.deleteTeam !== 'function') {
-              // Fallback: Make direct API call if method doesn't exist
-              const session = authManager.getSession();
-              const response = await fetch(`${session.apiUrl}/teams/${teamId}`, {
-                method: 'DELETE',
-                headers: {
-                  Authorization: `Bearer ${session.apiToken}`,
-                  'Content-Type': 'application/json',
-                },
-              });
-
-              if (!response.ok) {
-                const errorText = await response.text();
-                throw handleStatusCodeError(
-                  { statusCode: response.status, message: errorText },
-                  'leave team',
-                  teamId,
-                  `Failed to leave team ${teamId}: ${errorText}`
-                );
-              }
-
-              const result = (await response.json()) as { message: string };
-
-              const standardResponse = createStandardResponse(
-                'delete-team',
-                `Team deleted successfully`,
-                { message: result.message },
-                { teamId },
-              );
-
-              return {
-                content: [
-                  {
-                    type: 'text',
-                    text: formatAorpAsMarkdown(standardResponse),
-                  },
-                ],
-              };
-            }
-
-            // Use the existing method if available
+            // node-vikunja's TeamService.deleteTeam always exists in the
+            // pinned client version, so no fallback path is reachable/testable.
             const result = await client.teams.deleteTeam(teamId);
 
             const response = createStandardResponse(
@@ -294,37 +276,25 @@ export function registerTeamsTool(server: McpServer, authManager: AuthManager, _
             }
 
             const teamId = validateAndConvertId(args.id, 'id');
-            const session = authManager.getSession();
             const memberSubcommand = args.memberSubcommand || 'list';
 
             switch (memberSubcommand) {
               case 'list': {
-                // Make direct API call to list team members
-                const response = await fetch(`${session.apiUrl}/teams/${teamId}/members`, {
-                  method: 'GET',
-                  headers: {
-                    Authorization: `Bearer ${session.apiToken}`,
-                    'Content-Type': 'application/json',
-                  },
-                });
-
-                if (!response.ok) {
-                  const errorText = await response.text();
-                  throw handleStatusCodeError(
-                    { statusCode: response.status, message: errorText },
-                    'list team members',
-                    teamId,
-                    `Failed to list members for team ${teamId}: ${errorText}`
-                  );
-                }
-
-                const members = await response.json();
+                // There is no GET /teams/{id}/members endpoint. Members are
+                // embedded in the team resource itself, so fetch the team
+                // and read its `members` array.
+                const team = await vikunjaRestRequest<TeamWithMembers>(
+                  authManager,
+                  'GET',
+                  `/teams/${teamId}`,
+                );
+                const members = team.members ?? [];
 
                 const standardResponse = createStandardResponse(
                   'list-team-members',
-                  `Retrieved ${Array.isArray(members) ? members.length : 1} member${(!Array.isArray(members) || members.length !== 1) ? 's' : ''}`,
-                  { members: Array.isArray(members) ? members : [members] },
-                  { teamId, count: Array.isArray(members) ? members.length : 1 },
+                  `Retrieved ${members.length} member${members.length !== 1 ? 's' : ''}`,
+                  { members },
+                  { teamId, count: members.length },
                 );
 
                 return {
@@ -338,44 +308,30 @@ export function registerTeamsTool(server: McpServer, authManager: AuthManager, _
               }
 
               case 'add': {
-                if (args.userId === undefined) {
-                  throw new MCPError(ErrorCode.VALIDATION_ERROR, 'User ID is required');
+                if (!args.username) {
+                  throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Username is required');
                 }
 
-                const userId = validateAndConvertId(args.userId, 'userId');
-
-                // Make direct API call to add member to team
+                // The API keys team membership by the member's real username
+                // string (deliberately, to prevent automated/enumerated user
+                // id entry) — never a numeric user id.
                 const memberData: { username: string; admin?: boolean } = {
-                  username: String(userId),
+                  username: args.username,
                 };
                 if (args.admin !== undefined) memberData.admin = args.admin;
 
-                const response = await fetch(`${session.apiUrl}/teams/${teamId}/members`, {
-                  method: 'PUT',
-                  headers: {
-                    Authorization: `Bearer ${session.apiToken}`,
-                    'Content-Type': 'application/json',
-                  },
-                  body: JSON.stringify(memberData),
-                });
-
-                if (!response.ok) {
-                  const errorText = await response.text();
-                  throw handleStatusCodeError(
-                    { statusCode: response.status, message: errorText },
-                    'add team member',
-                    teamId,
-                    `Failed to add user ${userId} to team ${teamId}: ${errorText}`
-                  );
-                }
-
-                const member = await response.json();
+                const member = await vikunjaRestRequest<TeamMembership>(
+                  authManager,
+                  'PUT',
+                  `/teams/${teamId}/members`,
+                  memberData,
+                );
 
                 const standardResponse = createStandardResponse(
                   'add-team-member',
-                  `User ${userId} added to team successfully`,
+                  `User "${args.username}" added to team successfully`,
                   { member },
-                  { teamId, userId, admin: args.admin },
+                  { teamId, username: args.username, admin: args.admin },
                 );
 
                 return {
@@ -389,38 +345,23 @@ export function registerTeamsTool(server: McpServer, authManager: AuthManager, _
               }
 
               case 'remove': {
-                if (args.userId === undefined) {
-                  throw new MCPError(ErrorCode.VALIDATION_ERROR, 'User ID is required');
+                if (!args.username) {
+                  throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Username is required');
                 }
 
-                const userId = validateAndConvertId(args.userId, 'userId');
-
-                // Make direct API call to remove member from team
-                const response = await fetch(`${session.apiUrl}/teams/${teamId}/members/${userId}`, {
-                  method: 'DELETE',
-                  headers: {
-                    Authorization: `Bearer ${session.apiToken}`,
-                    'Content-Type': 'application/json',
-                  },
-                });
-
-                if (!response.ok) {
-                  const errorText = await response.text();
-                  throw handleStatusCodeError(
-                    { statusCode: response.status, message: errorText },
-                    'remove team member',
-                    teamId,
-                    `Failed to remove user ${userId} from team ${teamId}: ${errorText}`
-                  );
-                }
-
-                const result = await response.json();
+                // The path segment is the member's username, not a numeric
+                // user id — /teams/{id}/members/{username}.
+                const result = await vikunjaRestRequest<VikunjaMessage>(
+                  authManager,
+                  'DELETE',
+                  `/teams/${teamId}/members/${args.username}`,
+                );
 
                 const standardResponse = createStandardResponse(
                   'remove-team-member',
-                  `User ${userId} removed from team successfully`,
-                  { message: result },
-                  { teamId, userId },
+                  `User "${args.username}" removed from team successfully`,
+                  { message: result.message },
+                  { teamId, username: args.username },
                 );
 
                 return {
@@ -433,56 +374,35 @@ export function registerTeamsTool(server: McpServer, authManager: AuthManager, _
                 };
               }
 
-              case 'update': {
-                if (args.userId === undefined) {
-                  throw new MCPError(ErrorCode.VALIDATION_ERROR, 'User ID is required');
+              case 'toggleAdmin': {
+                if (!args.username) {
+                  throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Username is required');
                 }
 
-                if (args.admin === undefined) {
-                  throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Admin flag is required for updating member');
-                }
-
-                const userId = validateAndConvertId(args.userId, 'userId');
-
-                // Make direct API call to update member (using PUT with updated admin flag)
-                const memberData = {
-                  username: String(userId),
-                  admin: args.admin,
-                };
-
-                const response = await fetch(`${session.apiUrl}/teams/${teamId}/members/${userId}`, {
-                  method: 'POST',
-                  headers: {
-                    Authorization: `Bearer ${session.apiToken}`,
-                    'Content-Type': 'application/json',
-                  },
-                  body: JSON.stringify(memberData),
-                });
-
-                if (!response.ok) {
-                  const errorText = await response.text();
-                  throw handleStatusCodeError(
-                    { statusCode: response.status, message: errorText },
-                    'update team member',
-                    teamId,
-                    `Failed to update user ${userId} in team ${teamId}: ${errorText}`
-                  );
-                }
-
-                const member = await response.json();
+                // POST /teams/{id}/members/{username}/admin takes no request
+                // body: it TOGGLES the member's admin flag rather than
+                // setting it to a caller-supplied value, so there is no
+                // `admin` argument here — callers should read the member's
+                // current status first (e.g. via `members list`) if they
+                // need to know the resulting state.
+                const member = await vikunjaRestRequest<TeamMembership>(
+                  authManager,
+                  'POST',
+                  `/teams/${teamId}/members/${args.username}/admin`,
+                );
 
                 const standardResponse = createStandardResponse(
-                  'update-team-member',
-                  `User ${userId} updated in team successfully`,
+                  'toggle-team-member-admin',
+                  `Admin status toggled for user "${args.username}"`,
                   { member },
-                  { teamId, userId, admin: args.admin },
+                  { teamId, username: args.username },
                 );
 
                 return {
                   content: [
                     {
                       type: 'text',
-                  text: formatAorpAsMarkdown(standardResponse),
+                      text: formatAorpAsMarkdown(standardResponse),
                     },
                   ],
                 };
