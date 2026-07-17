@@ -765,7 +765,7 @@ describe('Projects Tool', () => {
       mockClient.projects.getProject.mockRejectedValue('string error');
 
       await expect(callTool('archive', { id: 1 })).rejects.toThrow(
-        'Failed to archive project: Unknown error',
+        'Failed to archive project: string error',
       );
     });
   });
@@ -841,7 +841,7 @@ describe('Projects Tool', () => {
       mockClient.projects.getProject.mockRejectedValue('string error');
 
       await expect(callTool('unarchive', { id: 1 })).rejects.toThrow(
-        'Failed to unarchive project: Unknown error',
+        'Failed to unarchive project: string error',
       );
     });
   });
@@ -1075,7 +1075,7 @@ describe('Projects Tool', () => {
       expect(aorpStatus.type).toBe('success');
       expect(markdown).toContain('Retrieved link share: Share #1');
       expect(markdown).toMatch(/get[_\\]+project[_\\]+share/);
-      expect(mockClient.projects.getLinkShare).toHaveBeenCalledWith(1, '1');
+      expect(mockClient.projects.getLinkShare).toHaveBeenCalledWith(1, 1);
     });
 
     it('should require project ID', async () => {
@@ -1143,8 +1143,8 @@ describe('Projects Tool', () => {
       expect(aorpStatus.type).toBe('success');
       expect(markdown).toContain('Share with ID 1 deleted successfully');
       expect(markdown).toMatch(/delete[_\\]+project[_\\]+share/);
-      expect(mockClient.projects.getLinkShare).toHaveBeenCalledWith(1, '1');
-      expect(mockClient.projects.deleteLinkShare).toHaveBeenCalledWith(1, '1');
+      expect(mockClient.projects.getLinkShare).toHaveBeenCalledWith(1, 1);
+      expect(mockClient.projects.deleteLinkShare).toHaveBeenCalledWith(1, 1);
     });
 
     it('should require project ID', async () => {

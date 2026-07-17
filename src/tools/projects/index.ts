@@ -101,18 +101,19 @@ export function registerProjectsTool(
       sessionId: z.string().optional(),
     },
     async (args, context) => {
-      // Check authentication with enhanced error message
-      if (!authManager.isAuthenticated()) {
-        throw createAuthRequiredError('access project management features');
-      }
-
-      // Set the client factory for this request if provided
-      if (clientFactory) {
-        const { setGlobalClientFactory } = await import('../../client.js');
-        await setGlobalClientFactory(clientFactory);
-      }
-
       try {
+        // Check authentication with enhanced error message
+        if (!authManager.isAuthenticated()) {
+          throw createAuthRequiredError('access project management features');
+        }
+
+        // Set the client factory for this request if provided
+        if (clientFactory) {
+          const { setGlobalClientFactory } = await import('../../client.js');
+          await setGlobalClientFactory(clientFactory);
+        }
+
+        try {
         const result = await (async (): Promise<McpResponse> => {
           switch (args.subcommand) {
             // CRUD operations
@@ -239,8 +240,17 @@ export function registerProjectsTool(
         })();
 
         return result;
+        } catch (error) {
+          throw wrapToolError(error, 'vikunja_projects', args.subcommand, args.id);
+        }
       } catch (error) {
-        throw wrapToolError(error, 'vikunja_projects', args.subcommand, args.id);
+        if (error instanceof MCPError) {
+          throw error;
+        }
+        throw new MCPError(
+          ErrorCode.INTERNAL_ERROR,
+          `Unexpected error: ${error instanceof Error ? error.message : 'Unknown error'}`
+        );
       }
     }
   );

@@ -274,7 +274,7 @@ describe('Projects Tool - Nested Project Features', () => {
     });
 
     it('should require project ID', async () => {
-      await expect(callTool('get-tree')).rejects.toThrow('id must be a positive integer');
+      await expect(callTool('get-tree')).rejects.toThrow('Project ID is required');
     });
   });
 
@@ -526,6 +526,12 @@ describe('Projects Tool - Nested Project Features', () => {
         parent_project_id: undefined,
       });
       mockClient.projects.getProjects.mockResolvedValue(deepProjects);
+      // getProject (singular) is looked up separately by updateProject to fetch the
+      // current project before validating the new parent's depth - it must also know
+      // about project 11, or the update fails with a 404 before depth validation runs.
+      mockClient.projects.getProject.mockResolvedValue(
+        deepProjects.find((p) => p.id === 11),
+      );
 
       await expect(callTool('update', { id: 11, parentProjectId: 10 })).rejects.toThrow(
         /Maximum allowed depth is 10 levels/,

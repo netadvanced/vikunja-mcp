@@ -134,9 +134,10 @@ export async function getProjectTree(
   const { id, maxDepth = 10, includeArchived = false, verbosity, useOptimizedFormat, useAorp } = args;
 
   // Validate that project ID is provided for tree operations
-  if (!id) {
-    throw new MCPError(ErrorCode.VALIDATION_ERROR, 'id must be a positive integer');
+  if (id === undefined || id === null) {
+    throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required');
   }
+  validateId(id, 'id');
 
   try {
     const client = await getClientFromContext();

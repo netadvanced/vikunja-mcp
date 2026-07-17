@@ -223,7 +223,7 @@ export async function getProject(
     if (error instanceof MCPError) {
       throw error;
     }
-    throw handleStatusCodeError(error, 'Failed to get project', id, `Project with ID ${id} not found`);
+    throw handleStatusCodeError(error, 'get project', id, `Project with ID ${id} not found`);
   }
 }
 
@@ -472,7 +472,7 @@ export async function updateProject(
     }
     throw handleStatusCodeError(
       error,
-      'Failed to update project',
+      'update project',
       id,
       `Project with ID ${id} not found`
     );
@@ -521,7 +521,7 @@ export async function deleteProject(
     }
     throw handleStatusCodeError(
       error,
-      'Failed to delete project',
+      'delete project',
       id,
       `Project with ID ${id} not found`
     );
@@ -596,7 +596,7 @@ export async function archiveProject(
     }
     throw handleStatusCodeError(
       error,
-      'Failed to archive project',
+      'archive project',
       id,
       `Project with ID ${id} not found`
     );
@@ -671,7 +671,7 @@ export async function unarchiveProject(
     }
     throw handleStatusCodeError(
       error,
-      'Failed to unarchive project',
+      'unarchive project',
       id,
       `Project with ID ${id} not found`
     );
