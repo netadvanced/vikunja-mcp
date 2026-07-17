@@ -188,9 +188,13 @@ describe('Tasks CRUD - Validation Coverage', () => {
         assignees: [],
       };
       mockClient.tasks.getTask.mockResolvedValue(mockTask);
-      
-      // Mock updateTask to throw a non-Error object
-      mockClient.tasks.updateTask.mockRejectedValue('Update service unavailable');
+
+      // Mock updateTask to throw a non-Error object. Use a plain object (not a
+      // string) here: the error handler intentionally preserves string
+      // rejections as the message (consistent with transform(), see
+      // src/utils/error-handler.ts) and only collapses non-Error/non-string
+      // shapes to "Unknown error" to avoid leaking arbitrary object payloads.
+      mockClient.tasks.updateTask.mockRejectedValue({ status: 503, message: 'Update service unavailable' });
 
       await expect(
         updateTask({
