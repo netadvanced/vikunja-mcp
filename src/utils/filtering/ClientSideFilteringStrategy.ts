@@ -61,7 +61,9 @@ export class ClientSideFilteringStrategy implements TaskFilteringStrategy {
         serverSideFilteringUsed: false,
         serverSideFilteringAttempted: false,
         clientSideFiltering: Boolean(filterExpression),
-        filteringNote: 'Client-side filtering applied (server-side disabled in development)'
+        filteringNote: filterExpression
+          ? 'Client-side filtering applied'
+          : 'No filter applied; tasks returned as loaded'
       }
     };
   }
