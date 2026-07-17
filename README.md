@@ -851,58 +851,39 @@ vikunja_webhooks.delete({
 ### Advanced Filtering Examples
 
 ```typescript
-// Create a saved filter for high priority tasks
+// Create a real, server-side saved filter for high priority tasks
 vikunja_filters.create({
-  name: "High Priority Tasks",
+  title: "High Priority Tasks",
   description: "All undone tasks with priority 4 or 5",
   filter: "done = false && priority >= 4",
-  isGlobal: true
+  isFavorite: true
 })
+// The DSL's camelCase fields (e.g. dueDate) are parsed, validated, and
+// translated to Vikunja's snake_case Task fields (e.g. due_date) before
+// being sent to the server.
 
-// Alternative format using title and filters object
-vikunja_filters.create({
-  title: "🔥 High Priority Tasks",
-  description: "All tasks with priority 4 or 5 that are not completed",
-  filters: {
-    filter_by: ["priority"],
-    filter_value: ["5"],
-    filter_comparator: [">="],
-    filter_concat: ""
-  },
-  is_favorite: true
-})
-
-// Create a filter with multiple conditions
+// Alternative: build the filter from structured conditions instead of a string
 vikunja_filters.create({
   title: "Urgent & Incomplete",
-  filters: {
-    filter_by: ["priority", "done"],
-    filter_value: ["3", "false"],
-    filter_comparator: [">=", "="],
-    filter_concat: "&&"
-  }
+  conditions: [
+    { field: "priority", operator: ">=", value: 3 },
+    { field: "done", operator: "=", value: false }
+  ],
+  groupOperator: "&&"
 })
 
-// Create a project-specific filter
-vikunja_filters.create({
-  name: "This Week's Tasks",
-  filter: "dueDate >= now && dueDate < now+7d",
-  projectId: 1,
-  isGlobal: false
-})
-
-// List all saved filters
+// List saved filters. Vikunja has no dedicated list-all endpoint, so this
+// derives its results from GET /projects' pseudo-project entries (negative
+// ids) and verifies each one against GET /filters/{id}.
 vikunja_filters.list()
 
-// List filters for a specific project
-vikunja_filters.list({ projectId: 1 })
+// Only filters currently marked as favorite
+vikunja_filters.list({ favorite: true })
 
-// Apply a saved filter to task listing
-vikunja_tasks.list({
-  filterId: "550e8400-e29b-41d4-a716-446655440000"
-})
+// Get a specific filter by its real numeric id (not a pseudo-project id)
+vikunja_filters.get({ id: 3 })
 
-// Build a filter programmatically
+// Build a filter string programmatically without touching the server
 vikunja_filters.build({
   conditions: [
     { field: "done", operator: "=", value: false },
@@ -913,14 +894,19 @@ vikunja_filters.build({
 })
 // Returns: { filter: "(done = false && priority >= 3 && assignees in user1, user2)", valid: true }
 
-// Update an existing filter
+// Update an existing filter. POST /filters/{id} replaces the whole
+// resource, so the tool fetches the current filter first and carries
+// forward any field you don't supply here.
 vikunja_filters.update({
-  id: "550e8400-e29b-41d4-a716-446655440000",
-  name: "Critical Tasks",
+  id: 3,
+  title: "Critical Tasks",
   filter: "done = false && priority = 5"
 })
 
-// Validate a filter string
+// Delete a saved filter
+vikunja_filters.delete({ id: 3 })
+
+// Validate a filter string without touching the server
 vikunja_filters.validate({
   filter: "done = false && priority >= 3"
 })
@@ -1212,27 +1198,37 @@ This standardized format ensures:
 
 ### Filter Management ✅
 
-> **⚠️ Local-only, not Vikunja's saved filters:** `list`/`get`/`create`/
-> `update`/`delete` manage filters stored in memory on this MCP server
-> process. They are **not** Vikunja's server-side saved filters (there is no
-> `/filters` API round-trip, no sync, and no persistence across a server
-> restart). Wave D wires this tool to the real server-side `/filters`
-> endpoints.
-- `vikunja_filters` - Advanced filtering for tasks (fully implemented, local-only persistence — see warning above)
-  - `list` - List locally-stored filters
-    - Optional: projectId (for project-specific filters), global flag
-  - `get` - Get a specific locally-stored filter by ID
-  - `create` - Create a new locally-stored filter
-    - Required: name, filter (query string)
-    - Optional: description, projectId, isGlobal
-  - `update` - Update an existing locally-stored filter
+> **Real, server-side saved filters:** `create`/`get`/`update`/`delete` call
+> Vikunja's actual `/filters` API (`PUT /filters`, `GET`/`POST`/`DELETE
+> /filters/{id}`) — filters persist on the server, survive an MCP restart,
+> and are visible in the Vikunja UI and to other clients. Saved filters are
+> **not** project-scoped (the API has no `project_id` field on a saved
+> filter); Vikunja instead exposes each one as a *pseudo-project* with a
+> negative id, and `isFavorite` controls whether it also shows in the
+> favorites parent alongside favorite projects. There is no dedicated
+> list-all-saved-filters endpoint, so `list` derives its results from `GET
+> /projects`' pseudo-project entries and verifies each one against `GET
+> /filters/{id}`; entries it could not verify are still returned (title
+> only) with `hydrated: false` rather than silently dropped. `build` and
+> `validate` remain pure local utilities — they construct or check a filter
+> query string without contacting the server.
+- `vikunja_filters` - Advanced filtering for tasks, backed by Vikunja's real saved filters (fully implemented)
+  - `list` - Derive the list of saved filters from `GET /projects`' pseudo-project entries
+    - Optional: page, perPage, favorite (filter to favorited filters only)
+  - `get` - Get a specific saved filter by its numeric id
     - Required: id
-    - Optional: name, description, filter, projectId, isGlobal
-  - `delete` - Delete a locally-stored filter
-  - `build` - Build a filter string from conditions
+  - `create` - Create a new saved filter (`PUT /filters`)
+    - Required: title, and one of filter (query string) or conditions (array)
+    - Optional: description, groupOperator (&&, ||), isFavorite
+  - `update` - Update an existing saved filter (`POST /filters/{id}`, a full-resource replace — omitted fields are carried forward from the current filter, not cleared)
+    - Required: id
+    - Optional: title, description, filter, conditions, groupOperator, isFavorite
+  - `delete` - Delete a saved filter (`DELETE /filters/{id}`)
+    - Required: id
+  - `build` - Build a filter string from conditions (local utility, no server call)
     - Required: conditions array
     - Optional: groupOperator (&&, ||)
-  - `validate` - Validate a filter string
+  - `validate` - Validate a filter string (local utility, no server call)
 
 ### Data Export ✅
 
