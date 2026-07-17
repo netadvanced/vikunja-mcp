@@ -30,7 +30,9 @@
     "version:major": "npm version major",
     "test:mcp": "tsx scripts/test-mcp.ts",
     "fetch:api-spec": "curl -sS https://try.vikunja.io/api/v1/docs.json -o docs/vikunja-openapi.json && jq -e . docs/vikunja-openapi.json > /dev/null",
-    "generate:api-types": "node scripts/generate-api-types.mjs"
+    "generate:api-types": "node scripts/generate-api-types.mjs",
+    "e2e:up": "docker/e2e/bootstrap.sh",
+    "e2e:down": "docker compose -f docker/e2e/docker-compose.yml down -v"
   },
   "keywords": [
     "mcp",

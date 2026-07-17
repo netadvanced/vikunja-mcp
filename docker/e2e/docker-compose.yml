@@ -1,0 +1,97 @@
+# Disposable local Vikunja + Postgres stack for running scripts/test-mcp.ts
+# (npm run test:mcp) against a real Vikunja server instead of a mocked one.
+#
+# See docs/LOCAL-TESTING.md for the full workflow (bring up, bootstrap,
+# point test:mcp at it, tear down).
+#
+# Everything in this file is namespaced under the "vikunja-mcp-e2e" compose
+# project (see the top-level `name:` below) and uses non-default host ports,
+# so it cannot collide with anything else the machine happens to be running
+# — including another Vikunja instance, or a *production* Vikunja.
+#
+# Version pin: vikunja/vikunja:2.3.0 (the go-vikunja/vikunja v2.3.0 GitHub
+# release). This is the latest *stable* tagged image on Docker Hub at the
+# time this stack was written, and it matches the base version of the
+# vendored OpenAPI spec at docs/vikunja-openapi.json, whose reported
+# `info.version` is `v2.3.0-1019-g95b7e673` — i.e. the spec was captured
+# from an `unstable` build 1019 commits *ahead* of the v2.3.0 tag (that's
+# what try.vikunja.io, the source of that spec, always runs). There is no
+# published "2.3.0-1019-g95b7e673" image to pin to; 2.3.0 is the closest
+# reproducible stable baseline. Practically: any endpoint/field that
+# landed in those 1019 post-2.3.0 commits will be present in the vendored
+# spec/docs but *absent* from this stack. If a real-server run against
+# this stack fails on something that looks brand new, check whether it's
+# one of those not-yet-released commits before treating it as drift.
+# Re-pin by bumping the tag below (see docs/LOCAL-TESTING.md's
+# version-refresh note) once a newer stable release ships.
+name: vikunja-mcp-e2e
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: vikunja
+      POSTGRES_PASSWORD: vikunja
+      POSTGRES_DB: vikunja
+    volumes:
+      - vikunja-mcp-e2e-db:/var/lib/postgresql/data
+    # Exposed on an unusual host port purely for ad-hoc debugging
+    # (psql -h localhost -p 33457 -U vikunja). Not required by the stack.
+    ports:
+      - '33457:5432'
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U vikunja -d vikunja']
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+  # One-shot helper: the vikunja image runs as uid 1000 with no shell (it's
+  # built FROM scratch), so it cannot chown its own files volume on first
+  # boot. Named volumes are created root-owned by the Docker daemon, so we
+  # fix ownership here, once, before the vikunja service starts.
+  files-init:
+    image: busybox:1.36
+    command: ['sh', '-c', 'chown -R 1000:1000 /files']
+    volumes:
+      - vikunja-mcp-e2e-files:/files
+
+  vikunja:
+    image: vikunja/vikunja:2.3.0
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      files-init:
+        condition: service_completed_successfully
+    environment:
+      VIKUNJA_DATABASE_TYPE: postgres
+      VIKUNJA_DATABASE_HOST: db
+      VIKUNJA_DATABASE_USER: vikunja
+      VIKUNJA_DATABASE_PASSWORD: vikunja
+      VIKUNJA_DATABASE_DATABASE: vikunja
+      # Local-only, throwaway secret. This stack is never meant to hold
+      # real data or be reachable from anywhere but localhost; do not
+      # reuse this value for anything real.
+      VIKUNJA_SERVICE_SECRET: 'e2e-local-only-not-for-production-use'
+      VIKUNJA_SERVICE_PUBLICURL: 'http://localhost:33456'
+      # No self-service signups in this stack — the bootstrap script
+      # creates the single test user directly via the container CLI.
+      VIKUNJA_SERVICE_ENABLEREGISTRATION: 'false'
+    ports:
+      - '33456:3456'
+    volumes:
+      - vikunja-mcp-e2e-files:/app/vikunja/files
+    healthcheck:
+      # The vikunja image is FROM scratch (no shell, no curl/wget), so we
+      # use its own `healthcheck` subcommand rather than an HTTP probe.
+      test: ['CMD', '/app/vikunja/vikunja', 'healthcheck']
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+volumes:
+  vikunja-mcp-e2e-db:
+  vikunja-mcp-e2e-files:
