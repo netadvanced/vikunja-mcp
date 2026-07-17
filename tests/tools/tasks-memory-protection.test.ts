@@ -83,6 +83,13 @@ describe('Tasks Memory Protection', () => {
       },
     };
 
+    // Default: plain 'list' (no projectId/filter) aggregates tasks across every
+    // accessible project (GET /tasks/all is unreliable - see ClientSideFilteringStrategy).
+    // Provide a single project by default so that path resolves without crashing;
+    // individual tests override getProjectTasks with their own fixtures.
+    mockClient.projects.getProjects.mockResolvedValue([{ id: 1, title: 'Test Project' }] as any);
+    mockClient.tasks.getProjectTasks.mockResolvedValue([]);
+
     // Setup mock auth manager
     mockAuthManager = createMockTestableAuthManager();
     mockAuthManager.isAuthenticated.mockReturnValue(true);
@@ -96,7 +103,7 @@ describe('Tasks Memory Protection', () => {
 
     // Setup mock server
     mockServer = {
-      tool: jest.fn() as jest.MockedFunction<(name: string, schema: any, handler: any) => void>,
+      tool: jest.fn() as jest.MockedFunction<(name: string, description: string, schema: any, handler: any) => void>,
     } as MockServer;
 
     mockGetClientFromContext.mockResolvedValue(mockClient);
@@ -107,12 +114,13 @@ describe('Tasks Memory Protection', () => {
     // Get the tool handler
     expect(mockServer.tool).toHaveBeenCalledWith(
       'vikunja_tasks',
+      'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach files, comment, bulk operations, set Kanban bucket)',
       expect.any(Object),
       expect.any(Function),
     );
     const calls = mockServer.tool.mock.calls;
-    if (calls.length > 0 && calls[0] && calls[0].length > 2) {
-      toolHandler = calls[0][2];
+    if (calls.length > 0 && calls[0] && calls[0].length > 3) {
+      toolHandler = calls[0][3];
     } else {
       throw new Error('Tool handler not found');
     }
@@ -133,20 +141,21 @@ describe('Tasks Memory Protection', () => {
         priority: 0
       })) as Task[];
 
-      mockClient.tasks.getAllTasks.mockResolvedValue(mockTasks);
+      mockClient.tasks.getProjectTasks.mockResolvedValue(mockTasks);
 
       const result = await toolHandler({
         subcommand: 'list'
       });
 
-      expect(mockClient.tasks.getAllTasks).toHaveBeenCalledWith(
+      expect(mockClient.tasks.getProjectTasks).toHaveBeenCalledWith(
+        1,
         expect.objectContaining({
           per_page: 1000,
           page: 1
         })
       );
 
-      expect(result.content[0].text).toContain('"success": true');
+      expect(result.content[0].text).toContain('**success:** true');
     });
 
     it('should respect user-provided pagination', async () => {
@@ -158,7 +167,7 @@ describe('Tasks Memory Protection', () => {
         priority: 0
       })) as Task[];
 
-      mockClient.tasks.getAllTasks.mockResolvedValue(mockTasks);
+      mockClient.tasks.getProjectTasks.mockResolvedValue(mockTasks);
 
       await toolHandler({
         subcommand: 'list',
@@ -166,7 +175,8 @@ describe('Tasks Memory Protection', () => {
         perPage: 25
       });
 
-      expect(mockClient.tasks.getAllTasks).toHaveBeenCalledWith(
+      expect(mockClient.tasks.getProjectTasks).toHaveBeenCalledWith(
+        1,
         expect.objectContaining({
           per_page: 25,
           page: 2
@@ -201,15 +211,15 @@ describe('Tasks Memory Protection', () => {
         priority: 0
       })) as Task[];
 
-      mockClient.tasks.getAllTasks.mockResolvedValue(mockTasks);
+      mockClient.tasks.getProjectTasks.mockResolvedValue(mockTasks);
 
       const result = await toolHandler({
         subcommand: 'list',
         perPage: 50 // Within limit of 100
       });
 
-      expect(mockClient.tasks.getAllTasks).toHaveBeenCalled();
-      expect(result.content[0].text).toContain('"success": true');
+      expect(mockClient.tasks.getProjectTasks).toHaveBeenCalled();
+      expect(result.content[0].text).toContain('**success:** true');
     });
 
     it('should provide helpful error message when limit exceeded', async () => {
@@ -248,7 +258,7 @@ describe('Tasks Memory Protection', () => {
         priority: 0
       })) as Task[];
 
-      mockClient.tasks.getAllTasks.mockResolvedValue(mockTasks);
+      mockClient.tasks.getProjectTasks.mockResolvedValue(mockTasks);
 
       const result = await toolHandler({
         subcommand: 'list',
@@ -256,7 +266,7 @@ describe('Tasks Memory Protection', () => {
       });
 
       // Should succeed but log warning
-      expect(result.content[0].text).toContain('"success": true');
+      expect(result.content[0].text).toContain('**success:** true');
       
       const mockLogger = require('../../src/utils/logger').logger;
       expect(mockLogger.warn).toHaveBeenCalledWith(
@@ -278,7 +288,7 @@ describe('Tasks Memory Protection', () => {
         priority: 0
       })) as Task[];
 
-      mockClient.tasks.getAllTasks.mockResolvedValue(mockTasks);
+      mockClient.tasks.getProjectTasks.mockResolvedValue(mockTasks);
 
       await expect(
         toolHandler({
@@ -329,7 +339,7 @@ describe('Tasks Memory Protection', () => {
           per_page: 50
         })
       );
-      expect(result.content[0].text).toContain('"success": true');
+      expect(result.content[0].text).toContain('**success:** true');
     });
   });
 
@@ -347,7 +357,7 @@ describe('Tasks Memory Protection', () => {
         priority: 1
       })) as Task[];
 
-      mockClient.tasks.getAllTasks.mockResolvedValue(mockTasks);
+      mockClient.tasks.getProjectTasks.mockResolvedValue(mockTasks);
 
 
       await toolHandler({
@@ -377,7 +387,7 @@ describe('Tasks Memory Protection', () => {
         priority: 0
       })) as Task[];
 
-      mockClient.tasks.getAllTasks.mockResolvedValue(mockTasks);
+      mockClient.tasks.getProjectTasks.mockResolvedValue(mockTasks);
 
 
       await toolHandler({
@@ -385,11 +395,13 @@ describe('Tasks Memory Protection', () => {
         perPage: 85
       });
 
+      // logMemoryUsage (src/utils/memory.ts) puts the utilization percentage in
+      // the warning message itself, not in the logged metadata object.
       const mockLogger = require('../../src/utils/logger').logger;
       expect(mockLogger.warn).toHaveBeenCalledWith(
-        expect.stringContaining('Approaching task limit'),
+        expect.stringContaining('Approaching task limit: 85%'),
         expect.objectContaining({
-          utilizationPercent: 85
+          operation: 'task listing'
         })
       );
     });
@@ -418,7 +430,7 @@ describe('Tasks Memory Protection', () => {
         priority: 0
       })) as Task[];
 
-      mockClient.tasks.getAllTasks.mockResolvedValue(mockTasks);
+      mockClient.tasks.getProjectTasks.mockResolvedValue(mockTasks);
 
 
       // Should use default limit (10000) and succeed
@@ -427,7 +439,7 @@ describe('Tasks Memory Protection', () => {
         perPage: 50
       });
 
-      expect(result.content[0].text).toContain('"success": true');
+      expect(result.content[0].text).toContain('**success:** true');
       
       const mockLogger = require('../../src/utils/logger').logger;
       expect(mockLogger.warn).toHaveBeenCalledWith(
@@ -470,9 +482,12 @@ describe('Tasks Memory Protection', () => {
         filter: 'priority > 3'
       });
 
+      // A filter is present, so the hybrid strategy attempts server-side
+      // filtering first via getAllTasks; the mock succeeds, so no client-side
+      // fallback is needed.
       expect(mockClient.tasks.getAllTasks).toHaveBeenCalled();
-      expect(result.content[0].text).toContain('"success": true');
-      expect(result.content[0].text).toContain('"clientSideFiltering": true');
+      expect(result.content[0].text).toContain('**success:** true');
+      expect(result.content[0].text).toContain('**serverSideFilteringUsed:** true');
     });
   });
 });

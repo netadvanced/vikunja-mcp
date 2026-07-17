@@ -87,6 +87,13 @@ describe('Integration Memory Exhaustion Attack Tests', () => {
       },
     };
 
+    // Default: plain 'list' (no projectId/filter) aggregates tasks across every
+    // accessible project (GET /tasks/all is unreliable - see ClientSideFilteringStrategy).
+    // Provide a single project by default so that path resolves without crashing;
+    // individual tests override getProjectTasks with their own fixtures.
+    mockClient.projects.getProjects.mockResolvedValue([{ id: 1, title: 'Test Project' }] as any);
+    mockClient.tasks.getProjectTasks.mockResolvedValue([]);
+
     // Setup mock auth manager
     mockAuthManager = createMockTestableAuthManager();
     mockAuthManager.isAuthenticated.mockReturnValue(true);
@@ -100,7 +107,7 @@ describe('Integration Memory Exhaustion Attack Tests', () => {
 
     // Setup mock server
     mockServer = {
-      tool: jest.fn() as jest.MockedFunction<(name: string, schema: any, handler: any) => void>,
+      tool: jest.fn() as jest.MockedFunction<(name: string, description: string, schema: any, handler: any) => void>,
     } as MockServer;
 
     mockGetClientFromContext.mockResolvedValue(mockClient);
@@ -111,12 +118,13 @@ describe('Integration Memory Exhaustion Attack Tests', () => {
     // Get the tool handler
     expect(mockServer.tool).toHaveBeenCalledWith(
       'vikunja_tasks',
+      'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach files, comment, bulk operations, set Kanban bucket)',
       expect.any(Object),
       expect.any(Function),
     );
     const calls = mockServer.tool.mock.calls;
-    if (calls.length > 0 && calls[0] && calls[0].length > 2) {
-      toolHandler = calls[0][2];
+    if (calls.length > 0 && calls[0] && calls[0].length > 3) {
+      toolHandler = calls[0][3];
     } else {
       throw new Error('Tool handler not found');
     }
@@ -455,8 +463,8 @@ describe('Integration Memory Exhaustion Attack Tests', () => {
       expect(results[1].status).toBe('rejected');   // Over limit should be rejected
       expect(results[2].status).toBe('fulfilled'); // Under limit should work
 
-      // Valid requests should reach API
-      expect(mockClient.tasks.getAllTasks).toHaveBeenCalledTimes(2);
+      // Valid requests should reach API (aggregated across the single mocked project)
+      expect(mockClient.tasks.getProjectTasks).toHaveBeenCalledTimes(2);
     });
 
     it('should handle malformed attack payloads gracefully', async () => {
@@ -490,11 +498,11 @@ describe('Integration Memory Exhaustion Attack Tests', () => {
       for (const attack of envAttackPayloads) {
         // These should be treated as unknown parameters and ignored
         const result = await toolHandler(attack);
-        expect(result.content[0].text).toContain('"success": true');
+        expect(result.content[0].text).toContain('**success:** true');
       }
 
       // Memory limits should remain intact
-      expect(mockClient.tasks.getAllTasks).toHaveBeenCalledTimes(envAttackPayloads.length);
+      expect(mockClient.tasks.getProjectTasks).toHaveBeenCalledTimes(envAttackPayloads.length);
     });
   });
 
@@ -554,7 +562,7 @@ describe('Integration Memory Exhaustion Attack Tests', () => {
           if (result instanceof MCPError) {
             expect(result.code).toBe(ErrorCode.VALIDATION_ERROR);
           } else {
-            expect(result.content[0].text).toContain('"success": true');
+            expect(result.content[0].text).toContain('**success:** true');
           }
         });
       }
