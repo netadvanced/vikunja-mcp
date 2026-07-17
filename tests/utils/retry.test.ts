@@ -1,4 +1,10 @@
-import { withRetry, isTransientError, RETRY_CONFIG } from '../../src/utils/retry';
+import {
+  withRetry,
+  isTransientError,
+  RETRY_CONFIG,
+  createCircuitBreaker,
+  circuitBreakerRegistry,
+} from '../../src/utils/retry';
 import { isAuthenticationError } from '../../src/utils/auth-error-handler';
 import { logger } from '../../src/utils/logger';
 
@@ -151,6 +157,19 @@ describe('retry utility', () => {
       expect(operation).toHaveBeenCalledTimes(6); // initial + 5 retries
     });
 
+    it('should not retry at all when maxRetries is 0', async () => {
+      // Regression test: `opts.maxRetries || 3` would silently coerce an
+      // explicit "don't retry" (0) back up to the default of 3, since 0 is
+      // falsy. It must be treated as a real, meaningful value via `?? 3`.
+      const error = new Error('Error');
+      mockIsAuthenticationError.mockReturnValue(true); // would normally be retried
+
+      const operation = jest.fn().mockRejectedValue(error);
+
+      await expect(withRetry(operation, { maxRetries: 0 })).rejects.toThrow('Error');
+      expect(operation).toHaveBeenCalledTimes(1);
+    });
+
     it('should handle non-Error objects', async () => {
       const stringError = 'String error';
       
@@ -262,6 +281,52 @@ describe('retry utility', () => {
         enableCircuitBreaker: true,
         circuitBreakerName: 'vikunja-api-operations'
       });
+    });
+  });
+
+  describe('createCircuitBreaker / circuitBreakerRegistry', () => {
+    afterEach(() => {
+      circuitBreakerRegistry.clear();
+    });
+
+    it('re-fires with fresh arguments on every call, unlike a closure-captured operation', async () => {
+      // This is the safety property the whole module doc comment is about:
+      // `action` is a STABLE function that reads its inputs from `fire(...)`
+      // args, so reusing the same breaker name across many logical calls
+      // never replays a stale closure's captured arguments.
+      const action = jest.fn(async (x: number) => x * 2);
+      const name = `test-breaker-${Math.random()}`;
+
+      const breaker = createCircuitBreaker(action, name);
+      await expect(breaker.fire(1)).resolves.toBe(2);
+      await expect(breaker.fire(21)).resolves.toBe(42);
+
+      expect(action).toHaveBeenNthCalledWith(1, 1);
+      expect(action).toHaveBeenNthCalledWith(2, 21);
+    });
+
+    it('returns the cached breaker for a name that already has one, ignoring the new operation reference', () => {
+      const name = `test-breaker-cache-${Math.random()}`;
+      const first = createCircuitBreaker(async () => 'first', name);
+      const second = createCircuitBreaker(async () => 'second', name);
+
+      expect(second).toBe(first);
+    });
+
+    it('registers the breaker under the given name and clear() forgets it', async () => {
+      const name = `test-breaker-registry-${Math.random()}`;
+      expect(circuitBreakerRegistry.get(name)).toBeUndefined();
+
+      const breaker = createCircuitBreaker(async () => 'ok', name);
+      expect(circuitBreakerRegistry.get(name)).toBe(breaker);
+
+      circuitBreakerRegistry.clear();
+      expect(circuitBreakerRegistry.get(name)).toBeUndefined();
+
+      // A fresh call with the same name after clear() creates a NEW breaker
+      // instance rather than returning the shut-down one.
+      const rebuilt = createCircuitBreaker(async () => 'ok', name);
+      expect(rebuilt).not.toBe(breaker);
     });
   });
 });

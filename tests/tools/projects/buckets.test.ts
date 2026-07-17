@@ -9,6 +9,7 @@ import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 import { AuthManager } from '../../../src/auth/AuthManager';
 import { listBuckets } from '../../../src/tools/projects/buckets';
 import { MCPError, ErrorCode } from '../../../src/types';
+import { circuitBreakerRegistry } from '../../../src/utils/retry';
 
 // Mock global fetch
 const mockFetch = jest.fn();
@@ -42,6 +43,11 @@ describe('listBuckets', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockFetch.mockReset();
+    // vikunjaRestRequest protects every call with a process-wide named
+    // circuit breaker; clear accumulated stats between tests so a
+    // deliberately failing scenario doesn't trip the breaker for a later
+    // test sharing the same auto-derived breaker name.
+    circuitBreakerRegistry.clear();
     authManager = new AuthManager();
     authManager.connect('https://vikunja.test', 'tk_test-token');
   });

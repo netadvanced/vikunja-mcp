@@ -5,6 +5,7 @@ import { basename, join } from 'node:path';
 
 import { handleAttach } from '../../../src/tools/tasks/attach';
 import type { AuthManager } from '../../../src/auth/AuthManager';
+import { circuitBreakerRegistry } from '../../../src/utils/retry';
 
 type FetchMock = jest.Mock<typeof fetch>;
 
@@ -37,6 +38,10 @@ describe('handleAttach', () => {
     originalFetch = globalThis.fetch;
     fetchMock = jest.fn() as FetchMock;
     globalThis.fetch = fetchMock as unknown as typeof fetch;
+    // All attach calls share one auto-derived breaker name
+    // ('vikunja-rest-tasks-attachments'); clear the process-wide registry so
+    // one test's failure doesn't count against another's.
+    circuitBreakerRegistry.clear();
   });
 
   afterEach(() => {
@@ -173,13 +178,17 @@ describe('handleAttach', () => {
     } as unknown as Response);
     await expect(
       handleAttach({ id: 99999, fileContent: 'aGkK' }, makeAuth()),
-    ).rejects.toThrow('attach failed: HTTP 404 Not Found: task not found');
+    ).rejects.toThrow(
+      'Vikunja REST request failed (PUT /tasks/99999/attachments): HTTP 404 Not Found — task not found',
+    );
   });
 
   it('wraps network errors with explanatory message', async () => {
     fetchMock.mockRejectedValue(new Error('ECONNREFUSED'));
     await expect(
       handleAttach({ id: 1, fileContent: 'aGkK' }, makeAuth()),
-    ).rejects.toThrow(/^attach: network error PUTting .*: ECONNREFUSED$/);
+    ).rejects.toThrow(
+      'Vikunja REST request failed (PUT /tasks/1/attachments): ECONNREFUSED',
+    );
   });
 });

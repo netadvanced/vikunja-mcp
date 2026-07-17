@@ -9,6 +9,7 @@ import { parseMarkdown } from '../utils/markdown';
 
 // Import the function we're mocking
 import { getClientFromContext } from '../../src/client';
+import { circuitBreakerRegistry } from '../../src/utils/retry';
 
 // Mock the modules
 jest.mock('../../src/client', () => ({
@@ -60,6 +61,12 @@ describe('Teams Tool', () => {
   };
 
   beforeEach(() => {
+    // vikunjaRestRequest protects every call with a process-wide named
+    // circuit breaker; clear accumulated stats between tests so a
+    // deliberately failing scenario doesn't trip the breaker for a later
+    // test sharing the same auto-derived breaker name.
+    circuitBreakerRegistry.clear();
+
     // Setup mock client
     mockClient = {
       getToken: jest.fn().mockReturnValue('test-token'),

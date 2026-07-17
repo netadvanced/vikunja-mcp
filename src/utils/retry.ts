@@ -33,6 +33,22 @@ class CircuitBreakerRegistry {
     await Promise.all(promises);
   }
 
+  /**
+   * Shuts down and forgets every registered breaker, including its
+   * accumulated failure/success stats. `resetAll` only closes breakers that
+   * are currently open — it leaves their rolling stats intact, so a breaker
+   * that tripped once would still be closer to tripping again. Test suites
+   * that exercise `vikunjaRestRequest` (which registers a real, named
+   * breaker per endpoint group) need full isolation between test cases;
+   * this is that reset.
+   */
+  clear(): void {
+    for (const breaker of this.breakers.values()) {
+      breaker.shutdown();
+    }
+    this.breakers.clear();
+  }
+
   getAllStats(): Record<string, unknown> {
     const stats: Record<string, unknown> = {};
     for (const [name, breaker] of this.breakers.entries()) {
@@ -84,22 +100,35 @@ const DEFAULT_OPTIONS: Required<Omit<RetryOptions, 'shouldRetry'>> = {
 };
 
 /**
- * Simple circuit breaker factory using opossum directly
+ * Simple circuit breaker factory using opossum directly.
+ *
+ * `operation` MUST be a stable function reference — not a closure captured
+ * per call-site invocation — because the registry caches the breaker (and
+ * therefore the action it was constructed with) by `name` and returns the
+ * cached instance on every subsequent call with that name, silently
+ * discarding whatever `operation` was passed that time. Passing a fresh
+ * closure each call under a shared/reused name was the exact bug fixed in
+ * the wave0 baseline (a later call's arguments got lost, and the FIRST
+ * closure ever registered under that name kept firing instead). Callers
+ * that need per-call arguments must give `operation` a signature that takes
+ * those arguments as parameters and pass them to `breaker.fire(...)` —
+ * never bake them into the closure.
  */
-export function createCircuitBreaker<T>(
-  operation: () => Promise<T>,
+export function createCircuitBreaker<TArgs extends unknown[], TR>(
+  operation: (...args: TArgs) => Promise<TR>,
   name: string,
   options: RetryOptions = {}
-): CircuitBreaker {
+): CircuitBreaker<TArgs, TR> {
   // Check if a circuit breaker with this name already exists
   const existingBreaker = circuitBreakerRegistry.get(name);
   if (existingBreaker) {
-    return existingBreaker;
+    return existingBreaker as unknown as CircuitBreaker<TArgs, TR>;
   }
 
   const opts = { ...DEFAULT_OPTIONS, ...options };
 
-  const breaker = new CircuitBreaker(operation, {
+  const breaker = new CircuitBreaker<TArgs, TR>(operation, {
+    name,
     timeout: opts.timeout,
     resetTimeout: opts.resetTimeout,
     errorThresholdPercentage: opts.errorThresholdPercentage,
@@ -107,7 +136,7 @@ export function createCircuitBreaker<T>(
   });
 
   // Register with the global registry
-  circuitBreakerRegistry.register(name, breaker);
+  circuitBreakerRegistry.register(name, breaker as unknown as CircuitBreaker);
 
   // Essential logging only
   breaker.on('open', () => logger.warn(`Circuit breaker ${name} opened`));
@@ -126,8 +155,11 @@ export async function withRetry<T>(
   const opts = { ...DEFAULT_OPTIONS, ...options };
   let lastError: unknown;
   let delay = opts.initialDelay || 1000;
+  // `?? 3`, not `|| 3`: 0 is a meaningful, valid value ("don't retry at
+  // all") and must not be coerced to the default of 3 the way `||` would.
+  const maxRetries = opts.maxRetries ?? 3;
 
-  for (let attempt = 0; attempt <= (opts.maxRetries || 3); attempt++) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       // Execute the operation directly. Note: we intentionally do NOT wrap
       // this in a name-cached circuit breaker here. The breaker registry
@@ -146,12 +178,12 @@ export async function withRetry<T>(
         : isRetryableError(error as Error);
 
       // If this is the last attempt or error is not retryable, throw
-      if (attempt === (opts.maxRetries || 3) || !shouldRetry) {
+      if (attempt === maxRetries || !shouldRetry) {
         throw error;
       }
 
       // Log retry attempt
-      logger.debug(`Retry attempt ${attempt + 1}/${opts.maxRetries || 3} after ${delay}ms`);
+      logger.debug(`Retry attempt ${attempt + 1}/${maxRetries} after ${delay}ms`);
 
       // Wait before retrying with exponential backoff
       await new Promise(resolve => setTimeout(resolve, delay));
@@ -171,7 +203,7 @@ export async function withNamedRetry<T>(
   options: RetryOptions = {}
 ): Promise<T> {
   const breaker = createCircuitBreaker(operation, name, options);
-  return breaker.fire() as Promise<T>;
+  return breaker.fire();
 }
 
 /**

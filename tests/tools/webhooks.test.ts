@@ -22,6 +22,7 @@ import { getClientFromContext } from '../../src/client';
 import * as validationUtils from '../../src/utils/validation';
 import type { MockVikunjaClient, MockAuthManager, MockServer } from '../types/mocks';
 import type { Webhook } from '../../src/types/vikunja';
+import { circuitBreakerRegistry } from '../../src/utils/retry';
 
 // Mock the modules
 jest.mock('../../src/client', () => ({
@@ -123,6 +124,14 @@ describe('Webhooks Tool', () => {
 
     // Reset fetch mock
     mockFetch.mockReset();
+
+    // vikunjaRestRequest now protects every call with a process-wide named
+    // circuit breaker (keyed by endpoint group, e.g. all `/projects/*/webhooks`
+    // calls here share one breaker). Without clearing accumulated stats
+    // between tests, a run of deliberately-failing tests can trip the
+    // breaker and leave every later test in this file failing with
+    // "Breaker is open" instead of exercising its own scenario.
+    circuitBreakerRegistry.clear();
 
     // Register the tool
     registerWebhooksTool(
@@ -643,8 +652,11 @@ describe('Webhooks Tool', () => {
       // Events fetch succeeds
       mockFetch.mockResolvedValueOnce(mockResponse({ body: mockEvents }));
 
-      // Update webhook fails
-      mockFetch.mockResolvedValueOnce(
+      // Update webhook fails. Persistent (not `...Once`): a bare 500 is
+      // retried by vikunjaRestRequest's default policy, so every attempt
+      // must see the same failing response for the final thrown message to
+      // still be this one.
+      mockFetch.mockResolvedValue(
         mockResponse({ ok: false, status: 500, statusText: 'Server Error' }),
       );
 

@@ -2,13 +2,21 @@
  * Tests for the direct Vikunja REST helper.
  *
  * Covers vikunjaRestRequest (URL normalization, body handling, HTTP errors,
- * network errors, empty/non-JSON bodies) and resolveKanbanViewId.
+ * network errors, empty/non-JSON bodies), resolveKanbanViewId, retry
+ * behavior, named circuit breaker grouping/opening, and the multipart
+ * variant used by the attach subcommand.
  */
 
-import { describe, it, expect, beforeEach, jest } from '@jest/globals';
+import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
 import { AuthManager } from '../../src/auth/AuthManager';
-import { vikunjaRestRequest, resolveKanbanViewId } from '../../src/utils/vikunja-rest';
+import {
+  vikunjaRestRequest,
+  vikunjaRestMultipartRequest,
+  resolveKanbanViewId,
+  deriveRestBreakerName,
+} from '../../src/utils/vikunja-rest';
 import { MCPError, ErrorCode } from '../../src/types';
+import { circuitBreakerRegistry } from '../../src/utils/retry';
 
 // Mock global fetch
 const mockFetch = jest.fn();
@@ -50,6 +58,16 @@ describe('vikunja-rest helper', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockFetch.mockReset();
+    // The circuit breaker registry in `../../src/utils/retry` is a
+    // process-wide singleton keyed by breaker name, and many tests below
+    // reuse the same path (so the same auto-derived breaker name) with a
+    // deliberately failing response. Without clearing accumulated
+    // stats/open-state between tests, a handful of consecutive failures
+    // trips the breaker open and every later test in this file starts
+    // failing with "Breaker is open" instead of exercising its own
+    // scenario. `resetAll()` alone isn't enough — it only closes an open
+    // breaker, it doesn't forget the failure counts that got it there.
+    circuitBreakerRegistry.clear();
     authManager = new AuthManager();
     authManager.connect('https://vikunja.test', 'tk_test-token');
   });
@@ -136,14 +154,20 @@ describe('vikunja-rest helper', () => {
     });
 
     it('throws an MCPError when fetch rejects (network error)', async () => {
-      // Persistent rejection: this test makes two assertion calls.
+      // Persistent rejection: this test makes two assertion calls. Retry is
+      // disabled since this test is about the MCPError wrapping/message,
+      // not retry behavior (which has its own dedicated tests below) — the
+      // message itself ("connection refused") would otherwise be retried
+      // by the default policy, and each retry attempt fires the breaker
+      // again, risking it tripping open partway through this test.
       mockFetch.mockRejectedValue(new Error('connection refused'));
+      const noRetry = { retry: { maxRetries: 0 } };
 
       await expect(
-        vikunjaRestRequest(authManager, 'GET', '/tasks/1'),
+        vikunjaRestRequest(authManager, 'GET', '/tasks/1', undefined, noRetry),
       ).rejects.toThrow(MCPError);
       await expect(
-        vikunjaRestRequest(authManager, 'GET', '/tasks/1'),
+        vikunjaRestRequest(authManager, 'GET', '/tasks/1', undefined, noRetry),
       ).rejects.toThrow(
         'Vikunja REST request failed (GET /tasks/1): connection refused',
       );
@@ -198,8 +222,13 @@ describe('vikunja-rest helper', () => {
         }),
       );
 
+      // A bare 500 is retryable by default; disable retry here since this
+      // test is about the message formatting, not retry behavior (which
+      // has its own dedicated tests below).
       try {
-        await vikunjaRestRequest(authManager, 'POST', '/things');
+        await vikunjaRestRequest(authManager, 'POST', '/things', undefined, {
+          retry: { maxRetries: 0 },
+        });
         throw new Error('should have thrown');
       } catch (error) {
         expect((error as MCPError).message).toBe(
@@ -259,8 +288,12 @@ describe('vikunja-rest helper', () => {
         }),
       );
 
+      // 502 is retryable by default; disable retry since this test targets
+      // the "body unreadable" fallback message, not retry behavior.
       await expect(
-        vikunjaRestRequest(authManager, 'GET', '/tasks/1'),
+        vikunjaRestRequest(authManager, 'GET', '/tasks/1', undefined, {
+          retry: { maxRetries: 0 },
+        }),
       ).rejects.toThrow(
         'Vikunja REST request failed (GET /tasks/1): HTTP 502 Bad Gateway',
       );
@@ -317,6 +350,264 @@ describe('vikunja-rest helper', () => {
       );
 
       await expect(resolveKanbanViewId(authManager, 4)).rejects.toThrow(MCPError);
+    });
+  });
+
+  describe('deriveRestBreakerName', () => {
+    it('groups by the first two non-numeric path segments', () => {
+      expect(deriveRestBreakerName('/webhooks/events')).toBe('vikunja-rest-webhooks-events');
+      expect(deriveRestBreakerName('/projects/4/webhooks')).toBe(
+        'vikunja-rest-projects-webhooks',
+      );
+      expect(deriveRestBreakerName('/tasks/7')).toBe('vikunja-rest-tasks');
+      expect(deriveRestBreakerName('/teams/3/members/alice')).toBe('vikunja-rest-teams-members');
+    });
+
+    it('falls back to "root" for a path with no non-numeric segments', () => {
+      expect(deriveRestBreakerName('/42')).toBe('vikunja-rest-root');
+    });
+  });
+
+  describe('retry behavior', () => {
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('retries a transient network error and succeeds', async () => {
+      // Real fetch() failures carry the actual cause code on `.code` (or
+      // nested in `.cause.code` for undici); a bare `new Error('ECONNRESET')`
+      // with no such property is NOT what a real network failure looks
+      // like and must not be treated as retryable by coincidence of its
+      // message text.
+      const connReset = Object.assign(new Error('read ECONNRESET'), {
+        code: 'ECONNRESET',
+      });
+      mockFetch
+        .mockRejectedValueOnce(connReset)
+        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ ok: true }) }));
+
+      const promise = vikunjaRestRequest(authManager, 'GET', '/tasks/1');
+      // Default JSON retry initialDelay is 250ms.
+      await jest.advanceTimersByTimeAsync(250);
+
+      await expect(promise).resolves.toEqual({ ok: true });
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not retry a network error with no recognizable transient signal', async () => {
+      mockFetch.mockRejectedValueOnce(new Error('boom'));
+
+      await expect(
+        vikunjaRestRequest(authManager, 'GET', '/tasks/1'),
+      ).rejects.toThrow('boom');
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('retries a network error surfaced via a nested `.cause.code` (undici fetch shape)', async () => {
+      const fetchFailed = Object.assign(new TypeError('fetch failed'), {
+        cause: { code: 'UND_ERR_CONNECT_TIMEOUT' },
+      });
+      mockFetch
+        .mockRejectedValueOnce(fetchFailed)
+        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ ok: true }) }));
+
+      const promise = vikunjaRestRequest(authManager, 'GET', '/tasks/1');
+      await jest.advanceTimersByTimeAsync(250);
+
+      await expect(promise).resolves.toEqual({ ok: true });
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('retries a 500 response up to the configured maxRetries, then throws', async () => {
+      mockFetch.mockResolvedValue(
+        mockResponse({ ok: false, status: 500, statusText: 'Internal Server Error', text: '' }),
+      );
+
+      const promise = vikunjaRestRequest(authManager, 'GET', '/tasks/1', undefined, {
+        retry: { maxRetries: 2, initialDelay: 10, maxDelay: 20 },
+      });
+      promise.catch(() => {});
+
+      await jest.advanceTimersByTimeAsync(10);
+      await jest.advanceTimersByTimeAsync(20);
+
+      await expect(promise).rejects.toThrow(
+        'Vikunja REST request failed (GET /tasks/1): HTTP 500 Internal Server Error',
+      );
+      // Initial attempt + 2 retries.
+      expect(mockFetch).toHaveBeenCalledTimes(3);
+    });
+
+    it('does not retry a 404 (non-retryable) response', async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ ok: false, status: 404, statusText: 'Not Found', text: '' }),
+      );
+
+      await expect(
+        vikunjaRestRequest(authManager, 'GET', '/tasks/1'),
+      ).rejects.toThrow('HTTP 404');
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not retry a 401 by default, so getValidEvents-style callers fail fast into their fallback', async () => {
+      // Mirrors docs/VIKUNJA_API_ISSUES.md #8: /webhooks/events can return
+      // 401 with an otherwise-valid token. Retrying would only add latency
+      // before webhooks.ts's getValidEvents falls back to its default list.
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ ok: false, status: 401, statusText: 'Unauthorized', text: '' }),
+      );
+
+      try {
+        await vikunjaRestRequest(authManager, 'GET', '/webhooks/events');
+        throw new Error('should have thrown');
+      } catch (error) {
+        expect(error).toBeInstanceOf(MCPError);
+        expect((error as MCPError).details?.statusCode).toBe(401);
+      }
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('named circuit breaker', () => {
+    it('opens after repeated failures and fails fast without calling fetch again', async () => {
+      mockFetch.mockResolvedValue(
+        mockResponse({ ok: false, status: 500, statusText: 'Internal Server Error', text: '' }),
+      );
+      const opts = {
+        breakerName: 'test-breaker-opens',
+        retry: {
+          maxRetries: 0,
+          errorThresholdPercentage: 1,
+          volumeThreshold: 2,
+          resetTimeout: 60_000,
+        },
+      };
+
+      // Two failing calls trip the breaker (volumeThreshold met, 100% > 1%).
+      await expect(
+        vikunjaRestRequest(authManager, 'GET', '/tasks/1', undefined, opts),
+      ).rejects.toThrow('HTTP 500');
+      await expect(
+        vikunjaRestRequest(authManager, 'GET', '/tasks/1', undefined, opts),
+      ).rejects.toThrow('HTTP 500');
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+
+      // The breaker is now open: a third call fails immediately with the
+      // breaker's own error, and never reaches fetch again.
+      await expect(
+        vikunjaRestRequest(authManager, 'GET', '/tasks/1', undefined, opts),
+      ).rejects.toThrow('Breaker is open');
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('keeps an unrelated endpoint group healthy while another groups breaker is open', async () => {
+      mockFetch.mockResolvedValue(
+        mockResponse({ ok: false, status: 500, statusText: 'Internal Server Error', text: '' }),
+      );
+      const failingOpts = {
+        breakerName: 'test-breaker-group-a',
+        retry: { maxRetries: 0, errorThresholdPercentage: 1, volumeThreshold: 1 },
+      };
+
+      await expect(
+        vikunjaRestRequest(authManager, 'GET', '/a', undefined, failingOpts),
+      ).rejects.toThrow('HTTP 500');
+      // Group A's breaker is now open.
+      await expect(
+        vikunjaRestRequest(authManager, 'GET', '/a', undefined, failingOpts),
+      ).rejects.toThrow('Breaker is open');
+
+      // A different, healthy endpoint group is unaffected.
+      mockFetch.mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ ok: true }) }));
+      await expect(
+        vikunjaRestRequest(authManager, 'GET', '/b', undefined, {
+          breakerName: 'test-breaker-group-b',
+        }),
+      ).resolves.toEqual({ ok: true });
+    });
+  });
+
+  describe('vikunjaRestMultipartRequest', () => {
+    const makeForm = (): FormData => {
+      const form = new FormData();
+      form.append('files', new Blob(['hi']), 'hi.txt');
+      return form;
+    };
+
+    it('PUTs the form without a Content-Type header and parses the JSON response', async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ text: JSON.stringify({ success: [{ id: 1 }] }) }),
+      );
+
+      const form = makeForm();
+      const result = await vikunjaRestMultipartRequest(
+        authManager,
+        'PUT',
+        '/tasks/42/attachments',
+        form,
+      );
+
+      expect(result).toEqual({ success: [{ id: 1 }] });
+      const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe('https://vikunja.test/api/v1/tasks/42/attachments');
+      expect(init.method).toBe('PUT');
+      expect(init.body).toBe(form);
+      const headers = init.headers as Record<string, string>;
+      expect(headers.Authorization).toBe('Bearer tk_test-token');
+      expect(headers['Content-Type']).toBeUndefined();
+    });
+
+    it('does not retry on failure by default (unlike the JSON variant)', async () => {
+      mockFetch.mockResolvedValue(
+        mockResponse({ ok: false, status: 500, statusText: 'Internal Server Error', text: '' }),
+      );
+
+      await expect(
+        vikunjaRestMultipartRequest(authManager, 'PUT', '/tasks/1/attachments', makeForm()),
+      ).rejects.toThrow(
+        'Vikunja REST request failed (PUT /tasks/1/attachments): HTTP 500 Internal Server Error',
+      );
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('honors an explicit retry override', async () => {
+      jest.useFakeTimers();
+      try {
+        const connReset = Object.assign(new Error('read ECONNRESET'), {
+          code: 'ECONNRESET',
+        });
+        mockFetch
+          .mockRejectedValueOnce(connReset)
+          .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ success: [] }) }));
+
+        const promise = vikunjaRestMultipartRequest(
+          authManager,
+          'PUT',
+          '/tasks/1/attachments',
+          makeForm(),
+          { retry: { maxRetries: 1, initialDelay: 10 } },
+        );
+        await jest.advanceTimersByTimeAsync(10);
+
+        await expect(promise).resolves.toEqual({ success: [] });
+        expect(mockFetch).toHaveBeenCalledTimes(2);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('wraps a network error as an MCPError', async () => {
+      mockFetch.mockRejectedValueOnce(new Error('ECONNREFUSED'));
+
+      await expect(
+        vikunjaRestMultipartRequest(authManager, 'PUT', '/tasks/1/attachments', makeForm()),
+      ).rejects.toThrow(
+        'Vikunja REST request failed (PUT /tasks/1/attachments): ECONNREFUSED',
+      );
     });
   });
 });

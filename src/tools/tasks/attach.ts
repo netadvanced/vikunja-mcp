@@ -22,6 +22,7 @@ import { z } from 'zod';
 
 import type { AuthManager } from '../../auth/AuthManager';
 import { MCPError, ErrorCode } from '../../types';
+import { vikunjaRestMultipartRequest } from '../../utils/vikunja-rest';
 
 export const attachSchemaFields = {
   filePath: z.string().optional(),
@@ -90,48 +91,23 @@ export async function handleAttach(
   // Strip any directory component a caller might inject via `filename`.
   name = basename(name);
 
-  const session = authManager.getSession();
-  const base = (session.apiUrl ?? '').replace(/\/+$/, '');
-  const url = `${base}/tasks/${id}/attachments`;
-
   const form = new FormData();
   form.append('files', new Blob([bytes]), name);
 
-  let response: Response;
-  try {
-    response = await fetch(url, {
-      method: 'PUT',
-      headers: { Authorization: `Bearer ${session.apiToken}` },
-      body: form,
-    });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    throw new MCPError(
-      ErrorCode.API_ERROR,
-      `attach: network error PUTting ${url}: ${message}`,
-    );
-  }
-
-  if (!response.ok) {
-    let body = '';
-    try {
-      body = await response.text();
-    } catch {
-      // Body unavailable; status alone is informative.
-    }
-    throw new MCPError(
-      ErrorCode.API_ERROR,
-      `attach failed: HTTP ${response.status} ${response.statusText}` +
-        (body ? `: ${body.slice(0, 500)}` : ''),
-    );
-  }
-
-  let data: unknown = null;
-  try {
-    data = await response.json();
-  } catch {
-    // Vikunja can return an empty body on success.
-  }
+  // Uploads go through the shared REST helper's multipart variant, which
+  // gives this call the same URL normalization, named circuit breaker, and
+  // MCPError/statusCode error contract as every other direct-REST call —
+  // it previously built its own URL by hand (skipping the `/api/v1`
+  // normalization vikunjaRestRequest applies) and had no failure
+  // protection at all. Retries stay off by default here (see
+  // DEFAULT_MULTIPART_RETRY in vikunja-rest.ts): resending a file upload
+  // after an ambiguous failure risks duplicating the attachment.
+  const data = await vikunjaRestMultipartRequest(
+    authManager,
+    'PUT',
+    `/tasks/${id}/attachments`,
+    form,
+  );
 
   const summary = { taskId: id, filename: name, bytes: bytes.length, source };
 

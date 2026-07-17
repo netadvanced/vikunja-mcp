@@ -11,6 +11,7 @@ import type { Project, Task, Label } from 'node-vikunja';
 import type { MockVikunjaClient, MockAuthManager, MockServer } from '../types/mocks';
 import { getClientFromContext } from '../../src/client';
 import { parseMarkdown } from '../utils/markdown';
+import { circuitBreakerRegistry } from '../../src/utils/retry';
 
 // Mock the MCP server
 const mockServer = {
@@ -49,6 +50,12 @@ global.fetch = jest.fn() as jest.MockedFunction<typeof fetch>;
 describe('Export Tool', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    // vikunjaRestRequest protects every call with a process-wide named
+    // circuit breaker; clear accumulated stats so one test's deliberately
+    // failing scenario doesn't trip the breaker for a later test that
+    // shares the same auto-derived breaker name (e.g. all `/user/export/*`
+    // calls below).
+    circuitBreakerRegistry.clear();
     registerExportTool(mockServer, mockAuthManager);
   });
 
@@ -503,7 +510,11 @@ describe('Export Tool', () => {
     });
 
     it('should surface HTTP status details when the error body is not JSON', async () => {
-      jest.mocked(global.fetch).mockResolvedValueOnce({
+      // Persistent (not `...Once`): a bare 502 is retried by
+      // vikunjaRestRequest's default policy, so every attempt must see the
+      // same failing response for the final thrown message to still be
+      // this one.
+      jest.mocked(global.fetch).mockResolvedValue({
         ok: false,
         status: 502,
         text: async () => 'Invalid JSON',
@@ -520,7 +531,9 @@ describe('Export Tool', () => {
     });
 
     it('should handle network timeouts', async () => {
-      jest.mocked(global.fetch).mockRejectedValueOnce(new Error('Request timeout'));
+      // Persistent: "timeout" is a retryable message under the default
+      // policy, so every retry attempt must see the same rejection.
+      jest.mocked(global.fetch).mockRejectedValue(new Error('Request timeout'));
 
       const handler = mockServer.tool.mock.calls.find(
         (call) => call[0] === 'vikunja_request_user_export',
@@ -639,7 +652,9 @@ describe('Export Tool', () => {
     });
 
     it('should surface HTTP status details when the error body is not JSON', async () => {
-      jest.mocked(global.fetch).mockResolvedValueOnce({
+      // Persistent: a bare 500 is retried by default, so every attempt must
+      // see the same failing response for the final message to match.
+      jest.mocked(global.fetch).mockResolvedValue({
         ok: false,
         status: 500,
         text: async () => 'Invalid JSON',
@@ -656,7 +671,9 @@ describe('Export Tool', () => {
     });
 
     it('should handle network connection errors', async () => {
-      jest.mocked(global.fetch).mockRejectedValueOnce(new Error('Network request failed'));
+      // Persistent: "network" is a retryable message under the default
+      // policy, so every retry attempt must see the same rejection.
+      jest.mocked(global.fetch).mockRejectedValue(new Error('Network request failed'));
 
       const handler = mockServer.tool.mock.calls.find(
         (call) => call[0] === 'vikunja_download_user_export',

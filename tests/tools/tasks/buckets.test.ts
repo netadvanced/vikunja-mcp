@@ -9,6 +9,7 @@ import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 import { AuthManager } from '../../../src/auth/AuthManager';
 import { setTaskBucket } from '../../../src/tools/tasks/buckets';
 import { MCPError, ErrorCode } from '../../../src/types';
+import { circuitBreakerRegistry } from '../../../src/utils/retry';
 
 // Mock global fetch
 const mockFetch = jest.fn();
@@ -42,6 +43,11 @@ describe('setTaskBucket', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockFetch.mockReset();
+    // vikunjaRestRequest protects every call with a process-wide named
+    // circuit breaker; clear accumulated stats between tests so a
+    // deliberately failing scenario doesn't trip the breaker for a later
+    // test sharing the same auto-derived breaker name.
+    circuitBreakerRegistry.clear();
     authManager = new AuthManager();
     authManager.connect('https://vikunja.test', 'tk_test-token');
   });
@@ -248,7 +254,9 @@ describe('setTaskBucket', () => {
     });
 
     it('propagates a network error raised while resolving the task', async () => {
-      mockFetch.mockRejectedValueOnce(new Error('network down'));
+      // Persistent: "network" is a retryable message under the default
+      // policy, so every retry attempt must see the same rejection.
+      mockFetch.mockRejectedValue(new Error('network down'));
 
       await expect(
         setTaskBucket({ id: 1, bucketId: 3 }, authManager),

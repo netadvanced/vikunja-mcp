@@ -66,7 +66,14 @@ async function getValidEvents(authManager: AuthManager): Promise<string[]> {
   // Fetch fresh events
   logger.debug('Fetching fresh webhook events from API');
   try {
-    const events = await vikunjaRestRequest<string[]>(authManager, 'GET', '/webhooks/events');
+    // Retry disabled: this call already has its own fallback-on-any-error
+    // semantics below (stale cache, then DEFAULT_WEBHOOK_EVENTS), including
+    // for the known /webhooks/events 401-with-valid-token quirk (see
+    // docs/VIKUNJA_API_ISSUES.md #8). Retrying first would only add latency
+    // before falling back to the same place.
+    const events = await vikunjaRestRequest<string[]>(authManager, 'GET', '/webhooks/events', undefined, {
+      retry: { maxRetries: 0 },
+    });
     cachedEvents = events ?? [];
     cacheExpiry = new Date(now.getTime() + CACHE_DURATION_MS);
     logger.info('Webhook events cached', {

@@ -32,6 +32,16 @@ interface MCPErrorDetails {
   maxRequestSize?: number;
   maxResponseSize?: number;
   toolName?: string;
+  /**
+   * Set by network-layer failures wrapped into an MCPError (e.g.
+   * src/utils/vikunja-rest.ts) to record whether the original cause looked
+   * transient (connection reset, timeout, DNS failure, ...) BEFORE the
+   * original error's `.code`/`.cause.code` — which callers like a retry
+   * predicate need — got discarded by the string-formatted MCPError
+   * message. Absent for non-network failures (e.g. HTTP error responses,
+   * which use `statusCode` instead).
+   */
+  transient?: boolean;
 }
 
 export class MCPError extends Error {
