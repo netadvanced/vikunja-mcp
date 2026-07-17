@@ -34,6 +34,17 @@ jest.mock('../../src/utils/logger', () => ({
   },
 }));
 
+// Mock the direct-REST helper used by 'connect' (server verification) and
+// 'info'. Default implementation resolves both the unauthenticated GET /info
+// call and the follow-up authenticated validation call (GET /user for JWT,
+// GET /projects for API tokens) so existing success-path tests don't need to
+// know about the new round trips. Individual tests override this to exercise
+// failure paths.
+const mockVikunjaRestRequest = jest.fn();
+jest.mock('../../src/utils/vikunja-rest', () => ({
+  vikunjaRestRequest: (...args: unknown[]) => mockVikunjaRestRequest(...args),
+}));
+
 describe('Auth Tool', () => {
   let mockServer: MockServer;
   let mockAuthManager: MockAuthManager;
@@ -49,6 +60,15 @@ describe('Auth Tool', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+
+    mockVikunjaRestRequest.mockReset();
+    mockVikunjaRestRequest.mockImplementation(async (_authManager: unknown, _method: string, path: string) => {
+      if (path === '/info') {
+        return { version: '1.2.3', frontend_url: 'https://vikunja.example.com' };
+      }
+      // GET /user (JWT validation) or GET /projects?per_page=1 (API token validation)
+      return [];
+    });
 
     // Create mock server that captures the tool registration
     mockServer = {
@@ -74,7 +94,7 @@ describe('Auth Tool', () => {
     // Capture the tool handler
     expect(mockServer.tool).toHaveBeenCalledWith(
       'vikunja_auth',
-      'Manage authentication with Vikunja API (connect, status, refresh, disconnect)',
+      'Manage authentication with Vikunja API (connect, status, refresh, disconnect, info)',
       expect.any(Object),
       expect.any(Function),
     );
@@ -105,6 +125,124 @@ describe('Auth Tool', () => {
       expect(markdown).toContain('Successfully connected to Vikunja');
       expect(markdown).toContain('https://vikunja.example.com');
       expect(markdown).toContain('api-token');
+
+      // Connect verification round trip: unauthenticated GET /info, then a
+      // cheap authenticated call. API tokens can't use /user (see
+      // docs/VIKUNJA_API_ISSUES.md #2), so /projects is used instead.
+      expect(mockVikunjaRestRequest).toHaveBeenCalledWith(mockAuthManager, 'GET', '/info');
+      expect(mockVikunjaRestRequest).toHaveBeenCalledWith(
+        mockAuthManager,
+        'GET',
+        '/projects?per_page=1',
+      );
+      expect(markdown).toContain('1.2.3');
+    });
+
+    it('should verify JWT sessions against GET /user rather than /projects', async () => {
+      mockAuthManager.getStatus.mockReturnValue({ authenticated: false });
+      mockAuthManager.getAuthType.mockReturnValue('jwt');
+
+      await callTool('connect', {
+        apiUrl: 'https://vikunja.example.com',
+        apiToken: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.test.signature',
+      });
+
+      expect(mockVikunjaRestRequest).toHaveBeenCalledWith(mockAuthManager, 'GET', '/info');
+      expect(mockVikunjaRestRequest).toHaveBeenCalledWith(mockAuthManager, 'GET', '/user');
+      expect(mockVikunjaRestRequest).not.toHaveBeenCalledWith(
+        mockAuthManager,
+        'GET',
+        '/projects?per_page=1',
+      );
+    });
+
+    it('should roll back the session and throw when GET /info is unreachable', async () => {
+      mockAuthManager.getStatus.mockReturnValue({ authenticated: false });
+      mockAuthManager.getAuthType.mockReturnValue('api-token');
+      mockVikunjaRestRequest.mockImplementation(async (_am: unknown, _method: string, path: string) => {
+        if (path === '/info') {
+          throw new Error('fetch failed');
+        }
+        return [];
+      });
+
+      await expect(callTool('connect', {
+        apiUrl: 'https://bad.example.com',
+        apiToken: 'tk_test-token-123',
+      })).rejects.toThrow('Could not reach a Vikunja server');
+
+      expect(mockAuthManager.disconnect).toHaveBeenCalled();
+    });
+
+    it('should roll back the session and throw when the credential is rejected', async () => {
+      mockAuthManager.getStatus.mockReturnValue({ authenticated: false });
+      mockAuthManager.getAuthType.mockReturnValue('api-token');
+      mockVikunjaRestRequest.mockImplementation(async (_am: unknown, _method: string, path: string) => {
+        if (path === '/info') {
+          return { version: '1.2.3' };
+        }
+        throw new Error('HTTP 401 Unauthorized');
+      });
+
+      await expect(callTool('connect', {
+        apiUrl: 'https://vikunja.example.com',
+        apiToken: 'tk_bad-token',
+      })).rejects.toThrow('token was rejected');
+
+      expect(mockAuthManager.disconnect).toHaveBeenCalled();
+    });
+
+    it('should reject a bad JWT session and mention JWT specifically', async () => {
+      mockAuthManager.getStatus.mockReturnValue({ authenticated: false });
+      mockAuthManager.getAuthType.mockReturnValue('jwt');
+      mockVikunjaRestRequest.mockImplementation(async (_am: unknown, _method: string, path: string) => {
+        if (path === '/info') {
+          return { version: '1.2.3' };
+        }
+        throw new Error('HTTP 401 Unauthorized');
+      });
+
+      await expect(callTool('connect', {
+        apiUrl: 'https://vikunja.example.com',
+        apiToken: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.bad.signature',
+      })).rejects.toThrow('the provided JWT token was rejected');
+
+      expect(mockAuthManager.disconnect).toHaveBeenCalled();
+    });
+
+    it('should handle non-Error values thrown by the /info round trip', async () => {
+      mockAuthManager.getStatus.mockReturnValue({ authenticated: false });
+      mockAuthManager.getAuthType.mockReturnValue('api-token');
+      mockVikunjaRestRequest.mockImplementation(async (_am: unknown, _method: string, path: string) => {
+        if (path === '/info') {
+          // eslint-disable-next-line @typescript-eslint/no-throw-literal
+          throw 'connection refused';
+        }
+        return [];
+      });
+
+      await expect(callTool('connect', {
+        apiUrl: 'https://vikunja.example.com',
+        apiToken: 'tk_test-token-123',
+      })).rejects.toThrow('Could not reach a Vikunja server at https://vikunja.example.com: connection refused');
+    });
+
+    it('should omit serverVersion from the response when /info has no version field', async () => {
+      mockAuthManager.getStatus.mockReturnValue({ authenticated: false });
+      mockAuthManager.getAuthType.mockReturnValue('api-token');
+      mockVikunjaRestRequest.mockImplementation(async (_am: unknown, _method: string, path: string) => {
+        if (path === '/info') {
+          return { frontend_url: 'https://vikunja.example.com' };
+        }
+        return [];
+      });
+
+      const result = await callTool('connect', {
+        apiUrl: 'https://vikunja.example.com',
+        apiToken: 'tk_test-token-123',
+      });
+
+      expect(result.content[0].text).not.toContain('serverVersion');
     });
 
     it('should return already connected message when authenticating to same URL', async () => {
@@ -363,6 +501,46 @@ describe('Auth Tool', () => {
       expect(aorpStatus.type).toBe('success');
       expect(markdown).toContain('auth-disconnect');
       expect(markdown).toContain('Successfully disconnected from Vikunja');
+    });
+  });
+
+  describe('info subcommand', () => {
+    it('should return the server info payload when authenticated', async () => {
+      mockAuthManager.isAuthenticated.mockReturnValue(true);
+      mockVikunjaRestRequest.mockResolvedValue({
+        version: '2.3.0',
+        frontend_url: 'https://vikunja.example.com',
+        motd: 'Welcome',
+      });
+
+      const result = await callTool('info');
+
+      expect(mockVikunjaRestRequest).toHaveBeenCalledWith(mockAuthManager, 'GET', '/info');
+      expect(result.content[0].type).toBe('text');
+      const markdown = result.content[0].text;
+      const parsed = parseMarkdown(markdown);
+      const aorpStatus = parsed.getAorpStatus();
+      expect(aorpStatus.type).toBe('success');
+      expect(markdown).toContain('auth-info');
+      expect(markdown).toContain('2.3.0');
+      expect(markdown).toContain('Welcome');
+    });
+
+    it('should require an active session', async () => {
+      mockAuthManager.isAuthenticated.mockReturnValue(false);
+
+      await expect(callTool('info')).rejects.toThrow(MCPError);
+      await expect(callTool('info')).rejects.toThrow('Authentication required');
+      expect(mockVikunjaRestRequest).not.toHaveBeenCalled();
+    });
+
+    it('should omit serverVersion metadata when the response has no version field', async () => {
+      mockAuthManager.isAuthenticated.mockReturnValue(true);
+      mockVikunjaRestRequest.mockResolvedValue({ frontend_url: 'https://vikunja.example.com' });
+
+      const result = await callTool('info');
+
+      expect(result.content[0].text).not.toContain('serverVersion');
     });
   });
 

@@ -12,6 +12,7 @@ import { getClientFromContext } from '../client';
 import type { User, ExtendedUserSettings } from '../types/vikunja';
 import { handleAuthError } from '../utils/auth-error-handler';
 import { formatAorpAsMarkdown } from '../utils/response-factory';
+import { vikunjaRestRequest } from '../utils/vikunja-rest';
 
 interface SearchParams {
   page?: number;
@@ -88,10 +89,10 @@ function transformUser(rawUser: unknown): User {
 export function registerUsersTool(server: McpServer, authManager: AuthManager, _clientFactory?: VikunjaClientFactory): void {
   server.tool(
     'vikunja_users',
-    'Manage user profiles, search users, and update user settings',
+    "Manage user profiles, search users, and update user settings. Use the 'timezones' subcommand to fetch this Vikunja instance's list of valid IANA time zone names before calling 'update-settings' with a timezone value — the server rejects unrecognized zone names, and the valid set is instance-dependent (depends on the OS Vikunja runs on).",
     {
       // Operation type
-      subcommand: z.enum(['current', 'search', 'settings', 'update-settings']),
+      subcommand: z.enum(['current', 'search', 'settings', 'update-settings', 'timezones']),
 
       // Search parameters
       search: z.string().optional(),
@@ -293,6 +294,37 @@ export function registerUsersTool(server: McpServer, authManager: AuthManager, _
               'User settings updated successfully',
               { user: updatedUser },
               { affectedFields },
+            );
+
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: formatAorpAsMarkdown(response),
+                },
+              ],
+            };
+          }
+
+          case 'timezones': {
+            // GET /user/timezones. Not exposed via node-vikunja's client
+            // (all new HTTP calls go through vikunjaRestRequest per
+            // docs/ENDPOINT-PLAYBOOK.md §3). The instance-dependent list of
+            // valid IANA time zone names this call returns is exactly what
+            // 'update-settings'' timezone argument needs to be validated
+            // against before being sent to POST /user/settings/general —
+            // Vikunja rejects unrecognized zone names there.
+            const timezones = (await vikunjaRestRequest<string[]>(
+              authManager,
+              'GET',
+              '/user/timezones',
+            )) ?? [];
+
+            const response = createStandardResponse(
+              'get-user-timezones',
+              `Retrieved ${timezones.length} available time zones`,
+              { timezones },
+              { count: timezones.length },
             );
 
             return {

@@ -10,10 +10,10 @@ Vikunja documents **169** distinct API operations (method+path). Of those:
 
 | Status | Count | % |
 |---|---|---|
-| ✅ Implemented | 60 | 36% |
+| ✅ Implemented | 73 | 43% |
 | ⚠️ Implemented (bug) | 9 | 5% |
 | 🟡 Partial | 3 | 2% |
-| ❌ Not implemented | 97 | 57% |
+| ❌ Not implemented | 84 | 50% |
 | **Total** | **169** | 100% |
 
 > Updated 2026-07-17 (Wave D, `waveD-notifications-subscriptions`, item D1): the 8
@@ -58,6 +58,17 @@ Vikunja documents **169** distinct API operations (method+path). Of those:
 > corresponding LOW-severity issues are resolved and removed from the
 > Issues table.
 >
+> Updated 2026-07-18 (Wave D, `waveD-tokens-info-admin`, item D7): 13 rows
+> below moved from ❌ to ✅ — the 3 `/tokens*` rows (new `vikunja_tokens`
+> tool, reserved behind the deny-by-default `tokenManagement` module config
+> key), `GET /info` (now used both to verify `vikunja_auth connect` and as
+> its own `info` subcommand), `GET /user/timezones` (new `vikunja_users
+> timezones` subcommand), and all 8 `/admin/*` rows (new `vikunja_admin`
+> tool, reserved behind the deny-by-default `admin` module config key AND
+> JWT-only auth gating). The corresponding MEDIUM-severity correctness
+> issue (`vikunja_auth` 'connect' never validating the connection) is
+> resolved and removed from the Issues table below.
+>
 > Everything else in this document remains the original audit snapshot
 > (plus any other Wave D updates noted inline) described above.
 
@@ -68,7 +79,7 @@ Vikunja documents **169** distinct API operations (method+path). Of those:
 
 ## Correctness Issues
 
-38 issues found in code paths that ARE implemented (as opposed to simply missing). These are bugs, not coverage gaps. (Further issues have since been resolved and removed from this table: two HIGH-severity — `vikunja_filters` being a complete local fake, in Wave D item D2, and task listing never calling the documented GET /tasks endpoint, in Wave D item D5; and two LOW-severity — list-assignees not using the dedicated assignees endpoint, and attachments having no list/get-info/delete/download surface, in Wave D item D6 — see the endpoint table below for all of them.)
+37 issues found in code paths that ARE implemented (as opposed to simply missing). These are bugs, not coverage gaps. (Further issues have since been resolved and removed from this table: two HIGH-severity — `vikunja_filters` being a complete local fake, in Wave D item D2, and task listing never calling the documented GET /tasks endpoint, in Wave D item D5; two LOW-severity — list-assignees not using the dedicated assignees endpoint, and attachments having no list/get-info/delete/download surface, in Wave D item D6; and one MEDIUM-severity — `vikunja_auth` 'connect' never validating the connection, in Wave D item D7 — see the endpoint table below for all of them.)
 
 | Severity | Domain | File | Description |
 |---|---|---|---|
@@ -80,7 +91,6 @@ Vikunja documents **169** distinct API operations (method+path). Of those:
 | HIGH | Labels (standalone) & Teams | `src/tools/teams.ts` | The 'members' subcommand family conflates numeric user IDs with Vikunja usernames. `userId` is always run through validateAndConvertId (which requires an integer or numeric-looking string), then that number is stringified and sent as `username` in the add-member body and as the path segment for remove-member/admin-toggle. The real API keys team membership by username string, so add/remove/admin-toggle can never correctly target a user with a non-numeric username — the parameter design makes the documented behavior unreachable. |
 | HIGH | Labels (standalone) & Teams | `src/tools/teams.ts` | 'members update' (admin toggle) constructs the URL as /teams/{id}/members/{userId} instead of the documented /teams/{id}/members/{userID}/admin, and sends a JSON body even though the spec defines no request body for this operation (only path params). This hits an undefined route and will fail. |
 | HIGH | Labels (standalone) & Teams | `src/tools/teams.ts` | 'members list' (the default when memberSubcommand is omitted) calls GET /teams/{id}/members, which does not exist anywhere in the Vikunja OpenAPI spec — team members are only obtainable via the `members` array embedded in the GET /teams/{id} response. This subcommand will 404 against a real server. |
-| MEDIUM | Auth, API tokens, and service/meta info | `src/tools/auth.ts` | vikunja_auth 'connect' performs no server round-trip to validate the apiUrl/apiToken (no call to GET /info or any authenticated endpoint). It always reports 'Successfully connected to Vikunja' as long as apiUrl is a syntactically valid URL and apiToken is a non-empty string, even if the URL is wrong or the token is invalid/expired. The user only discovers a bad connection when the first substantive tool call (e.g. vikunja_tasks list) fails. Calling client.system.getInfo() (node-vikunja SystemService.getInfo, GET /info, no auth required) during connect would let this fail fast and give an accurate 'connected' status, and it's already available via node-vikunja but unused anywhere in src/. |
 | MEDIUM | User account & settings | `node_modules/node-vikunja/dist/esm/services/user.service.js` | UserService.deleteCalDavToken(tokenId) sends this.request(`/user/settings/token/caldav/${tokenId}`, 'GET') instead of 'DELETE'. This is a genuine bug in the node-vikunja library itself (not currently reachable through this MCP server since no tool calls it, but would silently fail to delete the token — and would instead just fetch something — if any future tool wired it up). |
 | MEDIUM | Projects — CRUD, backgrounds, views, duplication | `src/tools/projects/` | None of the six Unsplash background endpoints (get/delete background, set unsplash background, upload background, unsplash image/thumb, unsplash search) and the duplicate-project endpoint are implemented anywhere, even though node-vikunja's ProjectService fully supports all of them (getProjectBackground, deleteProjectBackground, setUnsplashBackground, uploadProjectBackground, searchBackgrounds, getBackgroundImage, getBackgroundThumbnail, duplicateProject). Duplicate-project in particular is a simple, commonly useful, fully-supported operation with no technical blocker (unlike file-upload endpoints, which are legitimately out of scope per MCP's no-attachment constraint) — its absence looks like an oversight rather than a deliberate exclusion. |
 | MEDIUM | Projects — CRUD, backgrounds, views, duplication | `src/tools/projects/ (missing) / src/utils/vikunja-rest.ts` | Project Views (GET/PUT /projects/{project}/views, GET/POST/DELETE /projects/{project}/views/{id}) are entirely unimplemented as user-facing functionality. node-vikunja has zero support for views (confirmed: no view-related model/service file, and grepping the whole compiled package for 'views' returns nothing), and the only place this MCP server touches views at all is a narrow internal helper (resolveKanbanViewId in src/utils/vikunja-rest.ts) that GETs /projects/{id}/views purely to auto-discover the Kanban view id for the unrelated list-buckets feature. There is no way for a caller to enumerate a project's views, inspect a specific view, or create/update/delete a view. |
@@ -125,11 +135,11 @@ Every documented Vikunja API operation, grouped by domain, in spec order. Sorted
 | POST | `/user/token/refresh` | ❌ Not implemented | — | node-vikunja v0.4.0 has NO method that calls this path at all (its only 'renew' method, AuthService.renewToken, actually posts to /user/token, not /user/token/refresh — see top-level issue). MCP has no tool referencing this endpoint either way. |
 | POST | `/user/logout` | ❌ Not implemented | vikunja_auth (disconnect subcommand) | vikunja_auth's 'disconnect' only clears the local AuthManager session and client factory cache (authManager.disconnect() + clearGlobalClientFactory()); it never calls the server-side /user/logout endpoint. This is moot anyway since node-vikunja v0.4.0 does not implement a logout method at all (grep of the whole node-vikunja dist tree found zero references to 'logout'). |
 | POST | `/auth/openid/{provider}/callback` | ❌ Not implemented | — | No OIDC flow exposed by this MCP server; consistent with the pre-provisioned-token design noted in the task. |
-| GET | `/tokens` | ❌ Not implemented | — | No vikunja_tokens (or similar) tool exists; grep of src/ for .tokens./getTokens/createToken/deleteToken/getTokenRoutes returned zero hits outside node_modules. API-token management (as opposed to using a token to authenticate) is entirely unimplemented. |
-| PUT | `/tokens` | ❌ Not implemented | — | No MCP tool creates/manages Vikunja API tokens. |
-| DELETE | `/tokens/{tokenID}` | ❌ Not implemented | — | Not implemented in any MCP tool. |
+| GET | `/tokens` | ✅ Implemented | `vikunja_tokens` (`list`) | Reserved behind the deny-by-default `tokenManagement` module config key (Wave D). Query params page/per_page/s map to page/perPage/search. |
+| PUT | `/tokens` | ✅ Implemented | `vikunja_tokens` (`create`) | Body fields (title, permissions, expires_at, owner_id) match `models.APIToken` exactly. The response's `token` secret value is surfaced to the caller (only ever returned this once). |
+| DELETE | `/tokens/{tokenID}` | ✅ Implemented | `vikunja_tokens` (`delete`) | — |
 | GET | `/routes` | ❌ Not implemented | — | Not implemented in any MCP tool. |
-| GET | `/info` | ❌ Not implemented | — | Not surfaced anywhere; also not used internally to validate a connection during vikunja_auth 'connect' — VikunjaClientFactory.getClient() just instantiates the client with the stored url/token and never round-trips to the server, so 'connect' can silently 'succeed' with a bad URL or token until the first real tool call fails. |
+| GET | `/info` | ✅ Implemented | `vikunja_auth` (`connect`, `info`) | Wave D: `connect` now calls `GET /info` (no auth required) as the first leg of a two-step verification round trip (resolving the MEDIUM-severity correctness issue this used to have — see the Wave D item D7 update note above) and reports `serverVersion` in its response. Also exposed directly as the `info` subcommand for callers that just want the server payload (version, frontend_url, motd, enabled features, ...). |
 
 ### User account & settings
 
@@ -160,21 +170,21 @@ Every documented Vikunja API operation, grouped by domain, in spec order. Sorted
 | POST | `/user/settings/totp/enable` | ❌ Not implemented | — | node-vikunja exposes users.enableTOTP() but no MCP tool calls it. |
 | POST | `/user/settings/totp/enroll` | ❌ Not implemented | — | node-vikunja exposes users.enrollTOTP() but no MCP tool calls it. |
 | GET | `/user/settings/totp/qrcode` | ❌ Not implemented | — | node-vikunja exposes users.getTOTPQRCode() (returns a Blob) but no MCP tool calls it; also not naturally representable in MCP's text-based content model. |
-| GET | `/user/timezones` | ❌ Not implemented | — | node-vikunja exposes users.getTimezones() but no MCP tool calls it. |
+| GET | `/user/timezones` | ✅ Implemented | `vikunja_users` (`timezones`) | Wave D: called via `vikunjaRestRequest` (not node-vikunja). Intended to validate `update-settings`' `timezone` argument before it's sent, since the valid set is instance-dependent. |
 | GET | `/{username}/avatar` | ❌ Not implemented | — | Not exposed by node-vikunja's UserService and no MCP tool calls it; a separate AvatarService exists in node-vikunja (services/avatar.service.js) but is unused by this project. |
 
 ### Admin
 
 | Method | Path | Status | MCP Tool | Notes |
 |---|---|---|---|---|
-| GET | `/admin/overview` | ❌ Not implemented | — | No admin tool module exists in src/tools; grep for 'admin' turns up only unrelated concepts (team member admin flag, project share right level 'admin'). node-vikunja has no admin model file either. |
-| GET | `/admin/projects` | ❌ Not implemented | — | Not implemented; distinct from regular vikunja_projects list, which does not hit this admin endpoint. |
-| PATCH | `/admin/projects/{id}/owner` | ❌ Not implemented | — | No project-owner-reassignment functionality anywhere in src/tools/projects. |
-| GET | `/admin/users` | ❌ Not implemented | — | No admin user listing tool; distinct from any non-admin /user endpoints. |
-| POST | `/admin/users` | ❌ Not implemented | — | No admin user creation capability implemented. |
-| DELETE | `/admin/users/{id}` | ❌ Not implemented | — | No admin user deletion capability implemented. |
-| PATCH | `/admin/users/{id}/admin` | ❌ Not implemented | — | Not implemented; not to be confused with the unrelated 'toggle team member admin flag' feature (POST /teams/{id}/members/{userID}/admin) in src/tools/teams.ts, which is a completely different endpoint. |
-| PATCH | `/admin/users/{id}/status` | ❌ Not implemented | — | No user status (enable/disable) management implemented. |
+| GET | `/admin/overview` | ✅ Implemented | `vikunja_admin` (`overview`) | Wave D: new `vikunja_admin` tool, reserved behind the deny-by-default `admin` module config key AND JWT-only auth gating (both must allow — config narrows auth, never expands it). |
+| GET | `/admin/projects` | ✅ Implemented | `vikunja_admin` (`list-projects`) | Distinct from `vikunja_projects list`, which never hits this admin endpoint. Query params page/per_page/s map to page/perPage/search. |
+| PATCH | `/admin/projects/{id}/owner` | ✅ Implemented | `vikunja_admin` (`set-project-owner`) | Body is `{owner_id}` per `admin.OwnerPatch`. |
+| GET | `/admin/users` | ✅ Implemented | `vikunja_admin` (`list-users`) | Distinct from any non-admin `/user` endpoints; exposes `is_admin`/`status` per `shared.AdminUser`. |
+| POST | `/admin/users` | ✅ Implemented | `vikunja_admin` (`create-user`) | Body fields (username, email, password, name, language, is_admin, skip_email_confirm) match `models.CreateUserBody` exactly. |
+| DELETE | `/admin/users/{id}` | ✅ Implemented | `vikunja_admin` (`delete-user`) | Destructive — requires an explicit `confirm: true` tool argument in addition to the API's own `mode=now\|scheduled` query param (default `scheduled`). |
+| PATCH | `/admin/users/{id}/admin` | ✅ Implemented | `vikunja_admin` (`set-user-admin`) | Not to be confused with the unrelated 'toggle team member admin flag' feature (`POST /teams/{id}/members/{userID}/admin`) in `src/tools/teams.ts` — a completely different endpoint. This one sets an explicit `is_admin` boolean via `admin.IsAdminPatch`, unlike the team one's pure toggle. |
+| PATCH | `/admin/users/{id}/status` | ✅ Implemented | `vikunja_admin` (`set-user-status`) | MCP interface accepts readable string literals (`active`/`email-confirmation-required`/`disabled`/`account-locked`) converted to the numeric `user.Status` wire value, matching the repeatMode/repeatAfter convention in docs/API_NOTES.md. |
 
 ### Projects — CRUD, backgrounds, views, duplication
 

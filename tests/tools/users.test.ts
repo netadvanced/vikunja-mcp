@@ -8,12 +8,19 @@ import { parseMarkdown } from '../utils/markdown';
 
 // Import the function we're mocking
 import { getClientFromContext } from '../../src/client';
+import { vikunjaRestRequest } from '../../src/utils/vikunja-rest';
 
 // Mock the modules
 jest.mock('../../src/client', () => ({
   getClientFromContext: jest.fn(),
 }));
 jest.mock('../../src/auth/AuthManager');
+// 'timezones' calls GET /user/timezones via the direct-REST helper (not
+// node-vikunja — see docs/ENDPOINT-PLAYBOOK.md §3), unlike every other
+// subcommand in this file which goes through the mocked node-vikunja client.
+jest.mock('../../src/utils/vikunja-rest', () => ({
+  vikunjaRestRequest: jest.fn(),
+}));
 
 describe('Users Tool', () => {
   let mockClient: MockVikunjaClient;
@@ -60,6 +67,8 @@ describe('Users Tool', () => {
   };
 
   beforeEach(() => {
+    (vikunjaRestRequest as jest.Mock).mockReset();
+
     // Setup mock client
     mockClient = {
       getToken: jest.fn(),
@@ -415,6 +424,47 @@ describe('Users Tool', () => {
     });
   });
 
+  describe('timezones subcommand', () => {
+    it('should fetch GET /user/timezones via the direct-REST helper', async () => {
+      (vikunjaRestRequest as jest.Mock).mockResolvedValue([
+        'UTC',
+        'Europe/Zurich',
+        'America/New_York',
+      ]);
+
+      const result = await callTool('timezones');
+
+      expect(vikunjaRestRequest).toHaveBeenCalledWith(mockAuthManager, 'GET', '/user/timezones');
+      expect(result.content[0].type).toBe('text');
+      const markdown = result.content[0].text;
+      const parsed = parseMarkdown(markdown);
+      const aorpStatus = parsed.getAorpStatus();
+      expect(aorpStatus.type).toBe('success');
+      expect(markdown).toContain('get-user-timezones');
+      expect(markdown).toContain('Europe/Zurich');
+      expect(markdown).toContain('**count:** 3');
+    });
+
+    it('should handle an empty/null response gracefully', async () => {
+      (vikunjaRestRequest as jest.Mock).mockResolvedValue(null);
+
+      const result = await callTool('timezones');
+
+      const markdown = result.content[0].text;
+      expect(markdown).toContain('**count:** 0');
+    });
+
+    it('should still require JWT authentication', async () => {
+      mockAuthManager.isAuthenticated.mockReturnValue(true);
+      mockAuthManager.getAuthType.mockReturnValue('api-token');
+
+      await expect(callTool('timezones')).rejects.toThrow(
+        'User operations require JWT authentication. Please reconnect using vikunja_auth.connect with JWT authentication.',
+      );
+      expect(vikunjaRestRequest).not.toHaveBeenCalled();
+    });
+  });
+
   describe('invalid subcommand', () => {
     it('should reject invalid subcommands', async () => {
       await expect(callTool('invalid')).rejects.toThrow('Invalid subcommand: invalid');
@@ -508,7 +558,7 @@ describe('Users Tool', () => {
     it('should register the vikunja_users tool', () => {
       expect(mockServer.tool).toHaveBeenCalledWith(
         'vikunja_users',
-        'Manage user profiles, search users, and update user settings',
+        expect.stringContaining('Manage user profiles, search users, and update user settings'),
         expect.any(Object), // Zod schema
         expect.any(Function), // Handler function
       );
