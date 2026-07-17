@@ -39,6 +39,7 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
         updateTask: jest.fn(),
         deleteTask: jest.fn(),
         updateTaskLabels: jest.fn(),
+        addLabelToTask: jest.fn(),
         bulkAssignUsersToTask: jest.fn(),
         removeUserFromTask: jest.fn(),
       },
@@ -139,7 +140,7 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
       });
 
       // Empty arrays should not trigger label/assignee operations
-      expect(mockClient.tasks.updateTaskLabels).not.toHaveBeenCalled();
+      expect(mockClient.tasks.addLabelToTask).not.toHaveBeenCalled();
       expect(mockClient.tasks.bulkAssignUsersToTask).not.toHaveBeenCalled();
 
       const markdown = result.content[0].text;
@@ -148,44 +149,37 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
       expect(aorpStatus.type).toBe('success');
     });
 
-    it('should handle task creation without ID for label operations', async () => {
+    it('should fail when labels are requested but task has no ID', async () => {
       const createdTaskNoId = { title: 'Test Task', project_id: 1 }; // No ID
       mockClient.tasks.createTask.mockResolvedValue(createdTaskNoId);
 
-      const result = await createTask({
-        projectId: 1,
-        title: 'Test Task',
-        labels: [1, 2], // Labels provided but task has no ID
-      });
+      await expect(
+        createTask({
+          projectId: 1,
+          title: 'Test Task',
+          labels: [1, 2], // Labels provided but task has no ID
+        }),
+      ).rejects.toThrow('did not return a task id');
 
       // Should not attempt label operations without task ID
-      expect(mockClient.tasks.updateTaskLabels).not.toHaveBeenCalled();
+      expect(mockClient.tasks.addLabelToTask).not.toHaveBeenCalled();
       expect(mockClient.tasks.getTask).not.toHaveBeenCalled();
-
-      const markdown = result.content[0].text;
-      const parsed = parseMarkdown(markdown);
-      const aorpStatus = parsed.getAorpStatus();
-      expect(aorpStatus.type).toBe('success');
     });
 
-    it('should handle task creation without ID for assignee operations', async () => {
+    it('should fail when assignees are requested but task has no ID', async () => {
       const createdTaskNoId = { title: 'Test Task', project_id: 1 }; // No ID
       mockClient.tasks.createTask.mockResolvedValue(createdTaskNoId);
 
-      const result = await createTask({
-        projectId: 1,
-        title: 'Test Task',
-        assignees: [1, 2], // Assignees provided but task has no ID
-      });
+      await expect(
+        createTask({
+          projectId: 1,
+          title: 'Test Task',
+          assignees: [1, 2], // Assignees provided but task has no ID
+        }),
+      ).rejects.toThrow('did not return a task id');
 
-      // Should not attempt assignee operations without task ID
       expect(mockClient.tasks.bulkAssignUsersToTask).not.toHaveBeenCalled();
       expect(mockClient.tasks.getTask).not.toHaveBeenCalled();
-
-      const markdown = result.content[0].text;
-      const parsed = parseMarkdown(markdown);
-      const aorpStatus = parsed.getAorpStatus();
-      expect(aorpStatus.type).toBe('success');
     });
   });
 
@@ -514,7 +508,7 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
       
       // Mock label assignment failure
       const labelError = new Error('Label assignment failed');
-      mockClient.tasks.updateTaskLabels.mockRejectedValue(labelError);
+      mockClient.tasks.addLabelToTask.mockRejectedValue(labelError);
       
       // Mock failed rollback
       const deleteError = new Error('Delete failed');

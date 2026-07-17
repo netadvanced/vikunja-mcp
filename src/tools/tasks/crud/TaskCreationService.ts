@@ -69,6 +69,11 @@ export async function createTask(args: CreateTaskArgs): Promise<{ content: Array
       args.assignees.forEach((id) => validateId(id, 'assignee ID'));
     }
 
+    // Validate label IDs upfront
+    if (args.labels && args.labels.length > 0) {
+      args.labels.forEach((id) => validateId(id, 'label ID'));
+    }
+
     const client = await getClientFromContext();
 
     // Build the initial task object with sanitized values
@@ -94,6 +99,17 @@ export async function createTask(args: CreateTaskArgs): Promise<{ content: Array
 
     // Create the base task
     const createdTask = await client.tasks.createTask(args.projectId, newTask);
+
+    // Labels/assignees require a task id — fail loudly instead of reporting success without them
+    const needsPostCreate =
+      (args.labels !== undefined && args.labels.length > 0) ||
+      (args.assignees !== undefined && args.assignees.length > 0);
+    if (needsPostCreate && !createdTask.id) {
+      throw new MCPError(
+        ErrorCode.API_ERROR,
+        'Task was created but Vikunja did not return a task id, so labels/assignees could not be applied',
+      );
+    }
 
     // Track creation state for potential rollback
     const creationState: CreationState = {
@@ -124,6 +140,25 @@ export async function createTask(args: CreateTaskArgs): Promise<{ content: Array
     // Fetch the complete task with labels and assignees
     const completeTask = createdTask.id ? await client.tasks.getTask(createdTask.id) : createdTask;
 
+    // Verify labels actually stuck — avoid silent success when the API no-ops
+    if (args.labels && args.labels.length > 0) {
+      const attachedIds = new Set(
+        (completeTask.labels || [])
+          .map((label) => label.id)
+          .filter((id): id is number => typeof id === 'number'),
+      );
+      const missing = args.labels.filter((id) => !attachedIds.has(id));
+      if (missing.length > 0) {
+        await rollbackTaskCreation(
+          client,
+          creationState,
+          new Error(
+            `Labels were requested but not attached after create (missing label ids: ${missing.join(', ')})`,
+          ),
+        );
+      }
+    }
+
     const response = createTaskResponse(
       'create-task',
       'Task created successfully',
@@ -131,8 +166,8 @@ export async function createTask(args: CreateTaskArgs): Promise<{ content: Array
       {
         timestamp: new Date().toISOString(),
         projectId: args.projectId,
-        labelsAdded: args.labels ? args.labels.length > 0 : false,
-        assigneesAdded: args.assignees ? args.assignees.length > 0 : false,
+        labelsAdded: creationState.labelsAdded,
+        assigneesAdded: creationState.assigneesAdded,
       },
       undefined, // verbosity (ignored - using standard AORP)
       undefined, // useOptimizedFormat (ignored - using standard AORP)
@@ -175,25 +210,28 @@ export async function createTask(args: CreateTaskArgs): Promise<{ content: Array
 }
 
 /**
- * Adds labels to a task with retry logic for authentication errors
+ * Adds labels to a task.
+ * Uses addLabelToTask (same as apply-label) — updateTaskLabels can silently
+ * no-op on some Vikunja versions (GitHub #37).
+ *
+ * Intentionally does not use withRetry: that helper shares an "anonymous"
+ * circuit breaker across calls, so a later create would re-fire the first
+ * call's label set against the wrong task.
  */
 async function addLabelsToTask(client: VikunjaClient, taskId: number, labelIds: number[]): Promise<void> {
   try {
-    await withRetry(
-      () => client.tasks.updateTaskLabels(taskId, {
-        label_ids: labelIds,
-      }),
-      {
-        ...RETRY_CONFIG.AUTH_ERRORS,
-        shouldRetry: (error) => isAuthenticationError(error)
-      }
-    );
+    for (const labelId of labelIds) {
+      await client.tasks.addLabelToTask(taskId, {
+        task_id: taskId,
+        label_id: labelId,
+      });
+    }
   } catch (labelError) {
-    // Check if it's an auth error after retries
+    // Check if it's an auth error
     if (isAuthenticationError(labelError)) {
       throw new MCPError(
         ErrorCode.API_ERROR,
-        `${AUTH_ERROR_MESSAGES.LABEL_CREATE} (Retried ${RETRY_CONFIG.AUTH_ERRORS.maxRetries} times). Task ID: ${taskId}`,
+        `${AUTH_ERROR_MESSAGES.LABEL_CREATE} Task ID: ${taskId}`,
       );
     }
     throw labelError;

@@ -16,6 +16,15 @@ jest.mock('../../src/client', () => ({
   clearGlobalClientFactory: jest.fn(),
 }));
 
+// Avoid shared "anonymous" circuit breaker replaying stale ops across tests
+jest.mock('../../src/utils/retry', () => {
+  const actual = jest.requireActual('../../src/utils/retry');
+  return {
+    ...actual,
+    withRetry: jest.fn().mockImplementation((fn: () => Promise<unknown>) => fn()),
+  };
+});
+
 // Import the mocked functions
 import { getClientFromContext } from '../../src/client';
 
@@ -67,6 +76,7 @@ describe('Tasks Tool - Race Condition Fix', () => {
         getProjectTasks: jest.fn(),
         createTask: jest.fn(),
         updateTaskLabels: jest.fn(),
+        addLabelToTask: jest.fn(),
         bulkAssignUsersToTask: jest.fn(),
         getTask: jest.fn(),
         deleteTask: jest.fn(),
@@ -108,7 +118,7 @@ describe('Tasks Tool - Race Condition Fix', () => {
       };
 
       mockClient.tasks.createTask.mockResolvedValue(createdTask);
-      mockClient.tasks.updateTaskLabels.mockRejectedValue(new Error('Label assignment failed'));
+      mockClient.tasks.addLabelToTask.mockRejectedValue(new Error('Label assignment failed'));
 
       const args = {
         subcommand: 'create',
@@ -135,7 +145,7 @@ describe('Tasks Tool - Race Condition Fix', () => {
       };
 
       mockClient.tasks.createTask.mockResolvedValue(createdTask);
-      mockClient.tasks.updateTaskLabels.mockResolvedValue({});
+      mockClient.tasks.addLabelToTask.mockResolvedValue({});
       mockClient.tasks.bulkAssignUsersToTask.mockRejectedValue(new Error('User assignment failed'));
 
       const args = {
@@ -164,7 +174,7 @@ describe('Tasks Tool - Race Condition Fix', () => {
       };
 
       mockClient.tasks.createTask.mockResolvedValue(createdTask);
-      mockClient.tasks.updateTaskLabels.mockRejectedValue(new Error('Label assignment failed'));
+      mockClient.tasks.addLabelToTask.mockRejectedValue(new Error('Label assignment failed'));
       mockClient.tasks.deleteTask.mockRejectedValue(new Error('Delete failed'));
 
       const args = {
@@ -216,7 +226,7 @@ describe('Tasks Tool - Race Condition Fix', () => {
       };
 
       mockClient.tasks.createTask.mockResolvedValue(createdTask);
-      mockClient.tasks.updateTaskLabels.mockResolvedValue({});
+      mockClient.tasks.addLabelToTask.mockResolvedValue({});
       mockClient.tasks.bulkAssignUsersToTask.mockResolvedValue({});
       mockClient.tasks.getTask.mockResolvedValue(completeTask);
 

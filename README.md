@@ -297,6 +297,12 @@ vikunja_tasks.update({
   priority: 5
 })
 
+// Move a task to another project (full-model merge; verified after update)
+vikunja_tasks.update({
+  id: 123,
+  projectId: 5
+})
+
 // Update recurring settings on an existing task
 vikunja_tasks.update({
   id: 123,
@@ -1019,8 +1025,9 @@ This standardized format ensures:
     - Validates date format (ISO 8601) and IDs
   - `get` - Get task details by ID
   - `update` - Update existing task
-    - Supports partial updates
+    - Supports partial updates (GET + merge before POST — Vikunja replaces the full model)
     - Can update title, description, dueDate, priority, done status
+    - Can move tasks between projects with `projectId` (verified after update)
     - Can update labels and assignees (uses efficient diff-based approach)
   - `delete` - Delete a task by ID
   - `assign` - Bulk assign users to tasks

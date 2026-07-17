@@ -31,6 +31,15 @@ jest.mock('../../src/client', () => ({
 }));
 jest.mock('../../src/auth/AuthManager');
 
+// Avoid shared "anonymous" circuit breaker replaying stale ops across tests
+jest.mock('../../src/utils/retry', () => {
+  const actual = jest.requireActual('../../src/utils/retry');
+  return {
+    ...actual,
+    withRetry: jest.fn().mockImplementation((fn: () => Promise<unknown>) => fn()),
+  };
+});
+
 describe('Tasks Tool', () => {
   let mockClient: MockVikunjaClient;
   let mockAuthManager: MockAuthManager;
@@ -123,6 +132,8 @@ describe('Tasks Tool', () => {
         getTaskComments: jest.fn(),
         createTaskComment: jest.fn(),
         updateTaskLabels: jest.fn(),
+        addLabelToTask: jest.fn(),
+        removeLabelFromTask: jest.fn(),
         bulkAssignUsersToTask: jest.fn(),
         removeUserFromTask: jest.fn(),
         bulkUpdateTasks: jest.fn(),
@@ -381,8 +392,15 @@ describe('Tasks Tool', () => {
       };
 
       mockClient.tasks.createTask.mockResolvedValue({ ...mockTask, id: 1 });
-      mockClient.tasks.getTask.mockResolvedValue({ ...mockTask, ...fullTask });
-      mockClient.tasks.updateTaskLabels.mockResolvedValue(undefined);
+      mockClient.tasks.getTask.mockResolvedValue({
+        ...mockTask,
+        ...fullTask,
+        labels: [
+          { id: 1, title: 'Label 1' },
+          { id: 2, title: 'Label 2' },
+        ],
+      });
+      mockClient.tasks.addLabelToTask.mockResolvedValue(undefined);
       mockClient.tasks.bulkAssignUsersToTask.mockResolvedValue(undefined);
 
       await callTool('create', fullTask);
@@ -394,6 +412,55 @@ describe('Tasks Tool', () => {
           project_id: 1,
         }),
       );
+      expect(mockClient.tasks.addLabelToTask).toHaveBeenCalledWith(1, {
+        task_id: 1,
+        label_id: 1,
+      });
+      expect(mockClient.tasks.addLabelToTask).toHaveBeenCalledWith(1, {
+        task_id: 1,
+        label_id: 2,
+      });
+      expect(mockClient.tasks.bulkAssignUsersToTask).toHaveBeenCalledWith(1, {
+        user_ids: [1, 2],
+      });
+    });
+
+    it('should apply labels on create and fail if they do not stick', async () => {
+      mockClient.tasks.createTask.mockResolvedValue({ ...mockTask, id: 1 });
+      mockClient.tasks.addLabelToTask.mockResolvedValue(undefined);
+      // API reports success but labels are missing on refetch
+      mockClient.tasks.getTask.mockResolvedValue({ ...mockTask, id: 1, labels: [] });
+      mockClient.tasks.deleteTask.mockResolvedValue(undefined);
+
+      await expect(
+        callTool('create', {
+          title: 'Test',
+          projectId: 1,
+          labels: [4, 3],
+        }),
+      ).rejects.toThrow('Labels were requested but not attached');
+
+      expect(mockClient.tasks.addLabelToTask).toHaveBeenCalledWith(1, {
+        task_id: 1,
+        label_id: 4,
+      });
+      expect(mockClient.tasks.addLabelToTask).toHaveBeenCalledWith(1, {
+        task_id: 1,
+        label_id: 3,
+      });
+      expect(mockClient.tasks.deleteTask).toHaveBeenCalledWith(1);
+    });
+
+    it('should fail create when labels are requested but task has no id', async () => {
+      mockClient.tasks.createTask.mockResolvedValue({ ...mockTask, id: undefined });
+
+      await expect(
+        callTool('create', {
+          title: 'Test',
+          projectId: 1,
+          labels: [1],
+        }),
+      ).rejects.toThrow('did not return a task id');
     });
 
     it('should validate required fields', async () => {
@@ -444,7 +511,7 @@ describe('Tasks Tool', () => {
 
     it('should rollback task creation when label assignment fails', async () => {
       mockClient.tasks.createTask.mockResolvedValue({ ...mockTask, id: 1 });
-      mockClient.tasks.updateTaskLabels.mockRejectedValue(new Error('Label assignment failed'));
+      mockClient.tasks.addLabelToTask.mockRejectedValue(new Error('Label assignment failed'));
       mockClient.tasks.deleteTask.mockResolvedValue(undefined);
 
       await expect(
@@ -453,9 +520,7 @@ describe('Tasks Tool', () => {
           projectId: 1,
           labels: [1, 2],
         }),
-      ).rejects.toThrow(
-        "Circuit breaker"
-      );
+      ).rejects.toThrow('Failed to complete task creation: Label assignment failed');
 
       expect(mockClient.tasks.deleteTask).toHaveBeenCalledWith(1);
     });
@@ -465,7 +530,7 @@ describe('Tasks Tool', () => {
       const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
 
       mockClient.tasks.createTask.mockResolvedValue({ ...mockTask, id: 1 });
-      mockClient.tasks.updateTaskLabels.mockResolvedValue(undefined);
+      mockClient.tasks.addLabelToTask.mockResolvedValue(undefined);
       mockClient.tasks.bulkAssignUsersToTask.mockRejectedValue(
         new Error('Assignee assignment failed'),
       );
@@ -478,9 +543,7 @@ describe('Tasks Tool', () => {
           labels: [1],
           assignees: [1, 2],
         }),
-      ).rejects.toThrow(
-        "Circuit breaker"
-      );
+      ).rejects.toThrow('Failed to complete task creation: Assignee assignment failed');
 
       expect(mockClient.tasks.deleteTask).toHaveBeenCalledWith(1);
       expect(consoleErrorSpy).toHaveBeenCalledWith(
@@ -515,7 +578,7 @@ describe('Tasks Tool', () => {
 
     it('should handle non-Error failures during label assignment', async () => {
       mockClient.tasks.createTask.mockResolvedValue({ ...mockTask, id: 1 });
-      mockClient.tasks.updateTaskLabels.mockRejectedValue('Label update failed');
+      mockClient.tasks.addLabelToTask.mockRejectedValue('Label update failed');
       mockClient.tasks.deleteTask.mockResolvedValue(undefined);
 
       await expect(
@@ -524,9 +587,7 @@ describe('Tasks Tool', () => {
           projectId: 1,
           labels: [1, 2],
         }),
-      ).rejects.toThrow(
-        "Circuit breaker"
-      );
+      ).rejects.toThrow('Failed to complete task creation: Label update failed');
 
       expect(mockClient.tasks.deleteTask).toHaveBeenCalledWith(1);
     });
@@ -823,6 +884,71 @@ describe('Tasks Tool', () => {
       const parsed = parseMarkdown(markdown);
       const aorpStatus = parsed.getAorpStatus();
       expect(aorpStatus.type).toBe('success');
+    });
+
+    it('should move a task to another project via projectId', async () => {
+      // GitHub #37 / Vikunja #442 — projectId was previously ignored on update
+      const taskInProjectA = {
+        ...mockTask,
+        project_id: 8,
+        description: 'Keep me',
+        priority: 3,
+        done: false,
+      };
+      const movedTask = {
+        ...taskInProjectA,
+        project_id: 5,
+      };
+
+      mockClient.tasks.getTask
+        .mockResolvedValueOnce(taskInProjectA)
+        .mockResolvedValueOnce(movedTask);
+      mockClient.tasks.updateTask.mockResolvedValue(movedTask);
+
+      const result = await callTool('update', {
+        id: 1,
+        projectId: 5,
+      });
+
+      // Full-model merge must include project_id so Vikunja applies the move
+      expect(mockClient.tasks.updateTask).toHaveBeenCalledWith(1, {
+        ...taskInProjectA,
+        project_id: 5,
+      });
+
+      const markdown = result.content[0].text;
+      const parsed = parseMarkdown(markdown);
+      expect(parsed.getAorpStatus().type).toBe('success');
+      expect(markdown).toContain('projectId');
+    });
+
+    it('should fail loudly if project move does not stick', async () => {
+      const taskInProjectA = {
+        ...mockTask,
+        project_id: 8,
+      };
+
+      mockClient.tasks.getTask
+        .mockResolvedValueOnce(taskInProjectA)
+        // API acknowledges update but task stays in original project
+        .mockResolvedValueOnce(taskInProjectA);
+      mockClient.tasks.updateTask.mockResolvedValue(taskInProjectA);
+
+      await expect(
+        callTool('update', {
+          id: 1,
+          projectId: 5,
+        }),
+      ).rejects.toThrow('Failed to move task 1 to project 5');
+    });
+
+    it('should validate projectId when moving a task', async () => {
+      await expect(
+        callTool('update', {
+          id: 1,
+          projectId: -1,
+        }),
+      ).rejects.toThrow('projectId must be a positive integer');
     });
 
     it('should handle label updates', async () => {
