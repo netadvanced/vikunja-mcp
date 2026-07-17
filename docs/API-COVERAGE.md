@@ -33,6 +33,29 @@ Vikunja documents **169** distinct API operations (method+path). Of those:
 > /filters/{id} call. Everything else in this document remains the original
 > audit snapshot (plus any other Wave D updates noted inline) described
 > above.
+>
+> Updated 2026-07-18 (Wave D hygiene, item D8, `waveD-tool-surface-dedupe`):
+> the LOW-severity "Two separate MCP tools expose overlapping task CRUD
+> surface" finding below is resolved — `vikunja_task_crud` (its
+> `create`/`get`/`update`/`delete`/`list` operations called the exact same
+> `src/tools/tasks/crud/*` functions `vikunja_tasks`' identically-named
+> subcommands already called) has been removed from
+> `src/tools/index.ts`/`src/index.ts`; `vikunja_tasks` is the sole
+> registered surface for task CRUD now, so every `vikunja_task_crud (...)`
+> parenthetical in the tables below is stale and should be read as
+> historical only. Separately, investigation for the same item confirmed
+> `registerProjectTools` (`vikunja_projects_crud` /
+> `vikunja_projects_hierarchy` / `vikunja_projects_sharing`, referenced in
+> several rows below) was **never called from `src/index.ts` or
+> `src/tools/index.ts`** — it was exported-but-dead code, reachable only
+> from its own now-deleted test file
+> (`tests/tools/projects/multi-tool-registration.test.ts`, added by PR #59)
+> and from `src/tools/projects.ts`'s re-export barrel. It has been deleted
+> (`src/tools/projects/index.ts`); `vikunja_projects` (`registerProjectsTool`)
+> was, and remains, the only live registered projects tool surface — no
+> capability was lost. Every `vikunja_projects_crud` / `_hierarchy` /
+> `_sharing` parenthetical below was already describing dead code, not a
+> live alternative surface.
 
 - **✅ Implemented** — implementation matches the documented endpoint (method, path, request/response fields all checked).
 - **⚠️ Implemented (bug)** — the tool exists and calls something, but the audit found a concrete divergence from the documented contract (wrong field name, dropped required param, wrong response shape assumption, etc.). See the Issues table below.

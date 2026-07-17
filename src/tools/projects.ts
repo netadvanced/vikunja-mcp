@@ -16,8 +16,7 @@
 
 // Re-export all functionality from the modular structure
 export {
-  registerProjectsTool, // This is the backward compatibility single-tool function
-  registerProjectTools, // This is the new multi-tool function
+  registerProjectsTool, // Single-tool interface: vikunja_projects (the only registered surface)
   listProjects,
   getProject,
   createProject,

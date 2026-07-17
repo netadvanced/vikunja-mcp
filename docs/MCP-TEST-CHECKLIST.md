@@ -20,31 +20,31 @@ Expected: Shows authenticated with API URL
 
 - [ ] **Create task**
   ```
-  Use vikunja_task_crud to create a task with title "Test Task 1", description "Testing", priority high in the MCP-Test project
+  Use vikunja_tasks create to create a task with title "Test Task 1", description "Testing", priority high in the MCP-Test project
   ```
   Verify: Response shows task created with correct fields
 
 - [ ] **Read task**
   ```
-  Use vikunja_task_crud to get the task you just created by ID
+  Use vikunja_tasks get to get the task you just created by ID
   ```
   Verify: Returns same title, description, priority
 
 - [ ] **Update task**
   ```
-  Use vikunja_task_crud to update that task's title to "Test Task Updated" and priority to urgent
+  Use vikunja_tasks update to update that task's title to "Test Task Updated" and priority to urgent
   ```
   Verify: Read it back, changes persisted
 
 - [ ] **Delete task**
   ```
-  Use vikunja_task_crud to delete that task
+  Use vikunja_tasks delete to delete that task
   ```
   Verify: Getting the task by ID returns error
 
 - [ ] **List tasks**
   ```
-  Create 3 tasks, then use vikunja_task_crud to list tasks in the project
+  Create 3 tasks, then use vikunja_tasks list to list tasks in the project
   ```
   Verify: All 3 appear in list
 
