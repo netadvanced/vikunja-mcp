@@ -1,7 +1,6 @@
 /**
  * Task Comments Tool
- * Handles task comment operations: comment
- * Replaces monolithic tasks tool with focused individual tool
+ * Handles task comment operations: comment (create/list legacy), list, get, update, delete
  */
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -12,7 +11,13 @@ import { MCPError, ErrorCode } from '../types';
 import { getClientFromContext, setGlobalClientFactory } from '../client';
 import { logger } from '../utils/logger';
 import { createAuthRequiredError } from '../utils/error-handler';
-import { handleComment } from '../tools/tasks/comments/index';
+import {
+  handleComment,
+  listComments,
+  getComment,
+  updateComment,
+  removeComment,
+} from '../tools/tasks/comments/index';
 
 /**
  * Register task comments tool
@@ -24,12 +29,12 @@ export function registerTaskCommentsTool(
 ): void {
   server.tool(
     'vikunja_task_comments',
-    'Manage task comments: add comments to tasks',
+    'Manage task comments: create, list, get, update, delete comments on tasks',
     {
-      operation: z.enum(['comment']),
+      operation: z.enum(['comment', 'list', 'get', 'update', 'delete']),
       // Task and comment identification
       id: z.number(),
-      comment: z.string(),
+      comment: z.string().optional(),
       commentId: z.number().optional(),
     },
     async (args) => {
@@ -52,6 +57,18 @@ export function registerTaskCommentsTool(
         switch (args.operation) {
           case 'comment':
             return handleComment(args);
+
+          case 'list':
+            return listComments(args);
+
+          case 'get':
+            return getComment(args);
+
+          case 'update':
+            return updateComment(args);
+
+          case 'delete':
+            return removeComment(args);
 
           default:
             throw new MCPError(

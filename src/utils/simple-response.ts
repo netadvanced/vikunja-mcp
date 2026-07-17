@@ -120,8 +120,21 @@ export function formatSuccessMessage(
   }
 
   if (data) {
-    // Check for known collection types first
-    const collection = data.tasks || data.projects || data.labels || data.users || data.items;
+    // Detect single resources (id + title|name, not an array) BEFORE the
+    // collection extraction. A single Task object has its own `.labels`
+    // array (the labels assigned to that task), which collides with the
+    // "labels collection" check below and causes get/create responses to
+    // silently drop description, project_id, priority, due_date, etc.
+    const looksLikeSingleResource =
+      !Array.isArray(data) &&
+      typeof data === 'object' &&
+      (data as DataItem).id !== undefined &&
+      ((data as DataItem).title !== undefined || (data as DataItem).name !== undefined);
+
+    // Check for known collection types first (skipped for single resources).
+    const collection = looksLikeSingleResource
+      ? null
+      : (data.tasks || data.projects || data.labels || data.users || data.items);
 
     if (collection && Array.isArray(collection)) {
       content += `**Results:** ${collection.length} item(s)\n\n`;
@@ -133,6 +146,11 @@ export function formatSuccessMessage(
       if (data.length > 0 && data.length <= 10) {
         content += formatDataItems(data as DataItem[]);
       }
+    } else if (looksLikeSingleResource) {
+      // Route single resources through formatDataItems, which uses the rich
+      // formatTaskItem renderer for Task-shaped objects and a compact
+      // id/title line for everything else.
+      content += formatDataItems([data as DataItem]);
     } else if (data && typeof data === 'object') {
       content += formatObjectData(data as Record<string, unknown>);
     }

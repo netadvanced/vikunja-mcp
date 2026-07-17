@@ -129,9 +129,14 @@ export async function withRetry<T>(
 
   for (let attempt = 0; attempt <= (opts.maxRetries || 3); attempt++) {
     try {
-      // Use circuit breaker for the operation
-      const breaker = createCircuitBreaker(operation, 'anonymous', opts);
-      return await breaker.fire() as Promise<T>;
+      // Execute the operation directly. Note: we intentionally do NOT wrap
+      // this in a name-cached circuit breaker here. The breaker registry
+      // caches breakers by name and opossum binds the action closure at
+      // construction time, so a shared 'anonymous' breaker would silently
+      // re-fire whichever operation first created it instead of this one.
+      // Callers that want circuit-breaker semantics should use
+      // withNamedRetry/withTaskRetry/withBulkRetry with a real, unique name.
+      return await operation();
     } catch (error) {
       lastError = error;
 

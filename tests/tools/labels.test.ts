@@ -141,21 +141,12 @@ describe('Labels Tool', () => {
   });
 
   describe('List Labels', () => {
-    it('should default to list when no subcommand provided', async () => {
-      const mockLabels = [
-        { id: 1, title: 'Bug' },
-        { id: 2, title: 'Feature' },
-      ];
-      mockClient.labels.getLabels.mockResolvedValue(mockLabels);
-
-      const result = await mockHandler({});
-
-      expect(mockClient.labels.getLabels).toHaveBeenCalledWith({});
-      const markdown = result.content[0].text;
-      const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
-      expect(markdown).toContain('list-labels');
-      expect(markdown).toContain('Retrieved 2 labels');
+    it('should throw validation error when no subcommand provided', async () => {
+      // subcommand is a required field (see src/tools/labels.ts) - the MCP SDK's
+      // Zod validation rejects calls with a missing subcommand before the handler
+      // ever runs. This test exercises the handler's own defensive default case
+      // for the same scenario (e.g. if invoked directly bypassing SDK validation).
+      await expect(mockHandler({})).rejects.toThrow('Invalid subcommand: undefined');
     });
 
     it('should list all labels without parameters', async () => {

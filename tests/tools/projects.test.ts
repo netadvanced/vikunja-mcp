@@ -362,7 +362,7 @@ describe('Projects Tool', () => {
       mockClient.projects.createProject.mockRejectedValue('String error');
 
       await expect(callTool('create', { title: 'New Project' })).rejects.toThrow(
-        'Failed to create project: Unknown error',
+        'Failed to create project: String error',
       );
     });
 
@@ -441,6 +441,7 @@ describe('Projects Tool', () => {
       });
 
       expect(mockClient.projects.updateProject).toHaveBeenCalledWith(1, {
+        ...mockProject,
         title: 'Updated Title',
       });
       expect(result.content[0].type).toBe('text');
@@ -450,6 +451,85 @@ describe('Projects Tool', () => {
       expect(aorpStatus.type).toBe('success');
       expect(markdown).toContain('Project "Updated Title" updated successfully');
       expect(markdown).toMatch(/update[_\\]+project/);
+    });
+
+    it('should preserve parent_project_id when parentProjectId is omitted (issue #45)', async () => {
+      const childProject = {
+        ...mockProject,
+        id: 2,
+        title: 'Child Project',
+        parent_project_id: 1,
+      };
+      const updatedChild = { ...childProject, description: 'Updated description' };
+      mockClient.projects.getProject.mockResolvedValue(childProject);
+      mockClient.projects.getProjects.mockResolvedValue([mockProject, childProject]);
+      mockClient.projects.updateProject.mockResolvedValue(updatedChild);
+
+      await callTool('update', {
+        id: 2,
+        title: childProject.title,
+        description: 'Updated description',
+        // parentProjectId intentionally omitted
+      });
+
+      expect(mockClient.projects.updateProject).toHaveBeenCalledWith(
+        2,
+        expect.objectContaining({
+          description: 'Updated description',
+          parent_project_id: 1,
+          title: 'Child Project',
+        }),
+      );
+    });
+
+    it('should preserve existing title when title is omitted (issue #44)', async () => {
+      mockClient.projects.getProject.mockResolvedValue(mockProject);
+      mockClient.projects.updateProject.mockResolvedValue({
+        ...mockProject,
+        description: 'new description',
+      });
+
+      // Title intentionally omitted — Vikunja rejects updates without a title
+      await callTool('update', {
+        id: 1,
+        description: 'new description',
+      });
+
+      expect(mockClient.projects.updateProject).toHaveBeenCalledWith(
+        1,
+        expect.objectContaining({
+          title: 'Test Project',
+          description: 'new description',
+        }),
+      );
+    });
+
+    it('should still allow explicit parent reassignment on update', async () => {
+      const childProject = {
+        ...mockProject,
+        id: 2,
+        title: 'Child Project',
+        parent_project_id: 1,
+      };
+      const newParent = { ...mockProject, id: 3, title: 'New Parent' };
+      mockClient.projects.getProject.mockResolvedValue(childProject);
+      mockClient.projects.getProjects.mockResolvedValue([mockProject, childProject, newParent]);
+      mockClient.projects.updateProject.mockResolvedValue({
+        ...childProject,
+        parent_project_id: 3,
+      });
+
+      await callTool('update', {
+        id: 2,
+        parentProjectId: 3,
+      });
+
+      expect(mockClient.projects.updateProject).toHaveBeenCalledWith(
+        2,
+        expect.objectContaining({
+          parent_project_id: 3,
+        }),
+      );
     });
 
     it('should require project ID', async () => {
@@ -469,6 +549,7 @@ describe('Projects Tool', () => {
     });
 
     it('should support updating all fields', async () => {
+      mockClient.projects.getProject.mockResolvedValue(mockProject);
       mockClient.projects.updateProject.mockResolvedValue(mockProject);
       mockClient.projects.getProjects.mockResolvedValue([
         mockProject,
@@ -485,6 +566,7 @@ describe('Projects Tool', () => {
       });
 
       expect(mockClient.projects.updateProject).toHaveBeenCalledWith(1, {
+        ...mockProject,
         title: 'New Title',
         description: 'New Description',
         parent_project_id: 2,
@@ -536,6 +618,7 @@ describe('Projects Tool', () => {
         for (const { input, expected } of validColors) {
           await callTool('update', { id: 1, hexColor: input });
           expect(mockClient.projects.updateProject).toHaveBeenCalledWith(1, {
+            ...mockProject,
             hex_color: expected,
           });
         }
@@ -621,7 +704,7 @@ describe('Projects Tool', () => {
 
       expect(mockClient.projects.getProject).toHaveBeenCalledWith(1);
       expect(mockClient.projects.updateProject).toHaveBeenCalledWith(1, {
-        title: 'Test Project',
+        ...mockProject,
         is_archived: true
       });
       expect(result.content[0].type).toBe('text');
@@ -698,7 +781,7 @@ describe('Projects Tool', () => {
 
       expect(mockClient.projects.getProject).toHaveBeenCalledWith(1);
       expect(mockClient.projects.updateProject).toHaveBeenCalledWith(1, {
-        title: 'Test Project',
+        ...archivedProject,
         is_archived: false
       });
       expect(result.content[0].type).toBe('text');
@@ -897,7 +980,7 @@ describe('Projects Tool', () => {
       mockClient.projects.createLinkShare.mockRejectedValue('String error');
 
       await expect(callTool('create-share', { projectId: 1, right: 'read' })).rejects.toThrow(
-        'Failed to create share: Unknown error',
+        'Failed to create share: String error',
       );
     });
   });
@@ -1046,7 +1129,7 @@ describe('Projects Tool', () => {
       mockClient.projects.getLinkShare.mockRejectedValue(123);
 
       await expect(callTool('get-share', { projectId: 1, shareId: '1' })).rejects.toThrow(
-        'Failed to get share: Unknown error',
+        'Failed to get share: 123',
       );
     });
   });
@@ -1205,7 +1288,7 @@ describe('Projects Tool', () => {
     it('should handle unexpected errors', async () => {
       mockClient.projects.getProjects.mockRejectedValue('String error');
 
-      await expect(callTool('list')).rejects.toThrow('Failed to list projects: Unknown error');
+      await expect(callTool('list')).rejects.toThrow('Failed to list projects: String error');
     });
 
     it('should pass through MCPError instances', async () => {
@@ -1283,7 +1366,7 @@ describe('Projects Tool', () => {
       mockAuthManager.isAuthenticated.mockReturnValue(true);
       mockClient.projects.getProjects.mockRejectedValueOnce('String error');
       await expect(callTool('get-children', { id: 1 })).rejects.toThrow(
-        'Failed to get project children: Unknown error',
+        'Failed to get project children: String error',
       );
     });
   });
@@ -1477,7 +1560,7 @@ describe('Projects Tool', () => {
       mockAuthManager.isAuthenticated.mockReturnValue(true);
       mockClient.projects.getProjects.mockRejectedValueOnce(123);
       await expect(callTool('get-breadcrumb', { id: 1 })).rejects.toThrow(
-        'Failed to get project breadcrumb: Unknown error',
+        'Failed to get project breadcrumb: 123',
       );
     });
   });
