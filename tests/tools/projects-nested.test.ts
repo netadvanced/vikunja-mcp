@@ -344,7 +344,15 @@ describe('Projects Tool - Nested Project Features', () => {
       expect(markdown).toContain("## ✅ Success");
       expect(markdown).toContain("**Operation:** move_project");
       expect(markdown).toContain('Moved project "Orphan Project" to parent project 1');
-      expect(mockClient.projects.updateProject).toHaveBeenCalledWith(5, { parent_project_id: 1 });
+      // Regression test for the move data-wipe bug: POST /projects/{id} is a
+      // full-model-replace endpoint, so the payload must carry every field
+      // of the current project (merged via buildProjectUpdatePayload), not
+      // just a bare { parent_project_id } that would wipe title/description/
+      // hex_color/etc. on the server.
+      expect(mockClient.projects.updateProject).toHaveBeenCalledWith(5, {
+        ...mockProjects[4],
+        parent_project_id: 1,
+      });
     });
 
     it('should move project to root level', async () => {
@@ -361,6 +369,13 @@ describe('Projects Tool - Nested Project Features', () => {
       expect(markdown).toContain("## ✅ Success");
       expect(markdown).toContain("**Operation:** move_project");
       expect(markdown).toContain('Moved project "Child Project 1" to root level');
+      // A root move must still merge through the current project — only
+      // parent_project_id is explicitly cleared (0), everything else
+      // (title/description/hex_color/etc.) is preserved.
+      expect(mockClient.projects.updateProject).toHaveBeenCalledWith(2, {
+        ...mockProjects[1],
+        parent_project_id: 0,
+      });
     });
 
     it('should prevent moving project to itself', async () => {
@@ -706,10 +721,15 @@ describe('Projects Tool - Nested Project Features', () => {
 
     it('should throw API_ERROR when move fails with non-MCP error', async () => {
       mockClient.projects.getProjects.mockResolvedValue(mockProjects);
-      mockClient.projects.updateProject.mockRejectedValue(new Error('Permission denied'));
+      // Note: a literal "Permission denied" message collides with
+      // SecureErrorHandler's file-system-error sanitization heuristic
+      // (src/utils/error-handler.ts), which isn't the concern of this test —
+      // it only verifies non-MCP errors get wrapped as "Failed to move
+      // project: ...", so a non-colliding message is used here.
+      mockClient.projects.updateProject.mockRejectedValue(new Error('Server rejected the update'));
 
       await expect(callTool('move', { id: 5, parentProjectId: 1 })).rejects.toThrow(
-        'Failed to move project: Permission denied',
+        'Failed to move project: Server rejected the update',
       );
     });
 

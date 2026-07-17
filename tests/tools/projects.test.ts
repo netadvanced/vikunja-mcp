@@ -871,9 +871,10 @@ describe('Projects Tool', () => {
       expect(aorpStatus.type).toBe('success');
       expect(markdown).toContain('Share created successfully for project ID 1');
       expect(markdown).toMatch(/create[_\\]+project[_\\]+share/);
+      // Payload must match models.LinkSharing: {permission, name, password}
+      // — not node-vikunja's stale {project_id, right, label, ...}.
       expect(mockClient.projects.createLinkShare).toHaveBeenCalledWith(1, {
-        project_id: 1,
-        right: 0,
+        permission: 0,
       });
     });
 
@@ -883,13 +884,12 @@ describe('Projects Tool', () => {
       await callTool('create-share', {
         projectId: 1,
         right: 'admin',
-        label: 'Admin Share',
+        name: 'Admin Share',
       });
 
       expect(mockClient.projects.createLinkShare).toHaveBeenCalledWith(1, {
-        project_id: 1,
-        right: 2,
-        label: 'Admin Share',
+        permission: 2,
+        name: 'Admin Share',
       });
     });
 
@@ -901,48 +901,31 @@ describe('Projects Tool', () => {
         projectId: 1,
         right: 'read',
         password: 'secret123',
-        label: 'Protected Share',
+        name: 'Protected Share',
       });
 
       expect(mockClient.projects.createLinkShare).toHaveBeenCalledWith(1, {
-        project_id: 1,
-        right: 0,
+        permission: 0,
         password: 'secret123',
-        password_enabled: true,
-        label: 'Protected Share',
+        name: 'Protected Share',
       });
     });
 
-    it('should handle passwordEnabled flag explicitly', async () => {
+    it('should deliver the caller-supplied name to the API (schema/handler field alignment)', async () => {
+      // Regression test: index.ts's zod schema exposes the field as `name`;
+      // createProjectShare() used to destructure `label`, so real callers'
+      // input never arrived at the API at all.
       mockClient.projects.createLinkShare.mockResolvedValue(mockShare);
 
       await callTool('create-share', {
         projectId: 1,
         right: 'read',
-        passwordEnabled: false,
+        name: 'Team Share',
       });
 
       expect(mockClient.projects.createLinkShare).toHaveBeenCalledWith(1, {
-        project_id: 1,
-        right: 0,
-        password_enabled: false,
-      });
-    });
-
-    it('should create a share with expiration date', async () => {
-      const expiringShare = { ...mockShare, expires: '2025-12-31T23:59:59Z' };
-      mockClient.projects.createLinkShare.mockResolvedValue(expiringShare);
-
-      await callTool('create-share', {
-        projectId: 1,
-        right: 'read',
-        expires: '2025-12-31T23:59:59Z',
-      });
-
-      expect(mockClient.projects.createLinkShare).toHaveBeenCalledWith(1, {
-        project_id: 1,
-        right: 0,
-        expires: '2025-12-31T23:59:59Z',
+        permission: 0,
+        name: 'Team Share',
       });
     });
 
@@ -1586,8 +1569,16 @@ describe('Projects Tool', () => {
       const parsed = parseMarkdown(markdown);
       const aorpStatus = parsed.getAorpStatus();
       expect(aorpStatus.type).toBe('success');
-      expect(markdown).toContain('move-project');
-      expect(markdown).toContain('moved to parent project ID 1');
+      expect(markdown).toContain('move_project');
+      expect(markdown).toContain('Moved project "Project to Move" to parent project 1');
+      // Regression test for the move data-wipe bug: POST /projects/{id} is a
+      // full-model-replace endpoint, so the payload must carry every field
+      // of the current project, not just a bare { parent_project_id } that
+      // would wipe title/description/hex_color/etc. on the server.
+      expect(mockClient.projects.updateProject).toHaveBeenCalledWith(2, {
+        ...projects[1],
+        parent_project_id: 1,
+      });
     });
 
     it('should move project to root', async () => {
@@ -1606,7 +1597,11 @@ describe('Projects Tool', () => {
       const parsed = parseMarkdown(markdown);
       const aorpStatus = parsed.getAorpStatus();
       expect(aorpStatus.type).toBe('success');
-      expect(markdown).toContain('moved to root level');
+      expect(markdown).toContain('Moved project "Project" to root level');
+      expect(mockClient.projects.updateProject).toHaveBeenCalledWith(1, {
+        ...projects[0],
+        parent_project_id: 0,
+      });
     });
 
     it('should prevent self-parent', async () => {
@@ -1616,7 +1611,7 @@ describe('Projects Tool', () => {
       ];
       mockClient.projects.getProjects.mockResolvedValueOnce(projects);
 
-      await expect(callTool('move', { id: 1, parentProjectId: 1 })).rejects.toThrow('cannot be its own parent');
+      await expect(callTool('move', { id: 1, parentProjectId: 1 })).rejects.toThrow('Cannot move a project to be its own parent');
     });
 
     it('should prevent circular references', async () => {
@@ -1629,7 +1624,7 @@ describe('Projects Tool', () => {
       mockClient.projects.getProjects.mockResolvedValueOnce(projects);
       mockClient.projects.getProject.mockResolvedValueOnce(projects[0]); // Mock project 1 lookup
 
-      await expect(callTool('move', { id: 1, parentProjectId: 3 })).rejects.toThrow('Cannot move a project to one of its descendants');
+      await expect(callTool('move', { id: 1, parentProjectId: 3 })).rejects.toThrow('Move would create a circular reference in project hierarchy');
     });
 
     it('should prevent exceeding max depth', async () => {
@@ -1768,7 +1763,7 @@ describe('Projects Tool', () => {
       const parsed = parseMarkdown(markdown);
       const aorpStatus = parsed.getAorpStatus();
       expect(aorpStatus.type).toBe('success');
-      expect(markdown).toContain('move-project');
+      expect(markdown).toContain('move_project');
     });
 
     it('should handle projects without IDs in getMaxSubtreeDepth', async () => {
@@ -1801,7 +1796,7 @@ describe('Projects Tool', () => {
       const parsed = parseMarkdown(markdown);
       const aorpStatus = parsed.getAorpStatus();
       expect(aorpStatus.type).toBe('success');
-      expect(markdown).toContain('move-project');
+      expect(markdown).toContain('move_project');
     });
 
     it('should handle missing project in calculateProjectDepth', async () => {
@@ -1866,7 +1861,12 @@ describe('Projects Tool', () => {
       await expect(callTool('update', { id: 11, parentProjectId: 10 })).rejects.toThrow('Maximum allowed depth is 10 levels');
     });
 
-    it('should handle queue.shift() returning undefined in circular reference check', async () => {
+    it('should move a project under a sibling that is not its descendant', async () => {
+      // Historical note: this case used to exercise a BFS isDescendant()
+      // check implemented with an explicit queue and Array.prototype.shift().
+      // That code path no longer exists (validateMoveConstraints now uses
+      // recursive DFS — see getMaxSubtreeDepth), so this just verifies the
+      // move itself succeeds and reports the new parent.
       mockAuthManager.isAuthenticated.mockReturnValue(true);
       const projects = [
         { ...mockProject, id: 1, parent_project_id: undefined },
@@ -1875,47 +1875,22 @@ describe('Projects Tool', () => {
         { ...mockProject, id: 4, parent_project_id: 1 },
       ];
       mockClient.projects.getProjects.mockResolvedValueOnce(projects);
-      mockClient.projects.getProject.mockResolvedValueOnce(projects[0]);
       mockClient.projects.updateProject.mockResolvedValueOnce({
         ...projects[0],
         parent_project_id: 2,
-        title: projects[0].title,
-        id: projects[0].id,
-        description: projects[0].description,
-        hex_color: projects[0].hex_color,
-        is_archived: projects[0].is_archived,
-        owner: projects[0].owner,
-        created: projects[0].created,
-        updated: projects[0].updated,
-        position: projects[0].position,
-        identifier: projects[0].identifier,
       });
 
-      // Mock Array.prototype.shift to return undefined once to trigger the defensive check
-      const originalShift = Array.prototype.shift;
-      let shiftCallCount = 0;
-      jest.spyOn(Array.prototype, 'shift').mockImplementation(function(this: any[]) {
-        shiftCallCount++;
-        // Return undefined on the third call to trigger the defensive check
-        // This happens during the isDescendant check when processing children
-        if (shiftCallCount === 3) {
-          return undefined;
-        }
-        return originalShift.call(this);
-      });
-
-      try {
-        // Move project 1 to be under project 2 (not a descendant, so should succeed)
-        const result = await callTool('move', { id: 1, parentProjectId: 2 });
-        const markdown = result.content[0].text;
-        const parsed = parseMarkdown(markdown);
-        const aorpStatus = parsed.getAorpStatus();
+      // Move project 1 to be under project 2 (not a descendant, so should succeed)
+      const result = await callTool('move', { id: 1, parentProjectId: 2 });
+      const markdown = result.content[0].text;
+      const parsed = parseMarkdown(markdown);
+      const aorpStatus = parsed.getAorpStatus();
       expect(aorpStatus.type).toBe('success');
-        expect(markdown).toContain('NewParentProjectId');
-      } finally {
-        // Restore original shift method
-        (Array.prototype.shift as jest.Mock).mockRestore();
-      }
+      expect(markdown).toContain('move_project');
+      expect(mockClient.projects.updateProject).toHaveBeenCalledWith(1, {
+        ...projects[0],
+        parent_project_id: 2,
+      });
     });
   });
 });

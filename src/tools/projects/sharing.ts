@@ -25,11 +25,8 @@ type McpResponse = {
 export interface CreateShareArgs {
   projectId: number;
   right: 'read' | 'write' | 'admin' | 0 | 1 | 2;
-  label?: string;
+  name?: string;
   password?: string;
-  passwordEnabled?: boolean;
-  expires?: string;
-  shares?: number; // For public links
   verbosity?: string;
   useOptimizedFormat?: boolean;
   useAorp?: boolean;
@@ -90,11 +87,8 @@ export async function createProjectShare(
   const {
     projectId,
     right,
-    label,
+    name,
     password,
-    passwordEnabled,
-    expires,
-    shares,
     verbosity,
     useOptimizedFormat,
     useAorp
@@ -141,37 +135,23 @@ export async function createProjectShare(
     // Verify the project exists
     await client.projects.getProject(projectId);
 
+    // models.LinkSharing's request shape is {permission, name, password} —
+    // node-vikunja's LinkSharing type (right/label/password_enabled/expires)
+    // is stale, so the payload is built against our own CreateShareRequest
+    // and cast past node-vikunja's type at the call site below.
     const shareData: CreateShareRequest = {
-      project_id: projectId,
-      right: numericRight,
+      permission: numericRight,
     };
 
-    if (label !== undefined) {
-      shareData.label = label.trim();
+    if (name !== undefined) {
+      shareData.name = name.trim();
     }
 
     if (password !== undefined) {
       shareData.password = password;
-      // Automatically enable password when password is provided
-      if (passwordEnabled === undefined) {
-        shareData.password_enabled = true;
-      }
     }
 
-    if (passwordEnabled !== undefined) {
-      shareData.password_enabled = passwordEnabled;
-    }
-
-    if (expires !== undefined) {
-      shareData.expires = expires;
-    }
-
-    if (shares !== undefined) {
-      validateId(shares, 'shares');
-      shareData.shares = shares;
-    }
-
-    const createdShare = await client.projects.createLinkShare(projectId, shareData as LinkSharing);
+    const createdShare = await client.projects.createLinkShare(projectId, shareData as unknown as LinkSharing);
 
     const result = createProjectResponse(
       'create_project_share',

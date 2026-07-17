@@ -78,14 +78,17 @@ export {
 } from '../utils/simple-response';
 
 // Project API interfaces
+//
+// Matches the Vikunja OpenAPI spec's models.LinkSharing request shape
+// exactly: {permission, name, password}. `project_id` is taken from the
+// URL path (POST /projects/{id}/shares) and is not part of the body; the
+// server derives sharing_type/hash/etc. — node-vikunja's `LinkSharing` type
+// is stale here (it has `right`/`label`/`password_enabled`, none of which
+// the real API accepts), so this is cast past that type at the call site.
 export interface CreateShareRequest {
-  project_id: number;
-  right: number;
-  label?: string;
+  permission: number;
+  name?: string;
   password?: string;
-  password_enabled?: boolean;
-  expires?: string;
-  shares?: number;
 }
 
 export interface ProjectShare {

@@ -19,13 +19,6 @@ export type McpResponse = {
   }>;
 };
 
-// Type for API responses that may have data and total properties
-interface ApiProjectResponse {
-  data?: Project[];
-  total?: number;
-}
-
-
 /**
  * Arguments for listing projects
  */
@@ -150,9 +143,11 @@ export async function listProjects(
 
     const response = await client.projects.getProjects(params);
 
-    const apiResponse = response as ApiProjectResponse;
-    const responseArray = apiResponse.data || (Array.isArray(response) ? response : [response]);
-    const total = apiResponse.total || responseArray.length;
+    // GET /projects returns a bare array — there is no {data, total} envelope
+    // (see docs/API_NOTES.md). Total item/page counts are therefore unknown;
+    // createProjectListResponse derives `hasMore` honestly from the page size
+    // instead of fabricating a total.
+    const responseArray = Array.isArray(response) ? response : [response];
 
     // Build options object, only including defined properties to satisfy exactOptionalPropertyTypes
     const options: { verbosity?: string; useOptimizedFormat?: boolean; useAorp?: boolean } = {};
@@ -172,8 +167,7 @@ export async function listProjects(
     const result = createProjectListResponse(
       responseArray,
       page,
-      Math.ceil(total / perPage),
-      total,
+      perPage,
       options
     );
 
@@ -275,8 +269,7 @@ export async function createProject(
     if (parentProjectId) {
       try {
         const allProjectsResponse = await client.projects.getProjects({ per_page: 1000 });
-        const allProjectsApiData = allProjectsResponse as ApiProjectResponse;
-        allProjects = allProjectsApiData.data || (Array.isArray(allProjectsResponse) ? allProjectsResponse : [allProjectsResponse]);
+        allProjects = Array.isArray(allProjectsResponse) ? allProjectsResponse : [allProjectsResponse];
       } catch {
         // Continue with validation if we can't get all projects
       }
@@ -399,8 +392,7 @@ export async function updateProject(
     if (parentProjectId !== undefined || (currentProject && currentProject.parent_project_id)) {
       try {
         const allProjectsResponse = await client.projects.getProjects({ per_page: 1000 });
-        const allProjectsApiData = allProjectsResponse as ApiProjectResponse;
-        allProjects = allProjectsApiData.data || (Array.isArray(allProjectsResponse) ? allProjectsResponse : [allProjectsResponse]);
+        allProjects = Array.isArray(allProjectsResponse) ? allProjectsResponse : [allProjectsResponse];
       } catch {
         // Continue if we can't get all projects
       }

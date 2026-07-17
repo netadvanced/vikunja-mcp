@@ -89,24 +89,34 @@ export interface VikunjaView {
   title: string;
   project_id: number;
   view_kind: string;
+  /**
+   * The id of this view's "done" bucket. Tasks moved into this bucket are
+   * marked done, and tasks marked done are moved here. `models.Bucket` has
+   * no `is_done_bucket` field of its own — done-ness is a property of the
+   * view, not the bucket — so callers resolve it by comparing a bucket's id
+   * against this field.
+   */
+  done_bucket_id?: number;
 }
 
 /**
- * Resolves the Kanban view id for a project.
+ * Resolves the Kanban view of a project.
  *
  * Vikunja projects have several views (list, gantt, table, kanban). Bucket
  * operations only make sense against the Kanban view, so callers that do not
- * already know the view id can use this to find it.
+ * already know the view id can use this to find it. Returns the full view
+ * (not just its id) so callers that need `done_bucket_id` — e.g. to resolve
+ * which bucket is the "done" bucket — don't have to fetch it again.
  *
  * @param authManager - Active auth manager
  * @param projectId - Project whose Kanban view should be resolved
- * @returns The numeric id of the project's Kanban view
+ * @returns The project's Kanban view
  * @throws MCPError when the project has no Kanban view
  */
-export async function resolveKanbanViewId(
+export async function resolveKanbanView(
   authManager: AuthManager,
   projectId: number,
-): Promise<number> {
+): Promise<VikunjaView> {
   const views = await vikunjaRestRequest<VikunjaView[]>(
     authManager,
     'GET',
@@ -121,5 +131,21 @@ export async function resolveKanbanViewId(
       `Project ${projectId} has no Kanban view, so it has no buckets`,
     );
   }
-  return kanban.id;
+  return kanban;
+}
+
+/**
+ * Resolves the Kanban view id for a project.
+ *
+ * @param authManager - Active auth manager
+ * @param projectId - Project whose Kanban view should be resolved
+ * @returns The numeric id of the project's Kanban view
+ * @throws MCPError when the project has no Kanban view
+ */
+export async function resolveKanbanViewId(
+  authManager: AuthManager,
+  projectId: number,
+): Promise<number> {
+  const view = await resolveKanbanView(authManager, projectId);
+  return view.id;
 }

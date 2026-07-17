@@ -61,12 +61,18 @@ export function calculateProjectDepth(projectId: number, allProjects: Project[])
 
 /**
  * Gets the maximum depth of a project's subtree
+ *
+ * Cycle detection is path-based (an "ancestors in the current DFS branch"
+ * set, popped on backtrack) rather than a single set shared across the
+ * whole traversal. A global set would flag legitimate non-cyclic data —
+ * e.g. two sibling branches that happen to reach the same (duplicate or
+ * corrupted) id — as a false-positive cycle. Path-based detection still
+ * catches every genuine cycle: a real cycle always revisits a node that is
+ * its own ancestor somewhere along a single branch.
  */
 export function getMaxSubtreeDepth(projectId: number, allProjects: Project[]): number {
-  const visited = new Set<number>();
-
-  function dfs(currentId: number, currentDepth: number): number {
-    if (visited.has(currentId)) {
+  function dfs(currentId: number, currentDepth: number, path: Set<number>): number {
+    if (path.has(currentId)) {
       throw new MCPError(
         ErrorCode.INTERNAL_ERROR,
         'Circular reference detected in project hierarchy',
@@ -80,7 +86,7 @@ export function getMaxSubtreeDepth(projectId: number, allProjects: Project[]): n
       );
     }
 
-    visited.add(currentId);
+    path.add(currentId);
     let maxDepth = currentDepth;
 
     const children = allProjects.filter((p) => p.parent_project_id === currentId);
@@ -88,18 +94,21 @@ export function getMaxSubtreeDepth(projectId: number, allProjects: Project[]): n
       if (child.id === undefined) {
         continue; // Skip children without valid IDs
       }
-      const childDepth = dfs(child.id, currentDepth + 1);
+      const childDepth = dfs(child.id, currentDepth + 1, path);
       maxDepth = Math.max(maxDepth, childDepth);
     }
 
+    path.delete(currentId);
     return maxDepth;
   }
 
-  return dfs(projectId, 0);
+  return dfs(projectId, 0, new Set<number>());
 }
 
 /**
- * Validates move constraints for a project
+ * Validates move constraints for a project: self-parenting, circular
+ * references, and the resulting depth of the moved project's subtree once
+ * it is reparented.
  */
 export function validateMoveConstraints(
   projectId: number,
@@ -113,13 +122,19 @@ export function validateMoveConstraints(
     );
   }
 
-  // Check if moving would create a circular reference
+  // Check if moving would create a circular reference. Reassigning
+  // projectId's parent_project_id to newParentId and then walking
+  // projectId's own descendants (via child links) will revisit projectId
+  // itself if newParentId is one of projectId's descendants — the moved
+  // project's own (updated) record shows up as "a child of" whichever node
+  // in its old subtree it would now be parented under.
   const updatedProjects = allProjects.map((p) =>
     p.id === projectId ? { ...p, parent_project_id: newParentId } : p
   ) as Project[];
 
+  let subtreeDepth: number;
   try {
-    getMaxSubtreeDepth(projectId, updatedProjects);
+    subtreeDepth = getMaxSubtreeDepth(projectId, updatedProjects);
   } catch (error) {
     if (error instanceof MCPError && error.code === ErrorCode.INTERNAL_ERROR) {
       throw new MCPError(
@@ -128,6 +143,23 @@ export function validateMoveConstraints(
       );
     }
     throw error;
+  }
+
+  // Moving under a new parent can push the project's subtree past the
+  // maximum allowed depth even when neither the project's own subtree nor
+  // the new parent's ancestor chain is individually too deep. newParentId's
+  // depth is computed against the original (pre-move) hierarchy — by this
+  // point it's confirmed not to be a descendant of projectId, so it can't
+  // have been affected by the reparenting.
+  if (newParentId !== undefined) {
+    const newParentDepth = calculateProjectDepth(newParentId, allProjects);
+    const resultingDepth = newParentDepth + 1 + subtreeDepth;
+    if (resultingDepth > MAX_PROJECT_DEPTH) {
+      throw new MCPError(
+        ErrorCode.VALIDATION_ERROR,
+        `Moving this project would exceed the maximum depth of ${MAX_PROJECT_DEPTH} levels`,
+      );
+    }
   }
 }
 

@@ -97,7 +97,6 @@ export function registerProjectsTool(
       right: z.enum(['read', 'write', 'admin']).optional(),
       name: z.string().optional(),
       password: z.string().optional(),
-      shares: z.number().min(1).optional(),
       // Session ID for AORP response tracking
       sessionId: z.string().optional(),
     },
@@ -174,7 +173,7 @@ export function registerProjectsTool(
             return await getProjectBreadcrumb(args as GetBreadcrumbArgs, context);
 
           case 'move':
-            if (!args.id) {
+            if (args.id === undefined || args.id === null) {
               throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for move operation');
             }
             validateId(args.id, 'id');
@@ -394,7 +393,6 @@ export function registerProjectTools(
       right: z.enum(['read', 'write', 'admin']).optional(),
       name: z.string().optional(),
       password: z.string().optional(),
-      shares: z.number().min(1).optional(),
       page: z.number().min(1).optional(),
       perPage: z.number().min(1).max(100).optional(),
       verbosity: z.enum(['minimal', 'standard', 'detailed']).optional(),

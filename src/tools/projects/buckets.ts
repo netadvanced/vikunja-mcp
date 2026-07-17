@@ -13,7 +13,7 @@ import type { AuthManager } from '../../auth/AuthManager';
 import { MCPError, ErrorCode } from '../../types';
 import { validateId } from '../../utils/validation';
 import { createStandardResponse, formatAorpAsMarkdown } from '../../utils/response-factory';
-import { vikunjaRestRequest, resolveKanbanViewId } from '../../utils/vikunja-rest';
+import { vikunjaRestRequest, resolveKanbanView } from '../../utils/vikunja-rest';
 
 export interface ListBucketsArgs {
   /** Project whose Kanban buckets should be listed. */
@@ -30,7 +30,6 @@ interface VikunjaBucket {
   project_view_id?: number;
   position?: number;
   limit?: number;
-  is_done_bucket?: boolean;
 }
 
 /**
@@ -53,8 +52,21 @@ export async function listBuckets(
   validateId(args.id, 'id');
   if (args.viewId !== undefined) validateId(args.viewId, 'viewId');
 
-  const viewId =
-    args.viewId !== undefined ? args.viewId : await resolveKanbanViewId(authManager, args.id);
+  // models.Bucket has no is_done_bucket field of its own — the "done" bucket
+  // is designated by done_bucket_id on the ProjectView. When the view is
+  // auto-resolved we already have that view (and its done_bucket_id) for
+  // free; when the caller passes an explicit viewId we don't have the view
+  // data and won't spend an extra request fetching it just for this, so
+  // isDoneBucket conservatively falls back to false in that case.
+  let viewId: number;
+  let doneBucketId: number | undefined;
+  if (args.viewId !== undefined) {
+    viewId = args.viewId;
+  } else {
+    const kanbanView = await resolveKanbanView(authManager, args.id);
+    viewId = kanbanView.id;
+    doneBucketId = kanbanView.done_bucket_id;
+  }
 
   const buckets = await vikunjaRestRequest<VikunjaBucket[]>(
     authManager,
@@ -74,7 +86,7 @@ export async function listBuckets(
         title: bucket.title,
         position: bucket.position,
         limit: bucket.limit,
-        isDoneBucket: bucket.is_done_bucket ?? false,
+        isDoneBucket: doneBucketId !== undefined && bucket.id === doneBucketId,
       })),
     },
     {

@@ -119,25 +119,30 @@ export function createProjectSuccessResponse(
 
 /**
  * Creates a project list response with pagination metadata
+ *
+ * GET /projects returns a bare array with no total-count metadata in the
+ * response body (the server does not report total items or total pages),
+ * so this cannot honestly claim to know `totalPages`/`totalItems`. Instead
+ * `hasMore` is derived from whether a full page was returned: if fewer than
+ * `perPage` items came back, this is the last page.
  */
 export function createProjectListResponse(
   projects: unknown[],
   currentPage: number,
-  totalPages: number,
-  totalItems: number,
+  perPage: number,
   options: {
     verbosity?: string;
     useOptimizedFormat?: boolean;
     useAorp?: boolean;
   } = {}
 ): AorpFactoryResult {
+  const hasMore = perPage > 0 && projects.length >= perPage;
   const metadata: Partial<ResponseMetadata> = {
     pagination: {
       page: currentPage,
-      totalPages,
-      totalItems,
-      hasMore: currentPage < totalPages,
-      nextPage: currentPage < totalPages ? currentPage + 1 : undefined,
+      perPage,
+      hasMore,
+      nextPage: hasMore ? currentPage + 1 : undefined,
       prevPage: currentPage > 1 ? currentPage - 1 : undefined,
     },
   };

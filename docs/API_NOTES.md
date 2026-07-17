@@ -54,17 +54,55 @@ The `/user` endpoint fails with authentication errors despite using a valid toke
 - All IDs must be positive integers
 - Zero or negative values are rejected
 
+### Project Operations
+
+1. **Full-Model-Replace Update Endpoint**: `POST /projects/{id}` replaces the
+   entire project — any field omitted from the request body is cleared
+   server-side. `updateProject`, `archiveProject`, `unarchiveProject`, and
+   `moveProject` all build their payload by merging the desired changes onto
+   the *current* project (fetched first) via `buildProjectUpdatePayload`
+   rather than sending a bare partial object. `moveProject` is the one
+   exception to "merge preserves untouched fields": an omitted
+   `parentProjectId` means *move to root*, so `parent_project_id` is always
+   set explicitly (to the new parent, or `0` for root) rather than left
+   untouched like the other fields.
+
+2. **List Pagination Has No Total Count**: `GET /projects` returns a bare
+   array — there is no `{data, total}` envelope, and node-vikunja's own
+   `getProjects()` type reflects this (`Promise<Project[]>`). Total item and
+   page counts are not knowable from the response body, so `vikunja_projects
+   list` reports `hasMore` (derived from whether a full page came back)
+   instead of a fabricated `totalPages`/`totalItems`.
+
+3. **Kanban "Done" Bucket**: `models.Bucket` has no `is_done_bucket` field —
+   the done bucket is designated by `done_bucket_id` on the `ProjectView`
+   (`GET /projects/{id}/views`), not on the bucket itself. `list-buckets`
+   resolves `isDoneBucket` by comparing each bucket's id against the
+   Kanban view's `done_bucket_id`. When an explicit `viewId` is passed
+   (skipping view auto-resolution), that view's `done_bucket_id` isn't
+   fetched — `isDoneBucket` falls back to `false` in that case rather than
+   spending an extra request on it.
+
 ### Project Sharing
 
 Project sharing allows creating public or private links to share projects with external users.
 
-1. **Share Properties**:
-   - `right`: Permission level (0=Read, 1=Write, 2=Admin)
+1. **Share Properties (request body, `POST /projects/{id}/shares`)**:
+   - `permission`: Permission level (0=Read, 1=Write, 2=Admin) — the tool-level
+     `right` argument (`'read'|'write'|'admin'|0|1|2`) is mapped to this field
    - `password`: Optional password protection
-   - `expires`: Optional expiration date (ISO 8601 format)
-   - `label`: User-defined label for managing shares
-   - `hash`: Unique identifier for the share link
-   - `sharing_url`: Full URL for accessing the share (server-generated)
+   - `name`: User-defined label for managing shares — the tool-level argument
+     is also called `name` (not `label`)
+   - `project_id` is taken from the URL path, not the body
+   - There is **no** `expires`, `password_enabled`, or `shares` field on
+     `models.LinkSharing` — node-vikunja's bundled type includes them, but
+     the real API (and the tool's `CreateShareRequest`) does not. `expires`
+     as a per-share expiration and `shares` as a share count are not
+     supported by the API at all. Whether a share is password-protected
+     (`sharing_type`) is derived server-side from whether `password` was set.
+   - `hash`: Unique identifier for the share link (response-only)
+   - `sharing_url`: Full URL for accessing the share (server-generated,
+     response-only)
 
 2. **Share Authentication**:
    - Public shares can be accessed without authentication

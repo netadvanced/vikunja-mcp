@@ -30,10 +30,10 @@ function mockResponse(opts: {
   } as unknown as Response;
 }
 
-/** A views payload containing a Kanban view (id 11). */
+/** A views payload containing a Kanban view (id 11) whose done bucket is 101. */
 const kanbanViews = JSON.stringify([
   { id: 10, title: 'List', project_id: 5, view_kind: 'list' },
-  { id: 11, title: 'Kanban', project_id: 5, view_kind: 'kanban' },
+  { id: 11, title: 'Kanban', project_id: 5, view_kind: 'kanban', done_bucket_id: 101 },
 ]);
 
 describe('listBuckets', () => {
@@ -91,7 +91,6 @@ describe('listBuckets', () => {
                 project_view_id: 11,
                 position: 0,
                 limit: 0,
-                is_done_bucket: false,
               },
               {
                 id: 101,
@@ -99,7 +98,6 @@ describe('listBuckets', () => {
                 project_view_id: 11,
                 position: 1,
                 limit: 5,
-                is_done_bucket: true,
               },
             ]),
           }),
@@ -116,6 +114,33 @@ describe('listBuckets', () => {
       expect(text).toContain('Found 2 buckets in the Kanban view of project 5');
       expect(text).toContain('Backlog');
       expect(text).toContain('Done');
+    });
+
+    it('flags the bucket matching the view done_bucket_id as isDoneBucket, and no others', async () => {
+      // The Kanban view (id 11) has done_bucket_id 101 — bucket.is_done_bucket
+      // does not exist on models.Bucket, so this must be resolved from the view.
+      mockFetch
+        .mockResolvedValueOnce(mockResponse({ text: kanbanViews }))
+        .mockResolvedValueOnce(
+          mockResponse({
+            text: JSON.stringify([
+              { id: 100, title: 'Backlog', project_view_id: 11, position: 0 },
+              { id: 101, title: 'Done', project_view_id: 11, position: 1 },
+            ]),
+          }),
+        );
+
+      const result = await listBuckets({ id: 5 }, authManager);
+      const text = result.content[0].text;
+
+      // Bucket 101 ("Done") matches the view's done_bucket_id.
+      const doneIndex = text.indexOf('"id": 101');
+      const backlogIndex = text.indexOf('"id": 100');
+      expect(doneIndex).toBeGreaterThan(-1);
+      expect(backlogIndex).toBeGreaterThan(-1);
+      // The bucket with id 101 is flagged done; the one with id 100 is not.
+      expect(text.slice(doneIndex, doneIndex + 120)).toContain('"isDoneBucket": true');
+      expect(text.slice(backlogIndex, backlogIndex + 120)).toContain('"isDoneBucket": false');
     });
 
     it('uses an explicit viewId without resolving the Kanban view', async () => {

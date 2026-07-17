@@ -10,6 +10,7 @@ import { transformApiError, handleStatusCodeError } from '../../utils/error-hand
 import { validateId, validateMoveConstraints } from './validation';
 import { createProjectResponse, createProjectTreeResponse, createBreadcrumbResponse } from './response-formatter';
 import { formatAorpAsMarkdown } from '../../utils/response-factory';
+import { buildProjectUpdatePayload } from './crud';
 
 // MCP response type
 type McpResponse = {
@@ -290,18 +291,17 @@ export async function moveProject(
 
     const client = await getClientFromContext();
 
-    // Get current project
-    const currentProject = await client.projects.getProject(id);
+    // Fetch all projects once: this both validates that the project exists
+    // and provides the hierarchy data validateMoveConstraints needs, so a
+    // separate getProject(id) round-trip isn't required.
+    const allProjects = await client.projects.getProjects({ per_page: 1000 });
 
-    // Check if project exists
+    const currentProject = allProjects.find((p: Project) => p.id === id);
     if (!currentProject) {
       throw new MCPError(ErrorCode.NOT_FOUND, `Project with ID ${id} not found`);
     }
 
-    // Get all projects for validation
-    const allProjects = await client.projects.getProjects({ per_page: 1000 });
-
-    // Validate move constraints
+    // Validate move constraints (self-parenting, circular references, depth)
     validateMoveConstraints(id, parentProjectId, allProjects);
 
     // Validate parent project ID if provided
@@ -317,12 +317,16 @@ export async function moveProject(
       }
     }
 
-    // Perform the move
-    const updateData: { parent_project_id?: number } = {};
-    if (parentProjectId !== undefined) {
-      updateData.parent_project_id = parentProjectId;
-    }
-    const updatedProject = await client.projects.updateProject(id, updateData as Project);
+    // POST /projects/{id} is a full-model-replace endpoint: merge through
+    // the current project (like crud.ts's updateProject/archiveProject) so
+    // title/description/hex_color/etc. survive the move. Unlike a regular
+    // update, an omitted parentProjectId here means "move to root" — so
+    // parent_project_id is always set explicitly (0 clears it), never left
+    // to buildProjectUpdatePayload's "only touch what's provided" default.
+    const updateData = buildProjectUpdatePayload(currentProject, {
+      parentProjectId: parentProjectId ?? 0,
+    });
+    const updatedProject = await client.projects.updateProject(id, updateData);
 
     const parentInfo = parentProjectId
       ? ` to parent project ${parentProjectId}`
