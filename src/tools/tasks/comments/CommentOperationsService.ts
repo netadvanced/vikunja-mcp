@@ -3,7 +3,7 @@
  * Handles core business logic for task comment management
  */
 
-import type { TaskComment } from '../../../types/vikunja';
+import type { Message, TaskComment } from '../../../types/vikunja';
 import { getClientFromContext } from '../../../client';
 
 /**
@@ -27,6 +27,38 @@ export const CommentOperationsService = {
   async fetchTaskComments(taskId: number): Promise<TaskComment[]> {
     const client = await getClientFromContext();
     return await client.tasks.getTaskComments(taskId);
+  },
+
+  /**
+   * Fetch a single comment on a task
+   */
+  async getComment(taskId: number, commentId: number): Promise<TaskComment> {
+    const client = await getClientFromContext();
+    return await client.tasks.getTaskComment(taskId, commentId);
+  },
+
+  /**
+   * Update an existing comment on a task
+   */
+  async updateComment(
+    taskId: number,
+    commentId: number,
+    commentText: string,
+  ): Promise<TaskComment> {
+    const client = await getClientFromContext();
+    return await client.tasks.updateTaskComment(taskId, commentId, {
+      id: commentId,
+      task_id: taskId,
+      comment: commentText,
+    });
+  },
+
+  /**
+   * Delete a comment from a task
+   */
+  async deleteComment(taskId: number, commentId: number): Promise<Message> {
+    const client = await getClientFromContext();
+    return await client.tasks.deleteTaskComment(taskId, commentId);
   },
 
   /**

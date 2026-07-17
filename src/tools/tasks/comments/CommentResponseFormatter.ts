@@ -44,6 +44,51 @@ export const commentResponseFormatter = {
   },
 
   /**
+   * Format successful single-comment fetch response
+   */
+  formatGetCommentResponse(comment: TaskComment): StandardTaskResponse {
+    return {
+      success: true,
+      operation: 'get',
+      message: 'Comment retrieved successfully',
+      comment: comment,
+      metadata: {
+        timestamp: new Date().toISOString(),
+      },
+    };
+  },
+
+  /**
+   * Format successful comment update response
+   */
+  formatUpdateCommentResponse(comment: TaskComment): StandardTaskResponse {
+    return {
+      success: true,
+      operation: 'update',
+      message: 'Comment updated successfully',
+      comment: comment,
+      metadata: {
+        timestamp: new Date().toISOString(),
+        affectedFields: ['comment'],
+      },
+    };
+  },
+
+  /**
+   * Format successful comment delete response
+   */
+  formatDeleteCommentResponse(taskId: number, commentId: number): StandardTaskResponse {
+    return {
+      success: true,
+      operation: 'delete',
+      message: `Comment ${commentId} deleted from task ${taskId}`,
+      metadata: {
+        timestamp: new Date().toISOString(),
+      },
+    };
+  },
+
+  /**
    * Format MCP response wrapper
    */
   formatMcpResponse(response: StandardTaskResponse): { content: Array<{ type: 'text'; text: string }> } {

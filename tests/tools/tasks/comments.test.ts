@@ -1,7 +1,12 @@
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
-import { handleComment, removeComment, listComments } from '../../../src/tools/tasks/comments';
+import {
+  handleComment,
+  removeComment,
+  listComments,
+  getComment,
+  updateComment,
+} from '../../../src/tools/tasks/comments';
 import { getClientFromContext } from '../../../src/client';
-import { MCPError, ErrorCode } from '../../../src/types';
 import { parseMarkdown } from '../../utils/markdown';
 
 jest.mock('../../../src/client');
@@ -12,6 +17,9 @@ describe('Comment operations', () => {
     tasks: {
       createTaskComment: jest.fn(),
       getTaskComments: jest.fn(),
+      getTaskComment: jest.fn(),
+      updateTaskComment: jest.fn(),
+      deleteTaskComment: jest.fn(),
     },
   };
 
@@ -120,10 +128,198 @@ describe('Comment operations', () => {
   });
 
   describe('removeComment', () => {
-    it('should throw NOT_IMPLEMENTED error', () => {
-      expect(() => removeComment()).toThrow(
-        'Comment deletion is not currently supported by the node-vikunja API'
+    it('should delete a comment successfully', async () => {
+      mockClient.tasks.deleteTaskComment.mockResolvedValue({ message: 'Successfully deleted.' });
+
+      const result = await removeComment({ id: 123, commentId: 45 });
+
+      expect(mockClient.tasks.deleteTaskComment).toHaveBeenCalledWith(123, 45);
+      const markdown = result.content[0].text;
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('delete');
+      expect(markdown).toContain('Comment 45 deleted from task 123');
+    });
+
+    it('should throw when task id is missing', async () => {
+      await expect(removeComment({ commentId: 1 })).rejects.toThrow(
+        'Failed to delete comment: Task id is required for delete-comment operation'
       );
+    });
+
+    it('should throw when commentId is missing', async () => {
+      await expect(removeComment({ id: 1 })).rejects.toThrow(
+        'Failed to delete comment: Comment id is required for delete-comment operation'
+      );
+    });
+
+    it('should throw when task id is invalid', async () => {
+      await expect(removeComment({ id: -1, commentId: 2 })).rejects.toThrow(
+        'Failed to delete comment: id must be a positive integer'
+      );
+    });
+
+    it('should throw when commentId is invalid', async () => {
+      await expect(removeComment({ id: 1, commentId: -2 })).rejects.toThrow(
+        'Failed to delete comment: commentId must be a positive integer'
+      );
+    });
+
+    it('should handle API errors', async () => {
+      mockClient.tasks.deleteTaskComment.mockRejectedValue(new Error('API Error'));
+
+      await expect(removeComment({ id: 1, commentId: 2 })).rejects.toThrow(
+        'Failed to delete comment: API Error'
+      );
+    });
+
+    it('should handle non-Error rejections', async () => {
+      mockClient.tasks.deleteTaskComment.mockRejectedValue(false);
+
+      await expect(removeComment({ id: 1, commentId: 2 })).rejects.toThrow(
+        'Failed to delete comment: false'
+      );
+    });
+  });
+
+  describe('getComment', () => {
+    it('should fetch a single comment', async () => {
+      const mockComment = {
+        id: 45,
+        task_id: 123,
+        comment: 'Hi',
+        created: '2026-01-01',
+      };
+      mockClient.tasks.getTaskComment.mockResolvedValue(mockComment);
+
+      const result = await getComment({ id: 123, commentId: 45 });
+
+      expect(mockClient.tasks.getTaskComment).toHaveBeenCalledWith(123, 45);
+      const markdown = result.content[0].text;
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('get');
+      expect(markdown).toContain('Comment retrieved successfully');
+    });
+
+    it('should throw when task id is missing', async () => {
+      await expect(getComment({ commentId: 1 })).rejects.toThrow(
+        'Failed to get comment: Task id is required for get-comment operation'
+      );
+    });
+
+    it('should throw when commentId is missing', async () => {
+      await expect(getComment({ id: 1 })).rejects.toThrow(
+        'Failed to get comment: Comment id is required for get-comment operation'
+      );
+    });
+
+    it('should throw when task id is invalid', async () => {
+      await expect(getComment({ id: -1, commentId: 2 })).rejects.toThrow(
+        'Failed to get comment: id must be a positive integer'
+      );
+    });
+
+    it('should throw when commentId is invalid', async () => {
+      await expect(getComment({ id: 1, commentId: -2 })).rejects.toThrow(
+        'Failed to get comment: commentId must be a positive integer'
+      );
+    });
+
+    it('should handle API errors', async () => {
+      mockClient.tasks.getTaskComment.mockRejectedValue(new Error('Not found'));
+
+      await expect(getComment({ id: 1, commentId: 999 })).rejects.toThrow(
+        'Failed to get comment: Not found'
+      );
+    });
+
+    it('should handle non-Error rejections', async () => {
+      mockClient.tasks.getTaskComment.mockRejectedValue(null);
+
+      await expect(getComment({ id: 1, commentId: 2 })).rejects.toThrow(
+        'Failed to get comment: null'
+      );
+    });
+  });
+
+  describe('updateComment', () => {
+    it('should update a comment successfully', async () => {
+      const mockComment = {
+        id: 45,
+        task_id: 123,
+        comment: 'Updated text',
+        created: '2026-01-01',
+        updated: '2026-01-02',
+      };
+      mockClient.tasks.updateTaskComment.mockResolvedValue(mockComment);
+
+      const result = await updateComment({
+        id: 123,
+        commentId: 45,
+        comment: 'Updated text',
+      });
+
+      expect(mockClient.tasks.updateTaskComment).toHaveBeenCalledWith(123, 45, {
+        id: 45,
+        task_id: 123,
+        comment: 'Updated text',
+      });
+      const markdown = result.content[0].text;
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('update');
+      expect(markdown).toContain('Comment updated successfully');
+      expect(markdown).toContain('comment'); // affectedFields entry
+    });
+
+    it('should throw when task id is missing', async () => {
+      await expect(updateComment({ commentId: 1, comment: 'x' })).rejects.toThrow(
+        'Failed to update comment: Task id is required for update-comment operation'
+      );
+    });
+
+    it('should throw when commentId is missing', async () => {
+      await expect(updateComment({ id: 1, comment: 'x' })).rejects.toThrow(
+        'Failed to update comment: Comment id is required for update-comment operation'
+      );
+    });
+
+    it('should throw when comment text is missing', async () => {
+      await expect(updateComment({ id: 1, commentId: 2 })).rejects.toThrow(
+        'Failed to update comment: Comment text is required for update-comment operation'
+      );
+    });
+
+    it('should throw when comment text is whitespace', async () => {
+      await expect(updateComment({ id: 1, commentId: 2, comment: '   ' })).rejects.toThrow(
+        'Failed to update comment: Comment text is required for update-comment operation'
+      );
+    });
+
+    it('should throw when task id is invalid', async () => {
+      await expect(updateComment({ id: -1, commentId: 2, comment: 'x' })).rejects.toThrow(
+        'Failed to update comment: id must be a positive integer'
+      );
+    });
+
+    it('should throw when commentId is invalid', async () => {
+      await expect(updateComment({ id: 1, commentId: -2, comment: 'x' })).rejects.toThrow(
+        'Failed to update comment: commentId must be a positive integer'
+      );
+    });
+
+    it('should handle API errors', async () => {
+      mockClient.tasks.updateTaskComment.mockRejectedValue(new Error('Forbidden'));
+
+      await expect(
+        updateComment({ id: 1, commentId: 2, comment: 'x' }),
+      ).rejects.toThrow('Failed to update comment: Forbidden');
+    });
+
+    it('should handle non-Error rejections', async () => {
+      mockClient.tasks.updateTaskComment.mockRejectedValue(42);
+
+      await expect(
+        updateComment({ id: 1, commentId: 2, comment: 'x' }),
+      ).rejects.toThrow('Failed to update comment: 42');
     });
   });
 
