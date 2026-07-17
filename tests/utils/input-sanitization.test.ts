@@ -97,21 +97,25 @@ describe('Input Sanitization Security Tests', () => {
   });
 
   describe('SQL Injection Protection in Filter Values', () => {
-    it('should block SQL injection attempts in filter values', () => {
-      const sqlInjection = "'; DROP TABLE tasks; --";
+    it('should pass through SQL keywords rather than block them (keyword blocklist removed)', () => {
+      // The broad SQL keyword blocklist (DROP, SELECT, ...) and the "--" SQL comment
+      // pattern were removed because they false-positived on ordinary English task
+      // titles ("Create", "Update", "Drop the ball", ...). Vikunja is reached through a
+      // JSON API using parameterized queries, not string-concatenated SQL, so keyword
+      // matching at this boundary provided no real protection. The value passes through.
+      const sqlKeywords = "'; DROP TABLE tasks; --";
 
-      // This should be rejected for dangerous SQL patterns
       expect(() => {
-        sanitizeString(sqlInjection);
-      }).toThrow('contains potentially dangerous content');
+        sanitizeString(sqlKeywords);
+      }).not.toThrow();
     });
 
-    it('should block UNION-based SQL injection', () => {
-      const unionInjection = "' UNION SELECT * FROM users --";
+    it('should pass through UNION/SELECT keywords rather than block them (keyword blocklist removed)', () => {
+      const unionKeywords = "' UNION SELECT * FROM users --";
 
       expect(() => {
-        sanitizeString(unionInjection);
-      }).toThrow('contains potentially dangerous content');
+        sanitizeString(unionKeywords);
+      }).not.toThrow();
     });
 
     it('should block boolean-based SQL injection', () => {

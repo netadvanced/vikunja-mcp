@@ -25,6 +25,8 @@ import { assignUsers, unassignUsers, listAssignees } from './assignees';
 import { handleComment } from './comments';
 import { addReminder, removeReminder, listReminders } from './reminders';
 import { applyLabels, removeLabels, listTaskLabels } from './labels';
+import { attachSchemaFields, handleAttach, type TaskAttachArgs } from './attach';
+import { setTaskBucket } from './buckets';
 
 
 /**
@@ -102,18 +104,6 @@ async function listTasks(
   }
 }
 
-/**
- * Handle file attachments (not supported)
- */
-function handleAttach(): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
-  // Attachment handling would require file upload capabilities
-  // which are not available in the current MCP context
-  throw new MCPError(
-    ErrorCode.NOT_IMPLEMENTED,
-    'File attachments are not supported in the current MCP context',
-  );
-}
-
 export function registerTasksTool(
   server: McpServer, 
   authManager: AuthManager, 
@@ -121,7 +111,7 @@ export function registerTasksTool(
 ): void {
   server.tool(
     'vikunja_tasks',
-    'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach files, comment, bulk operations)',
+    'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach files, comment, bulk operations, set Kanban bucket)',
     {
       subcommand: z.enum([
         'create',
@@ -146,15 +136,24 @@ export function registerTasksTool(
         'apply-label',
         'remove-label',
         'list-labels',
+        'set-bucket',
       ]),
       // Task creation/update fields
       title: z.string().optional(),
       description: z.string().optional(),
       projectId: z.number().optional(),
       dueDate: z.string().optional(),
+      startDate: z.string().optional(),
+      endDate: z.string().optional(),
       priority: z.number().min(0).max(5).optional(),
+      percentDone: z.number().min(0).max(1).optional(),
       labels: z.array(z.number()).optional(),
       assignees: z.array(z.number()).optional(),
+      // Kanban bucket fields (set-bucket subcommand).
+      // z.coerce tolerates MCP clients whose cached tool schema predates
+      // these params and therefore send them as strings over JSON-RPC.
+      bucketId: z.coerce.number().optional(),
+      viewId: z.coerce.number().optional(),
       // Recurring task fields
       repeatAfter: z.number().min(0).optional(),
       repeatMode: z.enum(['day', 'week', 'month', 'year']).optional(),
@@ -182,6 +181,8 @@ export function registerTasksTool(
             title: z.string(),
             description: z.string().optional(),
             dueDate: z.string().optional(),
+            startDate: z.string().optional(),
+            endDate: z.string().optional(),
             priority: z.number().min(0).max(5).optional(),
             labels: z.array(z.number()).optional(),
             assignees: z.array(z.number()).optional(),
@@ -193,6 +194,8 @@ export function registerTasksTool(
       // Reminder fields
       reminderDate: z.string().optional(),
       reminderId: z.number().optional(),
+      // Attach subcommand fields (filePath, fileContent, filename)
+      ...attachSchemaFields,
       // Add relation schema
       ...relationSchema,
       // Session ID for AORP response tracking
@@ -247,7 +250,7 @@ export function registerTasksTool(
             return handleComment(args as Parameters<typeof handleComment>[0]);
 
           case 'attach':
-            return handleAttach();
+            return handleAttach(args as TaskAttachArgs, authManager);
 
           case 'bulk-update':
             return bulkUpdateTasks(args as Parameters<typeof bulkUpdateTasks>[0]);
@@ -286,6 +289,9 @@ export function registerTasksTool(
 
           case 'list-labels':
             return listTaskLabels(args as Parameters<typeof listTaskLabels>[0]);
+
+          case 'set-bucket':
+            return setTaskBucket(args as Parameters<typeof setTaskBucket>[0], authManager);
 
           default:
             throw new MCPError(

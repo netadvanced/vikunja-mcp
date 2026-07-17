@@ -12,8 +12,8 @@ import { commentResponseFormatter } from './CommentResponseFormatter';
  * Add a comment to a task or list task comments
  */
 export async function handleComment(args: {
-  id?: number;
-  comment?: string;
+  id?: number | undefined;
+  comment?: string | undefined;
 }): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   try {
     const { taskId, commentText } = commentValidationService.validateCommentInput(args);
@@ -46,21 +46,10 @@ export async function handleComment(args: {
 }
 
 /**
- * Remove a comment from a task
- * Note: This functionality is not available in the current node-vikunja API
- */
-export function removeComment(): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
-  throw new MCPError(
-    ErrorCode.NOT_IMPLEMENTED,
-    'Comment deletion is not currently supported by the node-vikunja API',
-  );
-}
-
-/**
  * List all comments for a task
  */
 export async function listComments(args: {
-  id?: number;
+  id?: number | undefined;
 }): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   try {
     const { taskId } = commentValidationService.validateListInput(args);
@@ -75,6 +64,73 @@ export async function listComments(args: {
     throw new MCPError(
       ErrorCode.API_ERROR,
       `Failed to list comments: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+/**
+ * Fetch a single comment by id
+ */
+export async function getComment(args: {
+  id?: number | undefined;
+  commentId?: number | undefined;
+}): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+  try {
+    const { taskId, commentId } = commentValidationService.validateGetInput(args);
+
+    const comment = await CommentOperationsService.getComment(taskId, commentId);
+
+    const response = commentResponseFormatter.formatGetCommentResponse(comment);
+    return commentResponseFormatter.formatMcpResponse(response);
+  } catch (error) {
+    throw new MCPError(
+      ErrorCode.API_ERROR,
+      `Failed to get comment: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+/**
+ * Update the text of an existing comment
+ */
+export async function updateComment(args: {
+  id?: number | undefined;
+  commentId?: number | undefined;
+  comment?: string | undefined;
+}): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+  try {
+    const { taskId, commentId, commentText } = commentValidationService.validateUpdateInput(args);
+
+    const updated = await CommentOperationsService.updateComment(taskId, commentId, commentText);
+
+    const response = commentResponseFormatter.formatUpdateCommentResponse(updated);
+    return commentResponseFormatter.formatMcpResponse(response);
+  } catch (error) {
+    throw new MCPError(
+      ErrorCode.API_ERROR,
+      `Failed to update comment: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+/**
+ * Remove a comment from a task
+ */
+export async function removeComment(args: {
+  id?: number | undefined;
+  commentId?: number | undefined;
+}): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+  try {
+    const { taskId, commentId } = commentValidationService.validateDeleteInput(args);
+
+    await CommentOperationsService.deleteComment(taskId, commentId);
+
+    const response = commentResponseFormatter.formatDeleteCommentResponse(taskId, commentId);
+    return commentResponseFormatter.formatMcpResponse(response);
+  } catch (error) {
+    throw new MCPError(
+      ErrorCode.API_ERROR,
+      `Failed to delete comment: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
 }

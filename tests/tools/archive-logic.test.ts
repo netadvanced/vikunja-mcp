@@ -79,7 +79,7 @@ describe('Archive/Unarchive Logic', () => {
 
       expect(mockClient.projects.getProject).toHaveBeenCalledWith(1);
       expect(mockClient.projects.updateProject).toHaveBeenCalledWith(1, {
-        title: 'Test Project',
+        ...mockProject,
         is_archived: true
       });
 
@@ -113,7 +113,7 @@ describe('Archive/Unarchive Logic', () => {
 
       expect(mockClient.projects.getProject).toHaveBeenCalledWith(1);
       expect(mockClient.projects.updateProject).toHaveBeenCalledWith(1, {
-        title: 'Test Project',
+        ...archivedProject,
         is_archived: false
       });
 

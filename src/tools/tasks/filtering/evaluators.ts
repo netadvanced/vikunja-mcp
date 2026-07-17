@@ -28,6 +28,31 @@ export function evaluateCondition(task: Task, condition: FilterCondition): boole
       }
       return evaluateDateComparison(task.due_date, operator, String(value));
 
+    case 'startDate': {
+      // Vikunja returns '0001-01-01T00:00:00Z' for unset dates instead of null.
+      const sd = task.start_date;
+      const isUnset = !sd || sd.startsWith('0001-');
+      if (isUnset) return operator === '!=';
+      return evaluateDateComparison(sd, operator, String(value));
+    }
+
+    case 'endDate': {
+      const ed = task.end_date;
+      const isUnset = !ed || ed.startsWith('0001-');
+      if (isUnset) return operator === '!=';
+      return evaluateDateComparison(ed, operator, String(value));
+    }
+
+    case 'doneAt': {
+      const da = task.done_at;
+      const isUnset = !da || da.startsWith('0001-');
+      if (isUnset) return operator === '!=';
+      return evaluateDateComparison(da, operator, String(value));
+    }
+
+    case 'project':
+      return evaluateComparison(task.project_id || 0, operator, Number(value));
+
     case 'created':
       if (!task.created) return false;
       return evaluateDateComparison(task.created, operator, String(value));

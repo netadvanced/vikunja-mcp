@@ -1,5 +1,7 @@
 # Vikunja MCP Server
 
+> 👋 **Why this fork exists:** We rely on this project and noticed the [upstream repo](https://github.com/democratize-technology/vikunja-mcp) had gone quiet, with a growing backlog of open PRs and issues. So we've taken over active maintenance here — triaging and resolving most of that backlog (tracked [in this issue](https://github.com/netadvanced/vikunja-mcp/issues/19)). Full credit to the original authors for the foundation. If they'd like to pick it back up, we'll gladly hand the reins back — or work together.
+
 A Model Context Protocol (MCP) server that enables AI assistants to interact with Vikunja task management instances.
 
 ## Features
@@ -295,6 +297,12 @@ vikunja_tasks.update({
   priority: 5
 })
 
+// Move a task to another project (full-model merge; verified after update)
+vikunja_tasks.update({
+  id: 123,
+  projectId: 5
+})
+
 // Update recurring settings on an existing task
 vikunja_tasks.update({
   id: 123,
@@ -404,6 +412,7 @@ vikunja_tasks.bulk-create({
 })
 
 // Bulk update multiple tasks with the same field value
+// (fetch+merge per task — safe against Vikunja full-replace field wipes)
 vikunja_tasks.bulk-update({
   taskIds: [123, 124, 125],
   field: "done",          // Field to update
@@ -1016,8 +1025,9 @@ This standardized format ensures:
     - Validates date format (ISO 8601) and IDs
   - `get` - Get task details by ID
   - `update` - Update existing task
-    - Supports partial updates
+    - Supports partial updates (GET + merge before POST — Vikunja replaces the full model)
     - Can update title, description, dueDate, priority, done status
+    - Can move tasks between projects with `projectId` (verified after update)
     - Can update labels and assignees (uses efficient diff-based approach)
   - `delete` - Delete a task by ID
   - `assign` - Bulk assign users to tasks
@@ -1027,7 +1037,8 @@ This standardized format ensures:
     - Required: taskIds array, field name, value
     - Supported fields: done, priority, due_date, project_id, assignees, labels
     - Validates field types and values
-    - ⚠️ Performance: Makes API calls to fetch each updated task
+    - Uses per-task fetch+merge+update (does not call Vikunja's native bulk API, which can wipe omitted fields — see #46)
+    - ⚠️ Performance: O(n) get+update calls (n = number of tasks)
   - `bulk-delete` - Delete multiple tasks at once
     - Required: taskIds array
     - Returns deleted task details for confirmation
@@ -1068,8 +1079,9 @@ This standardized format ensures:
     - Optional: description, parentProjectId, isArchived, hexColor (format: #RRGGBB)
     - Validates parent project hierarchy depth (max 10 levels)
   - `update` - Update existing project
-    - Supports partial updates
+    - Supports partial updates (fetches current project and merges; omitted fields are preserved)
     - Can update all project fields including hexColor (format: #RRGGBB)
+    - Omitting `parentProjectId` leaves the current parent unchanged (use `move` to reparent or detach)
     - Validates parent project hierarchy depth when changing parent
   - `delete` - Delete a project by ID
   - `archive` - Archive a project

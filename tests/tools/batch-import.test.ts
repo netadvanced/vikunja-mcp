@@ -258,7 +258,7 @@ describe('Batch Import Tool', () => {
       });
 
       expect(mockClient.tasks.updateTaskLabels).toHaveBeenCalledWith(103, {
-        label_ids: [1, 2],
+        labels: [{ id: 1 }, { id: 2 }],
       });
       expect(mockClient.tasks.assignUserToTask).toHaveBeenCalledWith(103, 10);
       expect(mockClient.tasks.assignUserToTask).toHaveBeenCalledWith(103, 11);
@@ -354,7 +354,7 @@ Task 2,Description 2,2,true`;
       });
 
       expect(mockClient.tasks.updateTaskLabels).toHaveBeenCalledWith(203, {
-        label_ids: [1, 2],
+        labels: [{ id: 1 }, { id: 2 }],
       });
     });
 
@@ -735,7 +735,7 @@ Description,1`;
 
       // Verify updateTaskLabels was called with correct label IDs
       expect(mockClient.tasks.updateTaskLabels).toHaveBeenCalledWith(122, {
-        label_ids: [1, 2],
+        labels: [{ id: 1 }, { id: 2 }],
       });
 
       // Verify getTask was called to check if labels were actually assigned
@@ -1119,7 +1119,7 @@ Description,1`;
 
       // Should map correctly despite case differences
       expect(mockClient.tasks.updateTaskLabels).toHaveBeenCalledWith(1101, {
-        label_ids: [1, 2],
+        labels: [{ id: 1 }, { id: 2 }],
       });
     });
 
@@ -1372,7 +1372,7 @@ Description,1`;
 
       // Should update with only the found label
       expect(mockClient.tasks.updateTaskLabels).toHaveBeenCalledWith(1801, {
-        label_ids: [1],
+        labels: [{ id: 1 }],
       });
       
       // Task completed successfully, only 'bug' label was applied

@@ -20,6 +20,8 @@ export interface BulkCreateTaskData {
   title: string;
   description?: string;
   dueDate?: string;
+  startDate?: string;
+  endDate?: string;
   priority?: number;
   labels?: number[];
   assignees?: number[];
@@ -30,6 +32,54 @@ export interface BulkCreateTaskData {
 export interface BulkCreateArgs {
   projectId?: number;
   tasks?: BulkCreateTaskData[];
+}
+
+/**
+ * Coerce a labels/assignees value into a number array.
+ *
+ * The bulk-update `value` field is loosely typed (z.unknown), and an MCP
+ * client with a stale cached schema may send the array as a JSON string
+ * ("[3,8]") or a comma-separated string ("3,8") instead of a real array.
+ * Returns the value unchanged when it cannot be coerced, so that
+ * validateFieldConstraints still reports a clear error.
+ */
+function coerceToNumberArray(value: unknown): unknown {
+  const toNumbers = (arr: unknown[]): unknown[] =>
+    arr.map((item) =>
+      typeof item === 'string' && item.trim() !== '' && !Number.isNaN(Number(item))
+        ? Number(item)
+        : item,
+    );
+
+  if (Array.isArray(value)) {
+    return toNumbers(value);
+  }
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed === '') {
+      return value;
+    }
+    if (trimmed.startsWith('[')) {
+      try {
+        const parsed: unknown = JSON.parse(trimmed);
+        if (Array.isArray(parsed)) {
+          return toNumbers(parsed);
+        }
+      } catch {
+        // Not valid JSON; fall through to comma-separated handling.
+      }
+    }
+    const parts = trimmed
+      .split(',')
+      .map((part) => part.trim())
+      .filter((part) => part !== '');
+    if (parts.length > 0 && parts.every((part) => !Number.isNaN(Number(part)))) {
+      return parts.map((part) => Number(part));
+    }
+  }
+
+  return value;
 }
 
 /**
@@ -85,6 +135,13 @@ export const bulkOperationValidator = {
         args.value = numValue;
       }
     }
+
+    // labels and assignees expect a number[]; coerce a stringified array
+    // ("[3,8]" or "3,8") that a stale client schema may send so a valid
+    // value is not rejected as "must be an array of numbers".
+    if (args.field && ['labels', 'assignees'].includes(args.field)) {
+      args.value = coerceToNumberArray(args.value);
+    }
   },
 
   /**
@@ -95,6 +152,8 @@ export const bulkOperationValidator = {
       'done',
       'priority',
       'due_date',
+      'start_date',
+      'end_date',
       'project_id',
       'assignees',
       'labels',
@@ -118,6 +177,14 @@ export const bulkOperationValidator = {
 
     if (args.field === 'due_date' && typeof args.value === 'string') {
       validateDateString(args.value, 'due_date');
+    }
+
+    if (args.field === 'start_date' && typeof args.value === 'string') {
+      validateDateString(args.value, 'start_date');
+    }
+
+    if (args.field === 'end_date' && typeof args.value === 'string') {
+      validateDateString(args.value, 'end_date');
     }
 
     if (args.field === 'project_id' && typeof args.value === 'number') {
@@ -216,6 +283,12 @@ export const bulkOperationValidator = {
       // Validate optional fields
       if (task.dueDate) {
         validateDateString(task.dueDate, `tasks[${index}].dueDate`);
+      }
+      if (task.startDate) {
+        validateDateString(task.startDate, `tasks[${index}].startDate`);
+      }
+      if (task.endDate) {
+        validateDateString(task.endDate, `tasks[${index}].endDate`);
       }
 
       if (task.assignees) {

@@ -75,6 +75,7 @@ describe('Tasks CRUD - Authentication Error Handling', () => {
         updateTask: jest.fn(),
         deleteTask: jest.fn(),
         updateTaskLabels: jest.fn(),
+        addLabelToTask: jest.fn(),
         bulkAssignUsersToTask: jest.fn(),
         assignUserToTask: jest.fn(),
         removeUserFromTask: jest.fn(),
@@ -92,7 +93,7 @@ describe('Tasks CRUD - Authentication Error Handling', () => {
       
       // Mock label assignment failure with 401 auth error
       const authError = createAuthError(401, 'Unauthorized to assign labels');
-      mockClient.tasks.updateTaskLabels.mockRejectedValue(authError);
+      mockClient.tasks.addLabelToTask.mockRejectedValue(authError);
       
       // Mock successful task deletion for rollback
       mockClient.tasks.deleteTask.mockResolvedValue(undefined);
@@ -105,7 +106,7 @@ describe('Tasks CRUD - Authentication Error Handling', () => {
         })
       ).rejects.toThrow(MCPError);
 
-      // Verify the error message includes retry information
+      // Verify the error message includes authentication guidance
       try {
         await createTask({
           projectId: 1,
@@ -114,7 +115,6 @@ describe('Tasks CRUD - Authentication Error Handling', () => {
         });
       } catch (error) {
         expect(error).toBeInstanceOf(MCPError);
-        expect((error as MCPError).message).toContain('(Retried');
         expect((error as MCPError).message).toContain('Task ID: 1');
       }
 
@@ -129,7 +129,7 @@ describe('Tasks CRUD - Authentication Error Handling', () => {
       
       // Mock label assignment failure with 403 Axios-style auth error
       const authError = createAxiosAuthError(403, 'Forbidden to assign labels');
-      mockClient.tasks.updateTaskLabels.mockRejectedValue(authError);
+      mockClient.tasks.addLabelToTask.mockRejectedValue(authError);
       
       // Mock successful task deletion for rollback
       mockClient.tasks.deleteTask.mockResolvedValue(undefined);
@@ -150,7 +150,7 @@ describe('Tasks CRUD - Authentication Error Handling', () => {
       // Mock successful task creation and label assignment
       const createdTask = { id: 1, title: 'Test Task', project_id: 1 };
       mockClient.tasks.createTask.mockResolvedValue(createdTask);
-      mockClient.tasks.updateTaskLabels.mockResolvedValue(undefined);
+      mockClient.tasks.addLabelToTask.mockResolvedValue(undefined);
       
       // Mock assignee assignment failure with 401 auth error
       const authError = createAuthError(401, 'Unauthorized to assign users');
@@ -397,7 +397,7 @@ describe('Tasks CRUD - Authentication Error Handling', () => {
       
       // Mock label assignment failure with non-auth error
       const nonAuthError = new Error('Network timeout');
-      mockClient.tasks.updateTaskLabels.mockRejectedValue(nonAuthError);
+      mockClient.tasks.addLabelToTask.mockRejectedValue(nonAuthError);
       
       // Mock successful task deletion for rollback
       mockClient.tasks.deleteTask.mockResolvedValue(undefined);
@@ -442,27 +442,23 @@ describe('Tasks CRUD - Authentication Error Handling', () => {
   });
 
   describe('edge cases for complete coverage', () => {
-    it('should handle createTask with undefined task ID in error context', async () => {
+    it('should fail createTask when labels requested but task has no ID', async () => {
       // Mock task creation returning undefined/null ID
       const createdTaskNoId = { title: 'Test Task', project_id: 1, id: undefined };
       mockClient.tasks.createTask.mockResolvedValue(createdTaskNoId);
 
-      // When task has no ID, label assignment should not be attempted
-      const result = await createTask({
-        projectId: 1,
-        title: 'Test Task',
-        labels: [1],
-      });
+      await expect(
+        createTask({
+          projectId: 1,
+          title: 'Test Task',
+          labels: [1],
+        }),
+      ).rejects.toThrow('did not return a task id');
 
       // Verify no label operations were attempted due to missing task ID
-      expect(mockClient.tasks.updateTaskLabels).not.toHaveBeenCalled();
+      expect(mockClient.tasks.addLabelToTask).not.toHaveBeenCalled();
       // Verify no deleteTask call was made since there's no ID
       expect(mockClient.tasks.deleteTask).not.toHaveBeenCalled();
-
-      const markdown = result.content[0].text;
-      const parsed = parseMarkdown(markdown);
-      const aorpStatus = parsed.getAorpStatus();
-      expect(aorpStatus.type).toBe('success');
     });
 
     it('should handle updateTask with task having no assignees field', async () => {

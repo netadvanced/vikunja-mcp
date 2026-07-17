@@ -4,10 +4,10 @@
  */
 
 import type { Task } from 'node-vikunja';
-import type { FilterExpression, ParseResult } from '../../../types/filters';
+import type { FilterExpression, FilterGroup, ParseResult } from '../../../types/filters';
 import type { TaskListingArgs, TaskFilterValidationConfig, TaskFilterStorage } from '../types/filters';
 import { MCPError, ErrorCode } from '../../../types';
-import { parseFilterString } from '../../../utils/filters';
+import { parseFilterString, expressionToString } from '../../../utils/filters';
 import { validateTaskCountLimit } from '../../../utils/memory';
 import { logger } from '../../../utils/logger';
 
@@ -31,7 +31,9 @@ export const FilterValidator = {
     const validationWarnings: string[] = [];
 
     try {
-      // Handle filter - either direct filter string or saved filter ID
+      // Resolve the user-supplied filter - either a direct filter string or a
+      // saved filter referenced by id.
+      let userFilter: string | undefined;
       if (args.filterId) {
         const savedFilter = await storage.get(args.filterId);
         if (!savedFilter) {
@@ -40,14 +42,14 @@ export const FilterValidator = {
             `Filter with id ${args.filterId} not found`
           );
         }
-        filterString = savedFilter.filter;
+        userFilter = savedFilter.filter;
       } else if (args.filter !== undefined) {
-        filterString = args.filter;
+        userFilter = args.filter;
       }
 
-      // Parse the filter string for client-side filtering
-      if (filterString) {
-        const parseResult: ParseResult = parseFilterString(filterString);
+      // Parse the user-supplied filter into an expression.
+      if (userFilter) {
+        const parseResult: ParseResult = parseFilterString(userFilter);
         if (parseResult.error) {
           throw new MCPError(
             ErrorCode.VALIDATION_ERROR,
@@ -55,7 +57,42 @@ export const FilterValidator = {
           );
         }
         filterExpression = parseResult.expression;
+      }
 
+      // Fold the `done` flag into the filter expression so it is applied
+      // server-side (before pagination) rather than trimming an already
+      // paginated page. Without this, `done=false` scattered open tasks
+      // unpredictably across raw pages.
+      if (args.done !== undefined) {
+        const doneGroup: FilterGroup = {
+          conditions: [{ field: 'done', operator: '=', value: args.done }],
+          operator: '&&',
+        };
+        if (!filterExpression) {
+          filterExpression = { groups: [doneGroup] };
+        } else if (filterExpression.groups.length === 1) {
+          // Single user group: AND `done` on as a second group. The user's
+          // group is parenthesised when serialised, so its own &&/|| operator
+          // is preserved.
+          filterExpression = {
+            groups: [...filterExpression.groups, doneGroup],
+            operator: '&&',
+          };
+        }
+        // Multi-group user filter: left untouched - appending a group here
+        // could change group-join semantics. `done` is still enforced by
+        // FilterExecutor.applyPostProcessingFilters in that case.
+      }
+
+      // Serialise the final expression for Vikunja's server-side `filter`
+      // query param. When `done` was not folded in, keep the user's original
+      // string verbatim.
+      if (filterExpression) {
+        filterString =
+          args.done === undefined ? userFilter : expressionToString(filterExpression);
+      }
+
+      if (filterString) {
         // Log that we're preparing to attempt hybrid filtering
         logger.info('Preparing hybrid filtering (server-side attempt + client-side fallback)', {
           filter: filterString,
