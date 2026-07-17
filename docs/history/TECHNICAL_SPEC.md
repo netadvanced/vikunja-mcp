@@ -1,3 +1,7 @@
+**ARCHIVED (2026-07-17).** This is the original v1 design specification, kept for historical reference. Parts are aspirational and no longer match reality (e.g. coverage claims, implementation status). For current truth see `docs/ARCHITECTURE.md`, `docs/API-COVERAGE.md`, and `CLAUDE.md`.
+
+---
+
 # Vikunja MCP Server Technical Specification
 
 ## Overview
