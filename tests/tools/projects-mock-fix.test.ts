@@ -145,7 +145,7 @@ describe('Projects Tool Mock Fixes', () => {
 
       expect(mockClient.projects.getProject).toHaveBeenCalledWith(1);
       expect(mockClient.projects.updateProject).toHaveBeenCalledWith(1, {
-        title: 'Test Project',
+        ...mockProject,
         is_archived: true
       });
       expect(result.content[0].type).toBe('text');
@@ -168,7 +168,7 @@ describe('Projects Tool Mock Fixes', () => {
 
       expect(mockClient.projects.getProject).toHaveBeenCalledWith(1);
       expect(mockClient.projects.updateProject).toHaveBeenCalledWith(1, {
-        title: 'Test Project',
+        ...archivedProject,
         is_archived: false
       });
       expect(result.content[0].type).toBe('text');

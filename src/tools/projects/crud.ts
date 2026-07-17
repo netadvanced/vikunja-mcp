@@ -4,7 +4,7 @@
  */
 
 import type { Project, ProjectListParams } from 'node-vikunja';
-import { MCPError, ErrorCode, type CreateProjectRequest, type UpdateProjectRequest } from '../../types';
+import { MCPError, ErrorCode, type CreateProjectRequest } from '../../types';
 import { getClientFromContext } from '../../client';
 import { transformApiError, handleStatusCodeError } from '../../utils/error-handler';
 import { validateId, validateHexColor, validateProjectData, calculateProjectDepth } from './validation';
@@ -96,6 +96,31 @@ export interface ArchiveProjectArgs {
   verbosity?: string;
   useOptimizedFormat?: boolean;
   useAorp?: boolean;
+}
+
+/**
+ * Builds a project update payload by merging current project state with
+ * requested field changes. Vikunja's update endpoint replaces the whole
+ * model, so omitted fields would otherwise be cleared (e.g. parent_project_id → 0).
+ */
+export function buildProjectUpdatePayload(
+  currentProject: Project,
+  updates: {
+    title?: string;
+    description?: string;
+    parentProjectId?: number;
+    isArchived?: boolean;
+    hexColor?: string;
+  }
+): Project {
+  return {
+    ...currentProject,
+    ...(updates.title !== undefined && { title: updates.title.trim() }),
+    ...(updates.description !== undefined && { description: updates.description.trim() }),
+    ...(updates.parentProjectId !== undefined && { parent_project_id: updates.parentProjectId }),
+    ...(updates.isArchived !== undefined && { is_archived: updates.isArchived }),
+    ...(updates.hexColor !== undefined && { hex_color: updates.hexColor.toLowerCase() }),
+  };
 }
 
 /**
@@ -410,26 +435,26 @@ export async function updateProject(
       }
     }
 
-    // Prepare update data
-    const updateData: UpdateProjectRequest = {};
+    // Vikunja project update is a full-model replace. Merge with the current
+    // project so omitted fields (especially parent_project_id) are preserved.
+    // Detaching from a parent requires an explicit parentProjectId change
+    // (or using the move subcommand). See issue #45.
+    const fieldUpdates: {
+      title?: string;
+      description?: string;
+      parentProjectId?: number;
+      isArchived?: boolean;
+      hexColor?: string;
+    } = {};
+    if (title !== undefined) fieldUpdates.title = title;
+    if (description !== undefined) fieldUpdates.description = description;
+    if (parentProjectId !== undefined) fieldUpdates.parentProjectId = parentProjectId;
+    if (isArchived !== undefined) fieldUpdates.isArchived = isArchived;
+    if (hexColor !== undefined) fieldUpdates.hexColor = hexColor;
 
-    if (title !== undefined) {
-      updateData.title = title.trim();
-    }
-    if (description !== undefined) {
-      updateData.description = description.trim();
-    }
-    if (parentProjectId !== undefined) {
-      updateData.parent_project_id = parentProjectId;
-    }
-    if (isArchived !== undefined) {
-      updateData.is_archived = isArchived;
-    }
-    if (hexColor !== undefined) {
-      updateData.hex_color = hexColor.toLowerCase();
-    }
+    const updateData = buildProjectUpdatePayload(currentProject, fieldUpdates);
 
-    const updatedProject = await client.projects.updateProject(id, updateData as Project);
+    const updatedProject = await client.projects.updateProject(id, updateData);
 
     const result = createProjectResponse(
       'update_project',
@@ -549,11 +574,11 @@ export async function archiveProject(
       };
     }
 
-    // Archive the project
-    const project = await client.projects.updateProject(id, {
-      title: currentProject.title,
-      is_archived: true
-    } as Project);
+    // Archive the project (merge so parent/other fields are not wiped)
+    const project = await client.projects.updateProject(
+      id,
+      buildProjectUpdatePayload(currentProject, { isArchived: true })
+    );
 
     const result = createProjectResponse(
       'archive_project',
@@ -624,11 +649,11 @@ export async function unarchiveProject(
       };
     }
 
-    // Unarchive the project
-    const project = await client.projects.updateProject(id, {
-      title: currentProject.title,
-      is_archived: false
-    } as Project);
+    // Unarchive the project (merge so parent/other fields are not wiped)
+    const project = await client.projects.updateProject(
+      id,
+      buildProjectUpdatePayload(currentProject, { isArchived: false })
+    );
 
     const result = createProjectResponse(
       'unarchive_project',

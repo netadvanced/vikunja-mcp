@@ -9,7 +9,9 @@ import type { Task, VikunjaClient } from 'node-vikunja';
 import { validateDateString, validateId, convertRepeatConfiguration } from '../validation';
 import { isAuthenticationError } from '../../../utils/auth-error-handler';
 import { RETRY_CONFIG } from '../../../utils/retry';
+import { setTaskLabels } from '../../../utils/label-bulk';
 import { transformApiError, handleFetchError, handleStatusCodeError } from '../../../utils/error-handler';
+import { extractHttpErrorDetail } from '../../../utils/http-error-detail';
 import { AUTH_ERROR_MESSAGES } from '../constants';
 import { createTaskResponse } from './TaskResponseFormatter';
 import { formatAorpAsMarkdown } from '../../../utils/response-factory';
@@ -23,6 +25,8 @@ export interface UpdateTaskArgs {
   endDate?: string;
   priority?: number;
   done?: boolean;
+  /** Move the task to another project (merged into full-model update). */
+  projectId?: number;
   labels?: number[];
   assignees?: number[];
   repeatAfter?: number;
@@ -61,12 +65,17 @@ export async function updateTask(args: UpdateTaskArgs): Promise<{ content: Array
       validateDateString(args.endDate, 'endDate');
     }
 
+    // Validate project move target if provided
+    if (args.projectId !== undefined) {
+      validateId(args.projectId, 'projectId');
+    }
+
     const client = await getClientFromContext();
 
     // Analyze current state and track changes
     const updateState = await analyzeUpdateState(client, args.id, args);
 
-    // Build and apply the update
+    // Build and apply the update (full-model merge — Vikunja replaces the whole task)
     const updateData = buildUpdateData(updateState.currentTask, args);
     await client.tasks.updateTask(args.id, updateData);
 
@@ -82,6 +91,17 @@ export async function updateTask(args: UpdateTaskArgs): Promise<{ content: Array
 
     // Fetch the complete updated task
     const completeTask = await client.tasks.getTask(args.id);
+
+    // Verify project move actually stuck — Vikunja can report success while leaving
+    // the task in the old project (silent failure → data loss if the old project is deleted)
+    if (args.projectId !== undefined && completeTask.project_id !== args.projectId) {
+      throw new MCPError(
+        ErrorCode.API_ERROR,
+        `Failed to move task ${args.id} to project ${args.projectId}: ` +
+          `task remains in project ${completeTask.project_id ?? 'unknown'}. ` +
+          `The move was not applied by Vikunja.`,
+      );
+    }
 
     const response = createTaskResponse(
       'update-task',
@@ -145,6 +165,7 @@ async function analyzeUpdateState(client: VikunjaClient, taskId: number, args: U
   if (currentTask.end_date !== undefined) previousState.end_date = currentTask.end_date;
   if (currentTask.priority !== undefined) previousState.priority = currentTask.priority;
   if (currentTask.done !== undefined) previousState.done = currentTask.done;
+  if (currentTask.project_id !== undefined) previousState.project_id = currentTask.project_id;
   if (currentTask.repeat_after !== undefined) previousState.repeat_after = currentTask.repeat_after;
   if (currentTask.repeat_mode !== undefined) previousState.repeat_mode = currentTask.repeat_mode;
 
@@ -158,6 +179,7 @@ async function analyzeUpdateState(client: VikunjaClient, taskId: number, args: U
   if (args.endDate !== undefined && args.endDate !== currentTask.end_date) affectedFields.push('end_date');
   if (args.priority !== undefined && args.priority !== currentTask.priority) affectedFields.push('priority');
   if (args.done !== undefined && args.done !== currentTask.done) affectedFields.push('done');
+  if (args.projectId !== undefined && args.projectId !== currentTask.project_id) affectedFields.push('projectId');
   if (args.repeatAfter !== undefined && args.repeatAfter !== currentTask.repeat_after) affectedFields.push('repeatAfter');
   if (args.repeatMode !== undefined && args.repeatMode !== currentTask.repeat_mode) affectedFields.push('repeatMode');
   if (args.labels !== undefined) affectedFields.push('labels');
@@ -185,6 +207,8 @@ function buildUpdateData(currentTask: Task, args: UpdateTaskArgs): Task {
     ...(args.endDate !== undefined && { end_date: args.endDate }),
     ...(args.priority !== undefined && { priority: args.priority }),
     ...(args.done !== undefined && { done: args.done }),
+    // Move between projects — must be part of the full-model payload or Vikunja ignores it
+    ...(args.projectId !== undefined && { project_id: args.projectId }),
     // Handle repeat configuration for updates
     ...(args.repeatAfter !== undefined || args.repeatMode !== undefined
       ? ((): Record<string, unknown> => {
@@ -205,17 +229,33 @@ function buildUpdateData(currentTask: Task, args: UpdateTaskArgs): Task {
 }
 
 /**
- * Updates task labels with authentication error handling
+ * Updates task labels with authentication error handling.
+ *
+ * The catch surfaces the HTTP status + body of the underlying Vikunja error
+ * in both branches. Previously the catch replaced any 403/422 from
+ * `POST /tasks/{id}/labels/bulk` with the generic LABEL_UPDATE "known
+ * limitation" message, which hid the real cause (e.g. a permission failure
+ * vs an invalid label id) from the MCP client and made the diagnostic
+ * round-trip much longer for the consumer.
  */
 async function updateTaskLabels(client: VikunjaClient, taskId: number, labelIds: number[]): Promise<void> {
   try {
-    await client.tasks.updateTaskLabels(taskId, {
-      label_ids: labelIds,
-    });
+    await setTaskLabels(client, taskId, labelIds);
   } catch (labelError) {
-    // Check if it's an auth error
+    const detail = extractHttpErrorDetail(labelError);
     if (isAuthenticationError(labelError)) {
-      throw new MCPError(ErrorCode.API_ERROR, AUTH_ERROR_MESSAGES.LABEL_UPDATE);
+      throw new MCPError(
+        ErrorCode.API_ERROR,
+        detail
+          ? `${AUTH_ERROR_MESSAGES.LABEL_UPDATE} ${detail}`
+          : AUTH_ERROR_MESSAGES.LABEL_UPDATE,
+      );
+    }
+    if (detail) {
+      throw new MCPError(
+        ErrorCode.API_ERROR,
+        `Failed to update task labels ${detail}`,
+      );
     }
     throw labelError;
   }

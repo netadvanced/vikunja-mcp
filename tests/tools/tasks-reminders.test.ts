@@ -130,7 +130,7 @@ describe('Tasks Tool - Reminders', () => {
     // Get the tool handler
     expect(mockServer.tool).toHaveBeenCalledWith(
       'vikunja_tasks',
-      'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach files, comment, bulk operations)',
+      'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach files, comment, bulk operations, set Kanban bucket)',
       expect.any(Object),
       expect.any(Function),
     );
@@ -167,7 +167,7 @@ describe('Tasks Tool - Reminders', () => {
       expect(mockClient.tasks.updateTask).toHaveBeenCalledWith(
         1,
         expect.objectContaining({
-          reminders: [{ id: 0, reminder_date: '2024-12-25T10:00:00Z' }],
+          reminders: [{ reminder: '2024-12-25T10:00:00Z' }],
         }),
       );
 
@@ -181,7 +181,7 @@ describe('Tasks Tool - Reminders', () => {
     it('should add multiple reminders to a task', async () => {
       const taskWithOneReminder = {
         ...mockTask,
-        reminders: [{ id: 1, reminder_date: '2024-12-25T10:00:00Z' }],
+        reminders: [{ reminder: '2024-12-25T10:00:00Z' }],
       };
 
       mockClient.tasks.getTask.mockResolvedValueOnce(taskWithOneReminder);
@@ -197,8 +197,8 @@ describe('Tasks Tool - Reminders', () => {
         1,
         expect.objectContaining({
           reminders: [
-            { id: 1, reminder_date: '2024-12-25T10:00:00Z' },
-            { id: 0, reminder_date: '2024-12-31T23:59:00Z' },
+            { reminder: '2024-12-25T10:00:00Z' },
+            { reminder: '2024-12-31T23:59:00Z' },
           ],
         }),
       );

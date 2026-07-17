@@ -132,128 +132,152 @@ describe('Bulk operations', () => {
 
     describe('Type coercion', () => {
       it('should convert string "true" to boolean for done field', async () => {
-        const mockTasks = [{ id: 1, done: true }, { id: 2, done: true }];
-        mockClient.tasks.bulkUpdateTasks.mockResolvedValue(mockTasks);
+        mockClient.tasks.getTask.mockResolvedValue({ id: 1, title: 'T', done: false });
+        mockClient.tasks.updateTask.mockResolvedValue({ id: 1, title: 'T', done: true });
 
-        await bulkUpdateTasks({ taskIds: [1, 2], field: 'done', value: 'true' });
+        await bulkUpdateTasks({ taskIds: [1], field: 'done', value: 'true' });
 
-        expect(mockClient.tasks.bulkUpdateTasks).toHaveBeenCalledWith({
-          task_ids: [1, 2],
-          field: 'done',
-          value: true,
-        });
+        expect(mockClient.tasks.bulkUpdateTasks).not.toHaveBeenCalled();
+        expect(mockClient.tasks.updateTask).toHaveBeenCalledWith(
+          1,
+          expect.objectContaining({ done: true }),
+        );
       });
 
       it('should convert string "false" to boolean for done field', async () => {
-        const mockTasks = [{ id: 1, done: false }, { id: 2, done: false }];
-        mockClient.tasks.bulkUpdateTasks.mockResolvedValue(mockTasks);
+        mockClient.tasks.getTask.mockResolvedValue({ id: 1, title: 'T', done: true });
+        mockClient.tasks.updateTask.mockResolvedValue({ id: 1, title: 'T', done: false });
 
-        await bulkUpdateTasks({ taskIds: [1, 2], field: 'done', value: 'false' });
+        await bulkUpdateTasks({ taskIds: [1], field: 'done', value: 'false' });
 
-        expect(mockClient.tasks.bulkUpdateTasks).toHaveBeenCalledWith({
-          task_ids: [1, 2],
-          field: 'done',
-          value: false,
-        });
+        expect(mockClient.tasks.updateTask).toHaveBeenCalledWith(
+          1,
+          expect.objectContaining({ done: false }),
+        );
       });
 
       it('should convert string numbers to numbers for priority field', async () => {
-        const mockTasks = [{ id: 1, priority: 3 }, { id: 2, priority: 3 }];
-        mockClient.tasks.bulkUpdateTasks.mockResolvedValue(mockTasks);
+        mockClient.tasks.getTask.mockResolvedValue({ id: 1, title: 'T', priority: 0 });
+        mockClient.tasks.updateTask.mockResolvedValue({ id: 1, title: 'T', priority: 3 });
 
-        await bulkUpdateTasks({ taskIds: [1, 2], field: 'priority', value: '3' });
+        await bulkUpdateTasks({ taskIds: [1], field: 'priority', value: '3' });
 
-        expect(mockClient.tasks.bulkUpdateTasks).toHaveBeenCalledWith({
-          task_ids: [1, 2],
-          field: 'priority',
-          value: 3,
-        });
+        expect(mockClient.tasks.updateTask).toHaveBeenCalledWith(
+          1,
+          expect.objectContaining({ priority: 3 }),
+        );
       });
     });
 
-    describe('Bulk API success path', () => {
-      it('should handle successful bulk update with array response', async () => {
-        const mockTasks = [
-          { id: 1, title: 'Task 1', done: true },
-          { id: 2, title: 'Task 2', done: true },
-        ];
-        mockClient.tasks.bulkUpdateTasks.mockResolvedValue(mockTasks);
-
-        const result = await bulkUpdateTasks({ taskIds: [1, 2], field: 'done', value: true });
-
-        expect(mockClient.tasks.bulkUpdateTasks).toHaveBeenCalledWith({
-          task_ids: [1, 2],
-          field: 'done',
-          value: true,
-        });
-
-        const markdown = result.content[0].text;
-        const parsed = parseMarkdown(markdown);
-        expect(markdown).toContain("## ✅ Success");
-        expect(markdown).toContain('Successfully updated 2 tasks');
-        expect(markdown).toContain('**Operation:** update-task');
-        expect(markdown).toContain('**count:** 2');
-      });
-
-      it('should handle successful bulk update with message response', async () => {
-        const mockMessage = { message: 'Tasks updated successfully' };
-        const mockTasks = [
-          { id: 1, title: 'Task 1', done: true },
-          { id: 2, title: 'Task 2', done: true },
-        ];
-
-        mockClient.tasks.bulkUpdateTasks.mockResolvedValue(mockMessage);
-        mockClient.tasks.getTask.mockResolvedValueOnce(mockTasks[0]).mockResolvedValueOnce(mockTasks[1]);
-
-        const result = await bulkUpdateTasks({ taskIds: [1, 2], field: 'done', value: true });
-
-        expect(mockClient.tasks.getTask).toHaveBeenCalledTimes(2);
-
-        const markdown = result.content[0].text;
-        const parsed = parseMarkdown(markdown);
-        expect(markdown).toContain("## ✅ Success");
-        expect(markdown).toContain('**count:** 2');
-      });
-
-      it('should handle repeat_mode conversion', async () => {
-        const mockTasks = [{ id: 1, repeat_mode: 1 }];
-        mockClient.tasks.bulkUpdateTasks.mockResolvedValue(mockTasks);
-
-        await bulkUpdateTasks({ taskIds: [1], field: 'repeat_mode', value: 'month' });
-
-        expect(mockClient.tasks.bulkUpdateTasks).toHaveBeenCalledWith({
-          task_ids: [1],
-          field: 'repeat_mode',
-          value: 1,
-        });
-      });
-    });
-
-    describe('Bulk API failure and fallback', () => {
-      it('should fallback to individual updates when bulk API fails', async () => {
-        const bulkError = new Error('Bulk API not available');
-        const mockTask = { id: 1, title: 'Task 1', done: true };
-
-        mockClient.tasks.bulkUpdateTasks.mockRejectedValue(bulkError);
-        mockClient.tasks.getTask.mockResolvedValue({ id: 1, title: 'Task 1', done: false });
-        mockClient.tasks.updateTask.mockResolvedValue(mockTask);
+    describe('Per-task merge updates (avoids native bulk wipe)', () => {
+      it('should update via get+merge+update and never call native bulk API', async () => {
+        const current = {
+          id: 1,
+          title: 'Task 1',
+          project_id: 1,
+          description: 'keep me',
+          priority: 4,
+          done: false,
+        };
+        const updated = { ...current, done: true };
+        mockClient.tasks.getTask.mockResolvedValue(current);
+        mockClient.tasks.updateTask.mockResolvedValue(updated);
 
         const result = await bulkUpdateTasks({ taskIds: [1], field: 'done', value: true });
 
-        expect(mockClient.tasks.updateTask).toHaveBeenCalledWith(1, expect.objectContaining({
-          done: true,
-        }));
+        expect(mockClient.tasks.bulkUpdateTasks).not.toHaveBeenCalled();
+        expect(mockClient.tasks.getTask).toHaveBeenCalledWith(1);
+        expect(mockClient.tasks.updateTask).toHaveBeenCalledWith(
+          1,
+          expect.objectContaining({
+            title: 'Task 1',
+            description: 'keep me',
+            priority: 4,
+            done: true,
+          }),
+        );
 
         const markdown = result.content[0].text;
-        const parsed = parseMarkdown(markdown);
-        expect(markdown).toContain("## ✅ Success");
+        expect(markdown).toContain('## ✅ Success');
+        expect(markdown).toContain('Successfully updated 1 tasks');
+        expect(markdown).toContain('**Operation:** update-task');
+        expect(markdown).toContain('**count:** 1');
       });
 
-      it('should handle assignees field in fallback mode', async () => {
-        const bulkError = new Error('Bulk API failed');
+      it('should preserve description and priority when marking done (issue #46)', async () => {
+        const tasks = [
+          {
+            id: 10,
+            title: 'A',
+            project_id: 1,
+            description: 'notes for A',
+            priority: 3,
+            done: false,
+          },
+          {
+            id: 11,
+            title: 'B',
+            project_id: 1,
+            description: 'notes for B',
+            priority: 5,
+            done: false,
+          },
+        ];
+        mockClient.tasks.getTask.mockImplementation(async (id: number) => {
+          const task = tasks.find((t) => t.id === id);
+          if (!task) throw new Error(`missing ${id}`);
+          return { ...task };
+        });
+        mockClient.tasks.updateTask.mockImplementation(async (_id: number, payload: Record<string, unknown>) => payload);
+
+        await bulkUpdateTasks({ taskIds: [10, 11], field: 'done', value: true });
+
+        expect(mockClient.tasks.bulkUpdateTasks).not.toHaveBeenCalled();
+        expect(mockClient.tasks.updateTask).toHaveBeenCalledTimes(2);
+        expect(mockClient.tasks.updateTask).toHaveBeenCalledWith(
+          10,
+          expect.objectContaining({
+            description: 'notes for A',
+            priority: 3,
+            done: true,
+          }),
+        );
+        expect(mockClient.tasks.updateTask).toHaveBeenCalledWith(
+          11,
+          expect.objectContaining({
+            description: 'notes for B',
+            priority: 5,
+            done: true,
+          }),
+        );
+      });
+
+      it('should handle repeat_mode conversion on merge path', async () => {
+        mockClient.tasks.getTask.mockResolvedValue({
+          id: 1,
+          title: 'T',
+          project_id: 1,
+          repeat_mode: 0,
+        });
+        mockClient.tasks.updateTask.mockResolvedValue({
+          id: 1,
+          title: 'T',
+          project_id: 1,
+          repeat_mode: 1,
+        });
+
+        await bulkUpdateTasks({ taskIds: [1], field: 'repeat_mode', value: 'month' });
+
+        expect(mockClient.tasks.bulkUpdateTasks).not.toHaveBeenCalled();
+        expect(mockClient.tasks.updateTask).toHaveBeenCalledWith(
+          1,
+          expect.objectContaining({ repeat_mode: 1 }),
+        );
+      });
+
+      it('should handle assignees field', async () => {
         const mockTask = { id: 1, title: 'Task 1', assignees: [] };
 
-        mockClient.tasks.bulkUpdateTasks.mockRejectedValue(bulkError);
         mockClient.tasks.getTask
           .mockResolvedValueOnce({ id: 1, title: 'Task 1', assignees: [] })
           .mockResolvedValueOnce({ id: 1, title: 'Task 1', assignees: [{ id: 1 }] })
@@ -268,55 +292,75 @@ describe('Bulk operations', () => {
         });
 
         const markdown = result.content[0].text;
-        const parsed = parseMarkdown(markdown);
-        expect(markdown).toContain("## ✅ Success");
+        expect(markdown).toContain('## ✅ Success');
       });
 
       it('should handle authentication errors in assignee operations', async () => {
-        const bulkError = new Error('Bulk API failed');
         const authError = new Error('Authentication failed');
-        
-        mockClient.tasks.bulkUpdateTasks.mockRejectedValue(bulkError);
+
         mockClient.tasks.getTask.mockResolvedValue({ id: 1, title: 'Task 1', assignees: [] });
         mockClient.tasks.updateTask.mockResolvedValue({ id: 1, title: 'Task 1' });
         (withRetry as jest.Mock).mockRejectedValue(authError);
         (isAuthenticationError as jest.Mock).mockReturnValue(true);
 
         await expect(bulkUpdateTasks({ taskIds: [1], field: 'assignees', value: [1] })).rejects.toThrow(
-          'Assignee operations may have authentication issues'
+          'Assignee operations may have authentication issues',
         );
       });
+    });
 
-      it('should handle bulk update that reports success but didnt actually update', async () => {
-        const mockTask = { id: 1, title: 'Task 1', project_id: 1, done: false }; // Value not updated
-        mockClient.tasks.bulkUpdateTasks.mockResolvedValue([mockTask]);
+    describe('Labels field', () => {
+      it('should set labels via the field-preserving fallback path', async () => {
+        mockClient.tasks.getTask.mockResolvedValue({ id: 1, title: 'Task 1' });
+        mockClient.tasks.updateTask.mockResolvedValue({ id: 1, title: 'Task 1' });
+        mockClient.tasks.updateTaskLabels.mockResolvedValue({});
 
-        // This should trigger fallback due to value mismatch
-        const result = await bulkUpdateTasks({ taskIds: [1], field: 'done', value: true });
+        const result = await bulkUpdateTasks({ taskIds: [1], field: 'labels', value: [3, 8] });
 
-        // Should have fallen back to individual update
-        expect(mockClient.tasks.updateTask).toHaveBeenCalled();
+        // labels must never go through the native /tasks/bulk endpoint
+        expect(mockClient.tasks.bulkUpdateTasks).not.toHaveBeenCalled();
+        expect(mockClient.tasks.updateTaskLabels).toHaveBeenCalledWith(1, {
+          labels: [{ id: 3 }, { id: 8 }],
+        });
+        expect(result.content[0].text).toContain('## ✅ Success');
+      });
+
+      it('should coerce a stringified labels array', async () => {
+        mockClient.tasks.getTask.mockResolvedValue({ id: 1, title: 'Task 1' });
+        mockClient.tasks.updateTask.mockResolvedValue({ id: 1, title: 'Task 1' });
+        mockClient.tasks.updateTaskLabels.mockResolvedValue({});
+
+        const result = await bulkUpdateTasks({ taskIds: [1], field: 'labels', value: '[3, 8]' });
+
+        expect(mockClient.tasks.updateTaskLabels).toHaveBeenCalledWith(1, {
+          labels: [{ id: 3 }, { id: 8 }],
+        });
+        expect(result.content[0].text).toContain('## ✅ Success');
+      });
+
+      it('should reject a labels value that is not a list of numbers', async () => {
+        await expect(
+          bulkUpdateTasks({ taskIds: [1], field: 'labels', value: 'not-a-list' }),
+        ).rejects.toThrow('labels must be an array of numbers');
       });
     });
 
     describe('Error handling', () => {
       it('should preserve MCPError instances', async () => {
         const mcpError = new MCPError(ErrorCode.NOT_FOUND, 'Task not found');
-        mockClient.tasks.bulkUpdateTasks.mockRejectedValue(mcpError);
         mockClient.tasks.getTask.mockRejectedValue(mcpError);
 
         await expect(bulkUpdateTasks({ taskIds: [1], field: 'done', value: true })).rejects.toThrow(
-          'Bulk update failed. Could not update any tasks. Failed IDs: 1'
+          'Bulk update failed. Could not update any tasks. Failed IDs: 1',
         );
       });
 
       it('should handle unknown error types', async () => {
         const unknownError = { status: 'error' };
-        mockClient.tasks.bulkUpdateTasks.mockRejectedValue(unknownError);
         mockClient.tasks.getTask.mockRejectedValue(unknownError);
 
         await expect(bulkUpdateTasks({ taskIds: [1], field: 'done', value: true })).rejects.toThrow(
-          'Bulk update failed. Could not update any tasks. Failed IDs: 1'
+          'Bulk update failed. Could not update any tasks. Failed IDs: 1',
         );
       });
     });
@@ -524,7 +568,7 @@ describe('Bulk operations', () => {
         });
 
         expect(mockClient.tasks.updateTaskLabels).toHaveBeenCalledWith(1, {
-          label_ids: [1],
+          labels: [{ id: 1 }],
         });
         expect(mockClient.tasks.bulkAssignUsersToTask).toHaveBeenCalledWith(1, {
           user_ids: [1],
@@ -650,17 +694,29 @@ describe('Bulk operations', () => {
   describe('Batch processing', () => {
     it('should process large numbers of tasks in batches', async () => {
       const taskIds = Array.from({ length: 25 }, (_, i) => i + 1);
-      const mockTasks = taskIds.map(id => ({ id, title: `Task ${id}`, done: true }));
 
-      mockClient.tasks.bulkUpdateTasks.mockResolvedValue(mockTasks);
+      mockClient.tasks.getTask.mockImplementation(async (id: number) => ({
+        id,
+        title: `Task ${id}`,
+        project_id: 1,
+        description: `desc ${id}`,
+        priority: 2,
+        done: false,
+      }));
+      mockClient.tasks.updateTask.mockImplementation(async (_id: number, payload: Record<string, unknown>) => payload);
 
       const result = await bulkUpdateTasks({ taskIds, field: 'done', value: true });
 
-      expect(mockClient.tasks.bulkUpdateTasks).toHaveBeenCalledWith({
-        task_ids: taskIds,
-        field: 'done',
-        value: true,
-      });
+      expect(mockClient.tasks.bulkUpdateTasks).not.toHaveBeenCalled();
+      expect(mockClient.tasks.updateTask).toHaveBeenCalledTimes(25);
+      expect(mockClient.tasks.updateTask).toHaveBeenCalledWith(
+        1,
+        expect.objectContaining({
+          description: 'desc 1',
+          priority: 2,
+          done: true,
+        }),
+      );
 
       const markdown = result.content[0].text;
       expect(markdown).toContain('**count:** 25');

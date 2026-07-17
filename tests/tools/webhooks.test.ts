@@ -125,22 +125,12 @@ describe('Webhooks Tool', () => {
   });
 
   describe('List Webhooks', () => {
-    it('should default to list subcommand when not specified', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => [],
-      });
-
-      const result = await mockHandler({ projectId: 1 }); // No subcommand specified
-
-      expect(mockFetch).toHaveBeenCalledWith('https://api.vikunja.test/projects/1/webhooks', {
-        method: 'GET',
-        headers: {
-          Authorization: 'Bearer test-token',
-          'Content-Type': 'application/json',
-        },
-      });
-      expect(result.content[0].text).toContain('**operation:** list');
+    it('should throw validation error when no subcommand provided', async () => {
+      // subcommand is a required field (see src/tools/webhooks.ts) - the MCP SDK's
+      // Zod validation rejects calls with a missing subcommand before the handler
+      // ever runs. This test exercises the handler's own defensive default case
+      // for the same scenario (e.g. if invoked directly bypassing SDK validation).
+      await expect(mockHandler({ projectId: 1 })).rejects.toThrow('Unknown subcommand: undefined');
     });
 
     it('should list webhooks for a project', async () => {

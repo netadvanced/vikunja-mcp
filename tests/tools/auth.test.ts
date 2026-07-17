@@ -471,10 +471,13 @@ describe('Auth Tool', () => {
         throw { message: 'custom error object' };
       });
 
+      // Plain objects (even ones with a .message property) are untrusted
+      // upstream payloads and never surface their message; the error
+      // handler normalizes them to "Unknown error".
       await expect(callTool('connect', {
         apiUrl: 'https://vikunja.example.com',
         apiToken: 'tk_test-token-123',
-      })).rejects.toThrow('Authentication error: [object Object]');
+      })).rejects.toThrow('Authentication error: Unknown error');
     });
 
     it('should handle status when MCPError is thrown', async () => {

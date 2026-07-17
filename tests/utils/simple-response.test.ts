@@ -333,6 +333,105 @@ describe('simple-response - Task Formatting', () => {
     });
   });
 
+  describe('formatSuccessMessage with a single resource (unwrapped)', () => {
+    // Regression: get/create handlers pass the resource directly as `data`
+    // (not wrapped in `{ tasks: [task] }`). The classifier used to mistake
+    // `task.labels` for a "labels collection" and drop every other field.
+    it('should format a single Task passed bare and preserve description/project_id/priority/due_date', () => {
+      const task: Task = {
+        id: 42,
+        project_id: 7,
+        title: 'Bare task',
+        description: 'Full description that must survive',
+        done: false,
+        priority: 3,
+        due_date: '2025-02-01T09:00:00Z',
+        labels: [
+          { id: 1, title: 'urgent', hex_color: '#ff0000' },
+          { id: 2, title: 'backend', hex_color: '#0066ff' }
+        ],
+        repeat_after: 0
+      };
+
+      const result = formatSuccessMessage(
+        'get-task',
+        'Retrieved task',
+        task as unknown as Parameters<typeof formatSuccessMessage>[2]
+      );
+
+      expect(result).toContain('Bare task');
+      expect(result).toContain('(ID: 42)');
+      expect(result).toContain('**Description:**');
+      expect(result).toContain('Full description that must survive');
+      expect(result).toContain('**Project:**');
+      expect(result).toContain('**Priority:**');
+      expect(result).toContain('**Due:**');
+      expect(result).toContain('urgent');
+      expect(result).toContain('backend');
+      // Must NOT misclassify task.labels as the response collection.
+      expect(result).not.toMatch(/\*\*Results:\*\* 2 item\(s\)/);
+    });
+
+    it('should format a single Task with empty labels array without misclassification', () => {
+      const task: Task = {
+        id: 7,
+        project_id: 3,
+        title: 'Labelless task',
+        description: 'No labels here',
+        done: true,
+        repeat_after: 0,
+        labels: []
+      };
+
+      const result = formatSuccessMessage(
+        'get-task',
+        'Retrieved task',
+        task as unknown as Parameters<typeof formatSuccessMessage>[2]
+      );
+
+      expect(result).toContain('Labelless task');
+      expect(result).toContain('(ID: 7)');
+      expect(result).toContain('No labels here');
+      // Empty labels[] would previously render as "Results: 0 item(s)".
+      expect(result).not.toContain('**Results:**');
+    });
+
+    it('should format a single Project (name, not title) passed bare', () => {
+      const project = { id: 11, name: 'Alpha', description: 'A project' };
+
+      const result = formatSuccessMessage(
+        'get-project',
+        'Retrieved project',
+        project as unknown as Parameters<typeof formatSuccessMessage>[2]
+      );
+
+      expect(result).toContain('Alpha');
+      expect(result).toContain('(ID: 11)');
+    });
+
+    it('should still render the collection when both an id and a collection prop are present (defensive)', () => {
+      // A wrapper that happens to carry both an id and a tasks collection.
+      // The single-resource gate requires id + title|name, so a payload that
+      // only has id (without title or name) is NOT treated as a single
+      // resource, and the tasks collection is rendered as before.
+      const payload = {
+        id: 99,
+        tasks: [
+          { id: 1, project_id: 1, title: 'In collection', done: false, repeat_after: 0 } as Task
+        ]
+      };
+
+      const result = formatSuccessMessage(
+        'list-tasks',
+        'Found 1 task',
+        payload as unknown as Parameters<typeof formatSuccessMessage>[2]
+      );
+
+      expect(result).toContain('**Results:** 1 item(s)');
+      expect(result).toContain('In collection');
+    });
+  });
+
   describe('Edge cases', () => {
     it('should handle empty array', () => {
       const result = formatSuccessMessage(

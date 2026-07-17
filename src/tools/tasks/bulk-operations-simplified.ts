@@ -6,6 +6,7 @@
 import { MCPError, ErrorCode, createStandardResponse, getClientFromContext, logger, isAuthenticationError, RETRY_CONFIG, transformApiError, handleFetchError } from '../../index';
 import type { Assignee } from '../../types';
 import { withRetry } from '../../utils/retry';
+import { setTaskLabels } from '../../utils/label-bulk';
 import { BatchProcessor } from '../../utils/performance/batch-processor';
 import type { Task } from 'node-vikunja';
 import { convertRepeatConfiguration, applyFieldUpdate } from './validation';
@@ -47,109 +48,78 @@ const successResponse = (op: string, msg: string, tasks: Task[], meta: Record<st
   content: [{ type: 'text' as const, text: formatAorpAsMarkdown(createStandardResponse(op, msg, { tasks }, { timestamp: new Date().toISOString(), ...meta })) }]
 });
 
+/**
+ * Resolve bulk-update field value for Vikunja's updateTask payload.
+ * Native bulk API used a numeric repeat_mode map; keep that conversion when merging.
+ */
+function resolveBulkUpdateValue(field: string | undefined, value: unknown): unknown {
+  if (field === 'repeat_mode' && typeof value === 'string') {
+    return REPEAT_MODE_MAP[value] ?? value;
+  }
+  return value;
+}
+
 // ==================== BULK UPDATE ====================
 
+/**
+ * Bulk-update via per-task GET + merge + POST.
+ *
+ * Intentionally does **not** call Vikunja's native `bulkUpdateTasks` API.
+ * That endpoint only sends `{ task_ids, field, value }`, and Vikunja's task
+ * update semantics are a full-model replace — omitted fields (description,
+ * priority, etc.) get cleared. Using the merge path matches single-task
+ * `update` and avoids silent data loss (see GitHub issue #46).
+ */
 export async function bulkUpdateTasks(args: BulkUpdateArgs): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   try {
     validateBulkUpdate(args);
     // Validation ensures taskIds exists
     const taskIds = args.taskIds ?? [];
     const client = await getClientFromContext();
+    const fieldValue = resolveBulkUpdateValue(args.field, args.value);
 
-    const updateWithFallback = async (): Promise<{ content: Array<{ type: 'text'; text: string }> }> => {
-      const updateResult = await processors.update.processBatches(taskIds, async (taskId) => {
-        const current = await client.tasks.getTask(taskId);
-        const update = applyFieldUpdate({ ...current }, args.field, args.value);
+    const updateResult = await processors.update.processBatches(taskIds, async (taskId) => {
+      const current = await client.tasks.getTask(taskId);
+      // Spread current task so fields not being changed survive Vikunja's full replace
+      const update = applyFieldUpdate({ ...current }, args.field, fieldValue);
 
-        const updated = await client.tasks.updateTask(taskId, update);
+      const updated = await client.tasks.updateTask(taskId, update);
 
-        if (args.field === 'assignees' && Array.isArray(args.value)) {
-          const currentAssignees = (await client.tasks.getTask(taskId)).assignees?.map((a: Assignee) => a.id) || [];
-          if (args.value.length > 0) {
-            try {
-              await withRetry(() => client.tasks.bulkAssignUsersToTask(taskId, { user_ids: args.value as number[] }), { ...RETRY_CONFIG.AUTH_ERRORS, shouldRetry: isAuthenticationError });
-            } catch (assigneeError) {
-              if (isAuthenticationError(assigneeError)) throw new MCPError(ErrorCode.API_ERROR, 'Assignee operations may have authentication issues');
-              throw assigneeError;
-            }
-          }
-          for (const userId of currentAssignees) {
-            try { await withRetry(() => client.tasks.removeUserFromTask(taskId, userId), { ...RETRY_CONFIG.AUTH_ERRORS, shouldRetry: isAuthenticationError }); }
-            catch (e) { if (isAuthenticationError(e)) throw new MCPError(ErrorCode.API_ERROR, `${AUTH_ERROR_MESSAGES.ASSIGNEE_REMOVE_PARTIAL} (Retried ${RETRY_CONFIG.AUTH_ERRORS.maxRetries} times)`); throw e; }
+      if (args.field === 'assignees' && Array.isArray(args.value)) {
+        const currentAssignees = (await client.tasks.getTask(taskId)).assignees?.map((a: Assignee) => a.id) || [];
+        if (args.value.length > 0) {
+          try {
+            await withRetry(() => client.tasks.bulkAssignUsersToTask(taskId, { user_ids: args.value as number[] }), { ...RETRY_CONFIG.AUTH_ERRORS, shouldRetry: isAuthenticationError });
+          } catch (assigneeError) {
+            if (isAuthenticationError(assigneeError)) throw new MCPError(ErrorCode.API_ERROR, 'Assignee operations may have authentication issues');
+            throw assigneeError;
           }
         }
-        if (args.field === 'labels' && Array.isArray(args.value)) {
-          await withRetry(() => client.tasks.updateTaskLabels(taskId, { label_ids: args.value as number[] }), { ...RETRY_CONFIG.AUTH_ERRORS, shouldRetry: isAuthenticationError });
-        }
-        return updated;
-      });
-
-      if (updateResult.failed.length > 0 && updateResult.successful.length === 0) {
-        const firstError = updateResult.failed[0]?.error;
-        // Preserve MCPError instances with auth messages
-        if (firstError instanceof MCPError && firstError.message.includes('authentication')) throw firstError;
-        throw new MCPError(ErrorCode.API_ERROR, `Bulk update failed. Could not update any tasks. Failed IDs: ${updateResult.failed.map(f => f.originalItem).join(', ')}`);
-      }
-      return successResponse('update-task', `Successfully updated ${taskIds.length} tasks`, updateResult.successful, {
-        count: taskIds.length, affectedFields: [args.field], performanceMetrics: {
-          totalDuration: updateResult.metrics.totalDuration, operationsPerSecond: updateResult.metrics.operationsPerSecond,
-          apiCallsUsed: updateResult.metrics.successfulOperations + updateResult.metrics.failedOperations,
-        },
-      });
-    };
-
-    try {
-      if (!args.field) throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Field required');
-
-      // The native Vikunja bulk endpoint, for date fields like start_date and
-      // end_date, truncates fields it does not receive (description, priority,
-      // ...), silently corrupting task data. Route those through the
-      // field-preserving per-task path (getTask + merge + updateTask) instead.
-      if (args.field === 'start_date' || args.field === 'end_date') {
-        return await updateWithFallback();
-      }
-
-      const bulkOp = { task_ids: taskIds, field: args.field, value: args.value };
-      if (args.field === 'repeat_mode' && typeof args.value === 'string') {
-        bulkOp.value = REPEAT_MODE_MAP[args.value] ?? args.value;
-      }
-
-      const result = await client.tasks.bulkUpdateTasks(bulkOp);
-      let updatedTasks: Task[] = [];
-      let shouldFallback = false;
-
-      if (Array.isArray(result) && result.length > 0) {
-        const isValid = result.every(t => t && typeof t === 'object' && 'project_id' in t && 'title' in t);
-        let hasValue = true;
-        if (args.field && ['priority', 'done', 'due_date', 'project_id'].includes(args.field)) {
-          hasValue = result.every(t => t[args.field as keyof Task] === args.value);
-        }
-        if (isValid && hasValue) {
-          updatedTasks = result;
-        } else if (isValid && !hasValue) {
-          // API returned success but values weren't updated - trigger fallback
-          shouldFallback = true;
+        for (const userId of currentAssignees) {
+          try { await withRetry(() => client.tasks.removeUserFromTask(taskId, userId), { ...RETRY_CONFIG.AUTH_ERRORS, shouldRetry: isAuthenticationError }); }
+          catch (e) { if (isAuthenticationError(e)) throw new MCPError(ErrorCode.API_ERROR, `${AUTH_ERROR_MESSAGES.ASSIGNEE_REMOVE_PARTIAL} (Retried ${RETRY_CONFIG.AUTH_ERRORS.maxRetries} times)`); throw e; }
         }
       }
-
-      // If we have valid updated tasks and no fallback needed, return success
-      if (updatedTasks.length > 0 && !shouldFallback) {
-        return successResponse('update-task', `Successfully updated ${taskIds.length} tasks`, updatedTasks, { count: taskIds.length, affectedFields: [args.field] });
+      // Labels are never applied by Vikunja's task update payload; persist them
+      // explicitly via setTaskLabels (correct label_ids payload shape) — re-impl #49.
+      if (args.field === 'labels' && Array.isArray(args.value)) {
+        await withRetry(() => setTaskLabels(client, taskId, args.value as number[]), { ...RETRY_CONFIG.AUTH_ERRORS, shouldRetry: isAuthenticationError });
       }
+      return updated;
+    });
 
-      if (shouldFallback) {
-        logger.warn('Bulk update API returned success but values not updated, falling back to individual updates');
-        return await updateWithFallback();
-      }
-
-      const fetchResult = await processors.update.processBatches(taskIds, async (id) => await client.tasks.getTask(id));
-      return successResponse('update-task', `Successfully updated ${taskIds.length} tasks${fetchResult.failed.length > 0 ? ` (${fetchResult.failed.length} could not be fetched)` : ''}`, fetchResult.successful, {
-        count: taskIds.length, affectedFields: [args.field], ...(fetchResult.failed.length > 0 && { fetchErrors: fetchResult.failed.length }),
-      });
-    } catch (bulkError) {
-      logger.warn('Bulk API failed, using fallback', { error: (bulkError as Error).message });
-      return await updateWithFallback();
+    if (updateResult.failed.length > 0 && updateResult.successful.length === 0) {
+      const firstError = updateResult.failed[0]?.error;
+      // Preserve MCPError instances with auth messages
+      if (firstError instanceof MCPError && firstError.message.includes('authentication')) throw firstError;
+      throw new MCPError(ErrorCode.API_ERROR, `Bulk update failed. Could not update any tasks. Failed IDs: ${updateResult.failed.map(f => f.originalItem).join(', ')}`);
     }
+    return successResponse('update-task', `Successfully updated ${taskIds.length} tasks`, updateResult.successful, {
+      count: taskIds.length, affectedFields: [args.field], performanceMetrics: {
+        totalDuration: updateResult.metrics.totalDuration, operationsPerSecond: updateResult.metrics.operationsPerSecond,
+        apiCallsUsed: updateResult.metrics.successfulOperations + updateResult.metrics.failedOperations,
+      },
+    });
   } catch (error) {
     if (error instanceof MCPError) throw error;
     if (error instanceof Error && (error.message.includes('fetch failed') || error.message.includes('ECONNREFUSED') || error.message.includes('ENOTFOUND'))) throw handleFetchError(error, 'bulk update tasks');
@@ -228,7 +198,7 @@ export async function bulkCreateTasks(args: BulkCreateArgs): Promise<{ content: 
 
         try {
           const labels = t.labels;
-          if (labels && labels.length > 0) await withRetry(() => client.tasks.updateTaskLabels(createdId, { label_ids: labels }), { maxRetries: RETRY_CONFIG.AUTH_ERRORS.maxRetries ?? 3, timeout: (RETRY_CONFIG.AUTH_ERRORS.initialDelay ?? 1000) + (RETRY_CONFIG.AUTH_ERRORS.maxDelay ?? 10000), shouldRetry: isAuthenticationError });
+          if (labels && labels.length > 0) await withRetry(() => setTaskLabels(client, createdId, labels), { maxRetries: RETRY_CONFIG.AUTH_ERRORS.maxRetries ?? 3, timeout: (RETRY_CONFIG.AUTH_ERRORS.initialDelay ?? 1000) + (RETRY_CONFIG.AUTH_ERRORS.maxDelay ?? 10000), shouldRetry: isAuthenticationError });
           const assignees = t.assignees;
           if (assignees && assignees.length > 0) {
             try {
