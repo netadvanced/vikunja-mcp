@@ -1339,7 +1339,7 @@ For detailed rate limiting configuration, see [`docs/RATE_LIMITING.md`](docs/RAT
 
 ## Contributing
 
-Please see [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines and workflow.
+Development workflow and PR requirements are documented in [CLAUDE.md](CLAUDE.md).
 
 ## License
 

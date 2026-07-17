@@ -10,8 +10,7 @@
   "files": [
     "dist/**/*",
     "README.md",
-    "LICENSE",
-    "CHANGELOG.md"
+    "LICENSE"
   ],
   "scripts": {
     "dev": "tsx watch src/index.ts",

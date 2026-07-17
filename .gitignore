@@ -56,3 +56,8 @@ temp/
 !.yarn/releases
 !.yarn/sdks
 !.yarn/versionstemp-coverage/
+
+# Generated reports / process artifacts (regenerate, don't commit)
+coverage_output.txt
+*-report.json
+.inspector-pid
