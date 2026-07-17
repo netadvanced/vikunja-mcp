@@ -59,7 +59,8 @@ const REPEATED_CHAR_PATTERN = /(.)\1{20,}/;
  * Zod schemas for validation
  */
 const FilterFieldSchema = z.enum([
-  'done', 'priority', 'percentDone', 'dueDate', 'assignees',
+  'done', 'priority', 'percentDone', 'dueDate', 'startDate', 'endDate',
+  'doneAt', 'project', 'assignees',
   'labels', 'created', 'updated', 'title', 'description'
 ]);
 
@@ -268,8 +269,12 @@ function parseOperator(state: ParseState): FilterOperator | null {
  * Parse field name
  */
 function parseField(state: ParseState): FilterField | null {
-  const fields: FilterField[] = ['done', 'priority', 'percentDone', 'dueDate', 'assignees',
-                                 'labels', 'created', 'updated', 'title', 'description'];
+  // Longest-first so 'doneAt' is matched before 'done' and 'startDate'/'endDate'
+  // before any shorter prefix. parseField does a substring match with a
+  // word-boundary check; without ordering 'done' would shadow 'doneAt'.
+  const fields: FilterField[] = ['percentDone', 'startDate', 'endDate', 'doneAt', 'dueDate',
+                                 'priority', 'assignees', 'project', 'labels', 'created', 'updated',
+                                 'title', 'description', 'done'];
 
   for (const field of fields) {
     const substr = state.input.substring(state.position, state.position + field.length);
@@ -344,6 +349,10 @@ function convertValue(value: string, field: FilterField, operator: FilterOperato
     priority: 'number',
     percentDone: 'number',
     dueDate: 'date',
+    startDate: 'date',
+    endDate: 'date',
+    doneAt: 'date',
+    project: 'number',
     assignees: 'array',
     labels: 'array',
     created: 'date',
@@ -626,32 +635,26 @@ export function parseFilterString(filterStr: string): ParseResult {
  */
 function validateFieldTypeAndValue(field: FilterField, operator: FilterOperator, value: unknown): string[] {
   const errors: string[] = [];
-  const fieldType = {
+  const FIELD_TYPE_MAP: Record<string, string> = {
     done: 'boolean',
     priority: 'number',
     percentDone: 'number',
     dueDate: 'date',
+    startDate: 'date',
+    endDate: 'date',
+    doneAt: 'date',
+    project: 'number',
     assignees: 'array',
     labels: 'array',
     created: 'date',
     updated: 'date',
     title: 'string',
     description: 'string',
-  }[field];
+  };
+  const fieldType = FIELD_TYPE_MAP[field];
 
   // Basic field validation
-  if (!Object.keys({
-    done: 'boolean',
-    priority: 'number',
-    percentDone: 'number',
-    dueDate: 'date',
-    assignees: 'array',
-    labels: 'array',
-    created: 'date',
-    updated: 'date',
-    title: 'string',
-    description: 'string',
-  }).includes(field)) {
+  if (!Object.keys(FIELD_TYPE_MAP).includes(field)) {
     return ['Invalid field name'];
   }
 

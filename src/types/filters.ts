@@ -23,6 +23,10 @@ export type FilterField =
   | 'priority'
   | 'percentDone'
   | 'dueDate'
+  | 'startDate'
+  | 'endDate'
+  | 'doneAt'
+  | 'project'
   | 'assignees'
   | 'labels'
   | 'created'
@@ -38,6 +42,10 @@ export const FIELD_TYPES: Record<FilterField, 'boolean' | 'number' | 'date' | 's
   priority: 'number',
   percentDone: 'number',
   dueDate: 'date',
+  startDate: 'date',
+  endDate: 'date',
+  doneAt: 'date',
+  project: 'number',
   assignees: 'array',
   labels: 'array',
   created: 'date',

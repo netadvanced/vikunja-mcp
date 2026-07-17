@@ -111,6 +111,16 @@ export function applyFieldUpdate(task: Task, field: string | undefined, value: u
     case 'due_date':
       task.due_date = value as string;
       break;
+    // Accept both snake_case (Vikunja API form) and camelCase (MCP schema form):
+    // bulk-update routes snake_case here, but per-task update may pass camelCase.
+    case 'start_date':
+    case 'startDate':
+      task.start_date = value as string;
+      break;
+    case 'end_date':
+    case 'endDate':
+      task.end_date = value as string;
+      break;
     case 'project_id':
       task.project_id = value as number;
       break;

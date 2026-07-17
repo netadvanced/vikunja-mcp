@@ -21,6 +21,8 @@ export interface UpdateTaskArgs {
   title?: string;
   description?: string;
   dueDate?: string;
+  startDate?: string;
+  endDate?: string;
   priority?: number;
   done?: boolean;
   /** Move the task to another project (merged into full-model update). */
@@ -52,9 +54,15 @@ export async function updateTask(args: UpdateTaskArgs): Promise<{ content: Array
     }
     validateId(args.id, 'id');
 
-    // Validate date if provided
+    // Validate dates if provided
     if (args.dueDate) {
       validateDateString(args.dueDate, 'dueDate');
+    }
+    if (args.startDate) {
+      validateDateString(args.startDate, 'startDate');
+    }
+    if (args.endDate) {
+      validateDateString(args.endDate, 'endDate');
     }
 
     // Validate project move target if provided
@@ -153,6 +161,8 @@ async function analyzeUpdateState(client: VikunjaClient, taskId: number, args: U
   if (currentTask.title !== undefined) previousState.title = currentTask.title;
   if (currentTask.description !== undefined) previousState.description = currentTask.description;
   if (currentTask.due_date !== undefined) previousState.due_date = currentTask.due_date;
+  if (currentTask.start_date !== undefined) previousState.start_date = currentTask.start_date;
+  if (currentTask.end_date !== undefined) previousState.end_date = currentTask.end_date;
   if (currentTask.priority !== undefined) previousState.priority = currentTask.priority;
   if (currentTask.done !== undefined) previousState.done = currentTask.done;
   if (currentTask.project_id !== undefined) previousState.project_id = currentTask.project_id;
@@ -165,6 +175,8 @@ async function analyzeUpdateState(client: VikunjaClient, taskId: number, args: U
   if (args.title !== undefined && args.title !== currentTask.title) affectedFields.push('title');
   if (args.description !== undefined && args.description !== currentTask.description) affectedFields.push('description');
   if (args.dueDate !== undefined && args.dueDate !== currentTask.due_date) affectedFields.push('dueDate');
+  if (args.startDate !== undefined && args.startDate !== currentTask.start_date) affectedFields.push('start_date');
+  if (args.endDate !== undefined && args.endDate !== currentTask.end_date) affectedFields.push('end_date');
   if (args.priority !== undefined && args.priority !== currentTask.priority) affectedFields.push('priority');
   if (args.done !== undefined && args.done !== currentTask.done) affectedFields.push('done');
   if (args.projectId !== undefined && args.projectId !== currentTask.project_id) affectedFields.push('projectId');
@@ -191,6 +203,8 @@ function buildUpdateData(currentTask: Task, args: UpdateTaskArgs): Task {
     ...(args.title !== undefined && { title: args.title }),
     ...(args.description !== undefined && { description: args.description }),
     ...(args.dueDate !== undefined && { due_date: args.dueDate }),
+    ...(args.startDate !== undefined && { start_date: args.startDate }),
+    ...(args.endDate !== undefined && { end_date: args.endDate }),
     ...(args.priority !== undefined && { priority: args.priority }),
     ...(args.done !== undefined && { done: args.done }),
     // Move between projects — must be part of the full-model payload or Vikunja ignores it

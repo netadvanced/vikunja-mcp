@@ -37,7 +37,8 @@ const MAX_STRING_LENGTH = 1000;
  * Zod schemas for type-safe validation
  */
 const FieldSchema: z.ZodType<FilterField> = z.enum([
-  'done', 'priority', 'percentDone', 'dueDate', 'assignees',
+  'done', 'priority', 'percentDone', 'dueDate', 'startDate', 'endDate',
+  'doneAt', 'project', 'assignees',
   'labels', 'created', 'updated', 'title', 'description'
 ]);
 
