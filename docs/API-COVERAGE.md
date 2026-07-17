@@ -69,6 +69,29 @@ Vikunja documents **169** distinct API operations (method+path). Of those:
 > issue (`vikunja_auth` 'connect' never validating the connection) is
 > resolved and removed from the Issues table below.
 >
+> Updated 2026-07-18 (Wave D hygiene, item D8, `waveD-tool-surface-dedupe`):
+> the LOW-severity "Two separate MCP tools expose overlapping task CRUD
+> surface" finding below is resolved — `vikunja_task_crud` (its
+> `create`/`get`/`update`/`delete`/`list` operations called the exact same
+> `src/tools/tasks/crud/*` functions `vikunja_tasks`' identically-named
+> subcommands already called) has been removed from
+> `src/tools/index.ts`/`src/index.ts`; `vikunja_tasks` is the sole
+> registered surface for task CRUD now, so every `vikunja_task_crud (...)`
+> parenthetical in the tables below is stale and should be read as
+> historical only. Separately, investigation for the same item confirmed
+> `registerProjectTools` (`vikunja_projects_crud` /
+> `vikunja_projects_hierarchy` / `vikunja_projects_sharing`, referenced in
+> several rows below) was **never called from `src/index.ts` or
+> `src/tools/index.ts`** — it was exported-but-dead code, reachable only
+> from its own now-deleted test file
+> (`tests/tools/projects/multi-tool-registration.test.ts`, added by PR #59)
+> and from `src/tools/projects.ts`'s re-export barrel. It has been deleted
+> (`src/tools/projects/index.ts`); `vikunja_projects` (`registerProjectsTool`)
+> was, and remains, the only live registered projects tool surface — no
+> capability was lost. Every `vikunja_projects_crud` / `_hierarchy` /
+> `_sharing` parenthetical below was already describing dead code, not a
+> live alternative surface.
+>
 > Everything else in this document remains the original audit snapshot
 > (plus any other Wave D updates noted inline) described above.
 
@@ -79,7 +102,7 @@ Vikunja documents **169** distinct API operations (method+path). Of those:
 
 ## Correctness Issues
 
-37 issues found in code paths that ARE implemented (as opposed to simply missing). These are bugs, not coverage gaps. (Further issues have since been resolved and removed from this table: two HIGH-severity — `vikunja_filters` being a complete local fake, in Wave D item D2, and task listing never calling the documented GET /tasks endpoint, in Wave D item D5; two LOW-severity — list-assignees not using the dedicated assignees endpoint, and attachments having no list/get-info/delete/download surface, in Wave D item D6; and one MEDIUM-severity — `vikunja_auth` 'connect' never validating the connection, in Wave D item D7 — see the endpoint table below for all of them.)
+36 issues found in code paths that ARE implemented (as opposed to simply missing). These are bugs, not coverage gaps. (Further issues have since been resolved and removed from this table: two HIGH-severity — `vikunja_filters` being a complete local fake, in Wave D item D2, and task listing never calling the documented GET /tasks endpoint, in Wave D item D5; three LOW-severity — list-assignees not using the dedicated assignees endpoint and attachments having no list/get-info/delete/download surface, in Wave D item D6, and two MCP tools exposing overlapping task CRUD surface, in Wave D item D8; and one MEDIUM-severity — `vikunja_auth` 'connect' never validating the connection, in Wave D item D7 — see the endpoint table below for all of them.)
 
 | Severity | Domain | File | Description |
 |---|---|---|---|
@@ -113,7 +136,6 @@ Vikunja documents **169** distinct API operations (method+path). Of those:
 | LOW | Kanban views & buckets, and task placement/listing within a view | `node_modules/node-vikunja/dist/esm/services/project.service.js` | node-vikunja's own updateBucket()/deleteBucket() methods (lines ~248-259) call `/projects/${projectId}/buckets/${bucketId}` — missing the `/views/{view}/` path segment entirely required by the current Vikunja API (confirmed against the OpenAPI spec: POST/DELETE /projects/{projectID}/views/{view}/buckets/{bucketID}). These node-vikunja methods appear to target a pre-multi-view Vikunja API version and would 404 against a current server. Not currently a live bug for this MCP server since it bypasses node-vikunja for all bucket operations (uses vikunja-rest.ts directly instead) — but this is worth noting as: (a) confirmation that the MCP's own docstring claim ('node-vikunja does not expose the Kanban view endpoints') is only half-true — node-vikunja partially exposes bucket update/delete, just with broken/stale paths, so nobody should be tempted to switch these two operations over to node-vikunja without fixing/forking it first; and (b) a genuine latent bug in the pinned node-vikunja dependency that should be reported upstream or avoided. |
 | LOW | Kanban views & buckets, and task placement/listing within a view | `src/utils/vikunja-rest.ts` | vikunjaRestRequest() performs a raw fetch() with no circuit breaker/retry wrapping, unlike the opossum-based retry system (src/utils/retry.ts) used elsewhere in the codebase for node-vikunja calls (e.g. tasks/labels.ts, tasks/bulk-operations-simplified.ts). All Kanban bucket/view operations (list-buckets, set-bucket, and the internal /tasks/{id} and /projects/{id}/views lookups) therefore have no automatic retry or circuit-breaker protection against transient network failures, unlike some other tool call paths in the same server. |
 | LOW | Tasks — CRUD, listing/filtering, bulk create, position, duplicate, read-marking | `src/utils/filters.ts` | The filter DSL's field list uses 'project' (not 'projectId' or 'project_id') as a filterable field name, breaking the otherwise-consistent camelCase-alias-of-snake_case-JSON-field pattern used for every other field (dueDate/due_date, percentDone/percent_done, doneAt/done_at). This filter string is passed verbatim as the API's ?filter= query value with no field-name translation (confirmed in ServerSideFilteringStrategy.ts and node-vikunja's params.js, which only renames legacy filter_by/filter_value params, never rewrites the filter string's field tokens). If Vikunja's backend grammar does not recognize a bare 'project' field, server-side filtering on project silently fails or errors and falls back to client-side. Medium-low confidence since the exact backend grammar isn't verifiable from the OpenAPI spec alone. |
-| LOW | Tasks — CRUD, listing/filtering, bulk create, position, duplicate, read-marking | `src/tools/task-crud.ts` | Two separate MCP tools expose overlapping task CRUD surface: 'vikunja_tasks' (full subcommand set) and 'vikunja_task_crud' (create/get/update/delete/list only), both registered simultaneously in src/tools/index.ts and both calling the same underlying src/tools/tasks/crud/* functions. This is not an API-correctness bug but is redundant tool surface that could confuse an AI client choosing between two tools for the same operation. |
 | LOW | Task sub-resources: assignees, comments, labels-on-task, relations, attachments, reminders | `src/tools/tasks/attach.ts` | PUT /tasks/{id}/attachments is implemented via a bespoke fetch() call (bypassing node-vikunja's uploadTaskAttachment and the project's own retry/circuit-breaker (opossum) and X-API-Token auth-fallback conventions used elsewhere for assignees/labels). It also only sends a single `Authorization: Bearer` header, so it will not benefit from the same auth-retry resilience that assign/label operations have if the primary Vikunja auth header format fails for a given deployment. |
 | LOW | Labels (standalone) & Teams | `src/tools/teams.ts` | Team get/update/members operations hand-roll their own fetch() calls with duplicated auth-header/error-handling logic instead of reusing the project's existing src/utils/vikunja-rest.ts helper (used elsewhere for endpoints not covered by node-vikunja). This duplication increases drift risk and is likely how the PUT-vs-POST and path-construction bugs above went unnoticed. Additionally, the dead `if (!client.teams.deleteTeam...)` fallback branch in the delete case is unreachable with the pinned node-vikunja version and violates this repo's own CLAUDE.md rule that untestable defensive code must be removed. |
 | LOW | Saved filters, webhooks, subscriptions, notifications, reactions | `src/tools/webhooks.ts` | The 'list' subcommand never forwards the spec's optional page/per_page query parameters for GET /projects/{id}/webhooks, so callers cannot paginate through large webhook lists. |

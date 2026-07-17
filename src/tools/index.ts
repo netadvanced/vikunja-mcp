@@ -20,7 +20,6 @@ import { logger } from '../utils/logger';
 
 import { registerAuthTool } from './auth';
 import { registerTasksTool } from './tasks';
-import { registerTaskCrudTool } from './task-crud';
 import { registerTaskBulkTool } from './task-bulk';
 import { registerTaskAssigneesTool } from './task-assignees';
 import { registerTaskCommentsTool } from './task-comments';
@@ -46,7 +45,6 @@ import { registerAdminTool } from './admin';
 export {
   registerAuthTool,
   registerTasksTool,
-  registerTaskCrudTool,
   registerTaskBulkTool,
   registerTaskAssigneesTool,
   registerTaskCommentsTool,
@@ -118,9 +116,16 @@ export function registerTools(
 
   // Register the comprehensive tasks tool and its granular counterparts,
   // gated together behind the single "tasks" module toggle.
+  //
+  // NOTE: `vikunja_task_crud` (create/get/update/delete/list) previously
+  // registered here as a second entry point onto the exact same
+  // `src/tools/tasks/crud/*` functions `vikunja_tasks` already exposes via
+  // its `create`/`get`/`update`/`delete`/`list` subcommands. It was removed
+  // as redundant tool surface (Wave D hygiene, item D8) — see
+  // docs/API-COVERAGE.md's Tasks CRUD finding. `vikunja_tasks` is the
+  // supported replacement; no capability was lost.
   if (isModuleEnabled(modules.tasks)) {
     registerTasksTool(server, authManager, clientFactory);
-    registerTaskCrudTool(server, authManager, clientFactory);
     registerTaskBulkTool(server, authManager, clientFactory);
     registerTaskAssigneesTool(server, authManager, clientFactory);
     registerTaskCommentsTool(server, authManager, clientFactory);

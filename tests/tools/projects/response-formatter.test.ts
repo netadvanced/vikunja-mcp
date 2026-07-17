@@ -2,7 +2,7 @@
  * Project Response Formatter Tests
  * Verifies that response verbosity defaults to VIKUNJA_RESPONSE_VERBOSITY
  * (falling back to 'standard'), and that an explicit per-call verbosity
- * argument (e.g. from the `vikunja_projects_crud` tool schema) always
+ * argument (e.g. from the `vikunja_projects` tool schema) always
  * takes precedence over the environment default.
  */
 
