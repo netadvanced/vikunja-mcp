@@ -34,7 +34,7 @@ type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE';
  * `apiUrl` already includes the `/api/v{n}` prefix (depends on how
  * `VIKUNJA_URL` was configured).
  */
-function resolveBaseUrl(apiUrl: string): string {
+export function resolveBaseUrl(apiUrl: string): string {
   const trimmed = apiUrl.replace(/\/+$/, '');
   return /\/api\/v\d+$/.test(trimmed) ? trimmed : `${trimmed}/api/v1`;
 }

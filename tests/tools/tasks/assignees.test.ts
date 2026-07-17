@@ -2,17 +2,29 @@
  * Tests for assignee operations
  */
 
-import { describe, it, expect, beforeEach, jest } from '@jest/globals';
+import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
 import { assignUsers, unassignUsers, listAssignees } from '../../../src/tools/tasks/assignees';
 import { getClientFromContext } from '../../../src/client';
+import { AuthManager } from '../../../src/auth/AuthManager';
 import { MCPError, ErrorCode } from '../../../src/types';
 import { isAuthenticationError } from '../../../src/utils/auth-error-handler';
-import { withRetry } from '../../../src/utils/retry';
+import { withRetry, circuitBreakerRegistry } from '../../../src/utils/retry';
 import { parseMarkdown } from '../../utils/markdown';
 
 jest.mock('../../../src/client');
 jest.mock('../../../src/utils/auth-error-handler');
-jest.mock('../../../src/utils/retry');
+// Partial mock: only withRetry is overridden (assignUsers/unassignUsers tests
+// drive it directly), while createCircuitBreaker/circuitBreakerRegistry stay
+// real — listAssignees goes through the direct-REST helper
+// (vikunjaRestRequest), which needs a working circuit breaker around the
+// mocked global fetch below.
+jest.mock('../../../src/utils/retry', () => {
+  const actual = jest.requireActual('../../../src/utils/retry');
+  return {
+    ...(actual as object),
+    withRetry: jest.fn().mockImplementation((fn: () => Promise<unknown>) => fn()),
+  };
+});
 jest.mock('../../../src/utils/logger');
 
 describe('Assignee operations', () => {
@@ -25,11 +37,30 @@ describe('Assignee operations', () => {
     },
   };
 
+  // listAssignees calls the dedicated GET /tasks/{taskID}/assignees endpoint
+  // directly via vikunjaRestRequest, so it needs a mocked global fetch and a
+  // real AuthManager session rather than the node-vikunja mockClient above.
+  let fetchMock: jest.Mock;
+  let originalFetch: typeof fetch;
+  let authManager: AuthManager;
+
   beforeEach(() => {
     jest.clearAllMocks();
     (getClientFromContext as jest.Mock).mockResolvedValue(mockClient);
     (isAuthenticationError as jest.Mock).mockReturnValue(false);
     (withRetry as jest.Mock).mockImplementation((fn) => fn());
+
+    originalFetch = globalThis.fetch;
+    fetchMock = jest.fn();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    circuitBreakerRegistry.clear();
+
+    authManager = new AuthManager();
+    authManager.connect('https://vikunja.test', 'tk_test-token');
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
   });
 
   describe('assignUsers', () => {
@@ -271,117 +302,143 @@ describe('Assignee operations', () => {
   });
 
   describe('listAssignees', () => {
+    // Uses the dedicated GET /tasks/{taskID}/assignees endpoint directly
+    // (see docs/API-COVERAGE.md's row for this endpoint) rather than reading
+    // task.assignees off GET /tasks/{id} — so these tests assert against the
+    // mocked global fetch, not mockClient.tasks.getTask.
+    const restOk = (body: unknown): Response =>
+      ({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: jest.fn(async () => JSON.stringify(body)),
+      }) as unknown as Response;
+
     it('should list assignees successfully', async () => {
-      const mockTask = {
-        id: 123,
-        title: 'Test Task',
-        assignees: [
-          { id: 1, name: 'User 1' },
-          { id: 2, name: 'User 2' },
-        ],
-      };
-      
-      mockClient.tasks.getTask.mockResolvedValue(mockTask);
+      fetchMock.mockResolvedValue(
+        restOk([
+          { id: 1, username: 'user1', name: 'User 1' },
+          { id: 2, username: 'user2', name: 'User 2' },
+        ]),
+      );
 
-      const result = await listAssignees({ id: 123 });
+      const result = await listAssignees({ id: 123 }, authManager);
 
-      expect(mockClient.tasks.getTask).toHaveBeenCalledWith(123);
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://vikunja.test/api/v1/tasks/123/assignees',
+        expect.objectContaining({ method: 'GET' }),
+      );
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('get');
-      expect(markdown).toContain('Task has 2 assignee(s)');
+      expect(markdown).toContain('Task 123 has 2 assignee(s)');
     });
 
     it('should handle task with no assignees', async () => {
-      const mockTask = {
-        id: 123,
-        title: 'Test Task',
-        assignees: [],
-      };
-      
-      mockClient.tasks.getTask.mockResolvedValue(mockTask);
+      fetchMock.mockResolvedValue(restOk([]));
 
-      const result = await listAssignees({ id: 123 });
+      const result = await listAssignees({ id: 123 }, authManager);
 
       const markdown = result.content[0].text;
-      expect(markdown).toContain('Task has 0 assignee(s)');
+      expect(markdown).toContain('Task 123 has 0 assignee(s)');
     });
 
-    it('should handle task with undefined assignees', async () => {
-      const mockTask = {
-        id: 123,
-        title: 'Test Task',
-        // assignees is undefined
-      };
-      
-      mockClient.tasks.getTask.mockResolvedValue(mockTask);
+    it('should treat a non-array response body as no assignees', async () => {
+      // Defensive: fetchAssigneesViaRest coerces anything non-array (e.g. a
+      // malformed/empty response) to [] rather than propagating it raw.
+      fetchMock.mockResolvedValue(restOk(null));
 
-      const result = await listAssignees({ id: 123 });
+      const result = await listAssignees({ id: 123 }, authManager);
 
       const markdown = result.content[0].text;
-      expect(markdown).toContain('Task has 0 assignee(s)');
+      expect(markdown).toContain('Task 123 has 0 assignee(s)');
+    });
+
+    it('forwards search/page/perPage as s/page/per_page query params', async () => {
+      fetchMock.mockResolvedValue(restOk([{ id: 1, username: 'alice' }]));
+
+      await listAssignees({ id: 123, search: 'ali', page: 2, perPage: 10 }, authManager);
+
+      const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+      const parsedUrl = new URL(url);
+      expect(parsedUrl.pathname).toBe('/api/v1/tasks/123/assignees');
+      expect(parsedUrl.searchParams.get('s')).toBe('ali');
+      expect(parsedUrl.searchParams.get('page')).toBe('2');
+      expect(parsedUrl.searchParams.get('per_page')).toBe('10');
+    });
+
+    it('omits query params entirely when none are supplied', async () => {
+      fetchMock.mockResolvedValue(restOk([]));
+
+      await listAssignees({ id: 123 }, authManager);
+
+      const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe('https://vikunja.test/api/v1/tasks/123/assignees');
     });
 
     it('should throw error when task id is undefined', async () => {
-      await expect(listAssignees({})).rejects.toThrow(
+      await expect(listAssignees({}, authManager)).rejects.toThrow(
         'Task id is required for list-assignees operation'
       );
+      expect(fetchMock).not.toHaveBeenCalled();
     });
 
     it('should handle zero task id', async () => {
-      await expect(listAssignees({ id: 0 })).rejects.toThrow(
+      await expect(listAssignees({ id: 0 }, authManager)).rejects.toThrow(
         'id must be a positive integer'
       );
     });
 
     it('should handle negative task id', async () => {
-      await expect(listAssignees({ id: -1 })).rejects.toThrow(
+      await expect(listAssignees({ id: -1 }, authManager)).rejects.toThrow(
         'id must be a positive integer'
       );
     });
 
-    it('should handle API errors', async () => {
-      const apiError = new Error('Task not found');
-      mockClient.tasks.getTask.mockRejectedValue(apiError);
+    it('rejects a non-positive page', async () => {
+      await expect(listAssignees({ id: 123, page: 0 }, authManager)).rejects.toThrow(
+        'page must be a positive integer'
+      );
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
 
-      await expect(listAssignees({ id: 123 })).rejects.toThrow(
-        'Failed to list task assignees: Task not found'
+    it('rejects a non-positive perPage', async () => {
+      await expect(listAssignees({ id: 123, perPage: -1 }, authManager)).rejects.toThrow(
+        'perPage must be a positive integer'
       );
     });
 
-    it('should preserve MCPError instances', async () => {
-      const mcpError = new MCPError(ErrorCode.NOT_FOUND, 'Task not found');
-      mockClient.tasks.getTask.mockRejectedValue(mcpError);
+    it('should handle a non-OK HTTP response', async () => {
+      fetchMock.mockResolvedValue({
+        ok: false,
+        status: 404,
+        statusText: 'Not Found',
+        text: jest.fn(async () => 'task not found'),
+      } as unknown as Response);
 
-      await expect(listAssignees({ id: 123 })).rejects.toThrow(mcpError);
-    });
-
-    it('should handle unknown error types', async () => {
-      const unknownError = { status: 'error' };
-      mockClient.tasks.getTask.mockRejectedValue(unknownError);
-
-      await expect(listAssignees({ id: 123 })).rejects.toThrow(
-        'Failed to list task assignees: [object Object]'
+      await expect(listAssignees({ id: 123 }, authManager)).rejects.toThrow(
+        'Vikunja REST request failed (GET /tasks/123/assignees): HTTP 404 Not Found — task not found',
       );
     });
 
-    it('should throw when the API response is missing the task id', async () => {
-      // fetchTaskWithAssignees defensively rejects a task payload without an
-      // id rather than fabricating a TaskWithAssignees with `id: undefined`
-      // (see AssigneeOperationsService.fetchTaskWithAssignees) — a task
-      // reference without an id is unusable to the caller either way.
-      const mockTask = {
-        // id is undefined
-        title: 'Test Task',
-        assignees: [{ id: 1, name: 'User 1' }],
-      };
+    it('should preserve MCPError instances raised by the REST layer', async () => {
+      fetchMock.mockResolvedValue({
+        ok: false,
+        status: 403,
+        statusText: 'Forbidden',
+        text: jest.fn(async () => ''),
+      } as unknown as Response);
 
-      mockClient.tasks.getTask.mockResolvedValue(mockTask);
+      await expect(listAssignees({ id: 123 }, authManager)).rejects.toBeInstanceOf(MCPError);
+    });
 
-      await expect(listAssignees({ id: 123 })).rejects.toThrow(
-        'Task returned from API is missing required id field'
+    it('should wrap network-level failures', async () => {
+      fetchMock.mockRejectedValue(new Error('ECONNRESET'));
+
+      await expect(listAssignees({ id: 123 }, authManager)).rejects.toThrow(
+        'Vikunja REST request failed (GET /tasks/123/assignees): ECONNRESET',
       );
     });
   });

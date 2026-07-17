@@ -3,12 +3,29 @@
  * Handles core business logic for task assignee management
  */
 
-import type { MinimalTask, TaskWithAssignees, Assignee } from '../../../types';
+import type { TaskWithAssignees, Assignee } from '../../../types';
 import { MCPError, ErrorCode } from '../../../types';
 import { getClientFromContext } from '../../../client';
+import type { AuthManager } from '../../../auth/AuthManager';
 import { isAuthenticationError } from '../../../utils/auth-error-handler';
 import { withRetry, RETRY_CONFIG } from '../../../utils/retry';
+import { vikunjaRestRequest } from '../../../utils/vikunja-rest';
+import { validateId } from '../../../utils/validation';
 import { AUTH_ERROR_MESSAGES } from '../constants';
+import type { components } from '../../../types/generated/vikunja-openapi';
+
+/**
+ * `user.User` shape as returned by `GET /tasks/{taskID}/assignees` per the
+ * OpenAPI spec's `models.User` -> `user.User` schema.
+ */
+export type VikunjaAssigneeUser = components['schemas']['user.User'];
+
+/** Query params accepted by `GET /tasks/{taskID}/assignees` (page/per_page/s). */
+export interface ListAssigneesRestParams {
+  page?: number;
+  perPage?: number;
+  search?: string;
+}
 
 /**
  * Service for managing task assignee operations
@@ -107,16 +124,33 @@ export const AssigneeOperationsService = {
   },
 
   /**
-   * Create minimal task representation with assignees
+   * Fetch a task's assignees via the dedicated endpoint
+   * (`GET /tasks/{taskID}/assignees`), rather than reading the `assignees`
+   * array embedded in `GET /tasks/{id}` (what `fetchTaskWithAssignees`
+   * above does). This is the only way to reach the endpoint's documented
+   * `page`/`per_page`/`s` (username search) query params — the embedded
+   * array on the task object has no pagination or search of its own.
    */
-  createMinimalTaskWithAssignees(task: TaskWithAssignees): MinimalTask {
-    const assignees = AssigneeOperationsService.extractAssignees(task);
+  async fetchAssigneesViaRest(
+    authManager: AuthManager,
+    taskId: number,
+    params: ListAssigneesRestParams = {},
+  ): Promise<VikunjaAssigneeUser[]> {
+    if (params.page !== undefined) validateId(params.page, 'page');
+    if (params.perPage !== undefined) validateId(params.perPage, 'perPage');
 
-    return {
-      ...(task.id !== undefined && { id: task.id }),
-      title: task.title,
-      assignees: assignees,
-    };
+    const query = new URLSearchParams();
+    if (params.search) query.set('s', params.search);
+    if (params.page !== undefined) query.set('page', String(params.page));
+    if (params.perPage !== undefined) query.set('per_page', String(params.perPage));
+    const qs = query.toString();
+
+    const result = await vikunjaRestRequest<VikunjaAssigneeUser[]>(
+      authManager,
+      'GET',
+      `/tasks/${taskId}/assignees${qs ? `?${qs}` : ''}`,
+    );
+    return Array.isArray(result) ? result : [];
   },
 
   /**

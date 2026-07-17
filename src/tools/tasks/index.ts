@@ -26,6 +26,13 @@ import { handleComment } from './comments';
 import { addReminder, removeReminder, listReminders } from './reminders';
 import { applyLabels, removeLabels, listTaskLabels } from './labels';
 import { attachSchemaFields, handleAttach, type TaskAttachArgs } from './attach';
+import {
+  listAttachments,
+  getAttachmentInfo,
+  deleteAttachment,
+  downloadAttachment,
+  type AttachmentSubcommandArgs,
+} from './attachments';
 import { setTaskBucket } from './buckets';
 import { setTaskPosition } from './position';
 import { getTaskByIndex } from './by-index';
@@ -121,7 +128,8 @@ export function registerTasksTool(
 ): void {
   server.tool(
     'vikunja_tasks',
-    'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach files, comment, bulk operations, set Kanban bucket, set position, lookup by per-project index)',
+    'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach/list/delete files, comment, bulk operations, set Kanban bucket, set position, lookup by per-project index). ' +
+      'download-attachment cannot deliver file bytes through MCP (no binary channel) — it returns the direct download URL and auth guidance instead.',
     {
       subcommand: z.enum([
         'create',
@@ -133,6 +141,10 @@ export function registerTasksTool(
         'unassign',
         'list-assignees',
         'attach',
+        'list-attachments',
+        'get-attachment-info',
+        'delete-attachment',
+        'download-attachment',
         'comment',
         'bulk-create',
         'bulk-update',
@@ -230,6 +242,11 @@ export function registerTasksTool(
       reminderIndex: z.number().optional(),
       // Attach subcommand fields (filePath, fileContent, filename)
       ...attachSchemaFields,
+      // Attachments read-side fields (list-attachments, get-attachment-info,
+      // delete-attachment, download-attachment). page/perPage are shared
+      // with the generic query fields above.
+      attachmentId: z.number().optional(),
+      previewSize: z.enum(['sm', 'md', 'lg', 'xl']).optional(),
       // Add relation schema
       ...relationSchema,
       // Session ID for AORP response tracking
@@ -278,13 +295,25 @@ export function registerTasksTool(
             return unassignUsers(args as Parameters<typeof unassignUsers>[0]);
 
           case 'list-assignees':
-            return listAssignees(args as Parameters<typeof listAssignees>[0]);
+            return listAssignees(args as Parameters<typeof listAssignees>[0], authManager);
 
           case 'comment':
             return handleComment(args as Parameters<typeof handleComment>[0]);
 
           case 'attach':
             return handleAttach(args as TaskAttachArgs, authManager);
+
+          case 'list-attachments':
+            return listAttachments(args as AttachmentSubcommandArgs, authManager);
+
+          case 'get-attachment-info':
+            return getAttachmentInfo(args as AttachmentSubcommandArgs, authManager);
+
+          case 'delete-attachment':
+            return deleteAttachment(args as AttachmentSubcommandArgs, authManager);
+
+          case 'download-attachment':
+            return downloadAttachment(args as AttachmentSubcommandArgs, authManager);
 
           case 'bulk-update':
             return bulkUpdateTasks(args as Parameters<typeof bulkUpdateTasks>[0]);

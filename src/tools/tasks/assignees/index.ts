@@ -4,6 +4,8 @@
  */
 
 import { MCPError, ErrorCode } from '../../../types';
+import type { AuthManager } from '../../../auth/AuthManager';
+import { createStandardResponse, formatAorpAsMarkdown } from '../../../utils/response-factory';
 import { AssigneeOperationsService } from './AssigneeOperationsService';
 import { AssigneeValidationService } from './AssigneeValidationService';
 import { AssigneeResponseFormatter } from './AssigneeResponseFormatter';
@@ -75,25 +77,58 @@ export async function unassignUsers(args: {
 }
 
 /**
- * List assignees of a task
+ * List assignees of a task.
+ *
+ * Calls the dedicated `GET /tasks/{taskID}/assignees` endpoint directly
+ * (not `GET /tasks/{id}` + the embedded `assignees` array, which is what
+ * `assignUsers`/`unassignUsers` use internally for verification/refresh) so
+ * that the endpoint's documented `s` (username search) and `page`/`per_page`
+ * query params are actually reachable — see docs/API-COVERAGE.md's
+ * `GET /tasks/{taskID}/assignees` row for the gap this closes.
  */
-export async function listAssignees(args: {
-  id?: number;
-}): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+export async function listAssignees(
+  args: {
+    id?: number;
+    search?: string;
+    page?: number;
+    perPage?: number;
+    sessionId?: string;
+  },
+  authManager: AuthManager,
+): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   try {
-    const { taskId } = AssigneeValidationService.validateListInput(args);
+    const { taskId, search, page, perPage } = AssigneeValidationService.validateListInput(args);
 
-    // Fetch task data
-    const task = await AssigneeOperationsService.fetchTaskWithAssignees(taskId);
+    const assignees = await AssigneeOperationsService.fetchAssigneesViaRest(authManager, taskId, {
+      ...(search !== undefined && { search }),
+      ...(page !== undefined && { page }),
+      ...(perPage !== undefined && { perPage }),
+    });
 
-    // Create minimal task representation with assignees
-    const minimalTask = AssigneeOperationsService.createMinimalTaskWithAssignees(task);
-    const assigneeCount = AssigneeOperationsService.extractAssignees(task).length;
+    const response = createStandardResponse(
+      'get',
+      `Task ${taskId} has ${assignees.length} assignee(s)`,
+      {
+        taskId,
+        assignees: assignees.map((a) => ({
+          id: a.id ?? null,
+          username: a.username ?? null,
+          name: a.name ?? null,
+          email: a.email ?? null,
+        })),
+        count: assignees.length,
+      },
+      {
+        timestamp: new Date().toISOString(),
+        count: assignees.length,
+        ...(search !== undefined && { search }),
+        ...(page !== undefined && { page }),
+        ...(perPage !== undefined && { perPage }),
+      },
+      args.sessionId,
+    );
 
-    // Format and return response
-    const response = AssigneeResponseFormatter.formatListAssigneesResponse(minimalTask, assigneeCount);
-    return AssigneeResponseFormatter.formatMcpResponse(response);
-
+    return { content: [{ type: 'text', text: formatAorpAsMarkdown(response) }] };
   } catch (error) {
     if (error instanceof MCPError) {
       throw error;

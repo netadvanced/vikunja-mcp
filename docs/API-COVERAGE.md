@@ -10,10 +10,10 @@ Vikunja documents **169** distinct API operations (method+path). Of those:
 
 | Status | Count | % |
 |---|---|---|
-| ✅ Implemented | 57 | 34% |
+| ✅ Implemented | 60 | 36% |
 | ⚠️ Implemented (bug) | 9 | 5% |
 | 🟡 Partial | 3 | 2% |
-| ❌ Not implemented | 100 | 59% |
+| ❌ Not implemented | 97 | 57% |
 | **Total** | **169** | 100% |
 
 > Updated 2026-07-17 (Wave D, `waveD-notifications-subscriptions`, item D1): the 8
@@ -39,12 +39,27 @@ Vikunja documents **169** distinct API operations (method+path). Of those:
 > filter_timezone/filter_include_nulls/expand params wired through), `POST
 > /tasks/{id}/position` (❌ -> ✅: new `set-position` subcommand), and `GET
 > /projects/{project}/tasks/by-index/{index}` (❌ -> ✅: new `get-by-index`
-> subcommand). Net count change: ✅ +3 (54 -> 57), ⚠️ -1 (10 -> 9), ❌ -2
-> (102 -> 100), 🟡 unchanged. The corresponding HIGH-severity correctness
-> issue (task listing never calling GET /tasks) is resolved and removed
-> from the Issues table. Everything else in this document remains the
-> original audit snapshot (plus any other Wave D updates noted inline)
-> described above.
+> subcommand). The corresponding HIGH-severity correctness issue (task
+> listing never calling GET /tasks) is resolved and removed from the Issues
+> table.
+>
+> Updated 2026-07-18 (Wave D, `waveD-attachments-read-assignees`, item D6):
+> `GET /tasks/{taskID}/assignees` moved from 🟡 Partial to ✅ Implemented —
+> `list-assignees` now calls the dedicated endpoint directly (with its
+> `s`/`page`/`per_page` query params) instead of reading the `assignees`
+> array embedded in `GET /tasks/{id}`. `GET /tasks/{id}/attachments` and
+> `DELETE /tasks/{id}/attachments/{attachmentID}` moved from ❌ to ✅ (new
+> `list-attachments`/`get-attachment-info`/`delete-attachment`
+> subcommands). `GET /tasks/{id}/attachments/{attachmentID}` moved from ❌
+> to 🟡 Partial: the new `download-attachment` subcommand returns the direct
+> download URL and auth guidance rather than the file itself, since this
+> endpoint returns raw `application/octet-stream` and MCP has no binary
+> content channel — an honest partial, not a full implementation. Two
+> corresponding LOW-severity issues are resolved and removed from the
+> Issues table.
+>
+> Everything else in this document remains the original audit snapshot
+> (plus any other Wave D updates noted inline) described above.
 
 - **✅ Implemented** — implementation matches the documented endpoint (method, path, request/response fields all checked).
 - **⚠️ Implemented (bug)** — the tool exists and calls something, but the audit found a concrete divergence from the documented contract (wrong field name, dropped required param, wrong response shape assumption, etc.). See the Issues table below.
@@ -53,7 +68,7 @@ Vikunja documents **169** distinct API operations (method+path). Of those:
 
 ## Correctness Issues
 
-40 issues found in code paths that ARE implemented (as opposed to simply missing). These are bugs, not coverage gaps. (Two further HIGH-severity issues have since been resolved and removed from this table: `vikunja_filters` being a complete local fake, in Wave D item D2; and task listing never calling the documented GET /tasks endpoint, in Wave D item D5 — see the endpoint table below for both.)
+38 issues found in code paths that ARE implemented (as opposed to simply missing). These are bugs, not coverage gaps. (Further issues have since been resolved and removed from this table: two HIGH-severity — `vikunja_filters` being a complete local fake, in Wave D item D2, and task listing never calling the documented GET /tasks endpoint, in Wave D item D5; and two LOW-severity — list-assignees not using the dedicated assignees endpoint, and attachments having no list/get-info/delete/download surface, in Wave D item D6 — see the endpoint table below for all of them.)
 
 | Severity | Domain | File | Description |
 |---|---|---|---|
@@ -89,9 +104,7 @@ Vikunja documents **169** distinct API operations (method+path). Of those:
 | LOW | Kanban views & buckets, and task placement/listing within a view | `src/utils/vikunja-rest.ts` | vikunjaRestRequest() performs a raw fetch() with no circuit breaker/retry wrapping, unlike the opossum-based retry system (src/utils/retry.ts) used elsewhere in the codebase for node-vikunja calls (e.g. tasks/labels.ts, tasks/bulk-operations-simplified.ts). All Kanban bucket/view operations (list-buckets, set-bucket, and the internal /tasks/{id} and /projects/{id}/views lookups) therefore have no automatic retry or circuit-breaker protection against transient network failures, unlike some other tool call paths in the same server. |
 | LOW | Tasks — CRUD, listing/filtering, bulk create, position, duplicate, read-marking | `src/utils/filters.ts` | The filter DSL's field list uses 'project' (not 'projectId' or 'project_id') as a filterable field name, breaking the otherwise-consistent camelCase-alias-of-snake_case-JSON-field pattern used for every other field (dueDate/due_date, percentDone/percent_done, doneAt/done_at). This filter string is passed verbatim as the API's ?filter= query value with no field-name translation (confirmed in ServerSideFilteringStrategy.ts and node-vikunja's params.js, which only renames legacy filter_by/filter_value params, never rewrites the filter string's field tokens). If Vikunja's backend grammar does not recognize a bare 'project' field, server-side filtering on project silently fails or errors and falls back to client-side. Medium-low confidence since the exact backend grammar isn't verifiable from the OpenAPI spec alone. |
 | LOW | Tasks — CRUD, listing/filtering, bulk create, position, duplicate, read-marking | `src/tools/task-crud.ts` | Two separate MCP tools expose overlapping task CRUD surface: 'vikunja_tasks' (full subcommand set) and 'vikunja_task_crud' (create/get/update/delete/list only), both registered simultaneously in src/tools/index.ts and both calling the same underlying src/tools/tasks/crud/* functions. This is not an API-correctness bug but is redundant tool surface that could confuse an AI client choosing between two tools for the same operation. |
-| LOW | Task sub-resources: assignees, comments, labels-on-task, relations, attachments, reminders | `src/tools/tasks/assignees/AssigneeOperationsService.ts (fetchTaskWithAssignees / listAssignees)` | list-assignees reads task.assignees from GET /tasks/{id} instead of calling the dedicated GET /tasks/{taskID}/assignees endpoint (node-vikunja's getTaskAssignees is never invoked anywhere in src/). This is functionally equivalent for small assignee lists but silently drops the endpoint's page/per_page/s (username search) query parameters - there's no way to search or paginate a task's assignees via the MCP tools. |
 | LOW | Task sub-resources: assignees, comments, labels-on-task, relations, attachments, reminders | `src/tools/tasks/attach.ts` | PUT /tasks/{id}/attachments is implemented via a bespoke fetch() call (bypassing node-vikunja's uploadTaskAttachment and the project's own retry/circuit-breaker (opossum) and X-API-Token auth-fallback conventions used elsewhere for assignees/labels). It also only sends a single `Authorization: Bearer` header, so it will not benefit from the same auth-retry resilience that assign/label operations have if the primary Vikunja auth header format fails for a given deployment. |
-| LOW | Task sub-resources: assignees, comments, labels-on-task, relations, attachments, reminders | `src/tools/tasks/attach.ts, GET/DELETE /tasks/{id}/attachments*` | Attachment support is write-only: PUT (upload) is implemented, but GET /tasks/{id}/attachments (list), GET /tasks/{id}/attachments/{attachmentID} (download), and DELETE /tasks/{id}/attachments/{attachmentID} (delete) have no MCP tool or code path at all, even though node-vikunja exposes getTaskAttachments/getTaskAttachment/deleteTaskAttachment. Users can attach files but never list, retrieve, or remove them through this server. |
 | LOW | Labels (standalone) & Teams | `src/tools/teams.ts` | Team get/update/members operations hand-roll their own fetch() calls with duplicated auth-header/error-handling logic instead of reusing the project's existing src/utils/vikunja-rest.ts helper (used elsewhere for endpoints not covered by node-vikunja). This duplication increases drift risk and is likely how the PUT-vs-POST and path-construction bugs above went unnoticed. Additionally, the dead `if (!client.teams.deleteTeam...)` fallback branch in the delete case is unreachable with the pinned node-vikunja version and violates this repo's own CLAUDE.md rule that untestable defensive code must be removed. |
 | LOW | Saved filters, webhooks, subscriptions, notifications, reactions | `src/tools/webhooks.ts` | The 'list' subcommand never forwards the spec's optional page/per_page query parameters for GET /projects/{id}/webhooks, so callers cannot paginate through large webhook lists. |
 | LOW | Migration importers, testing endpoints, and MCP-only composite features (export, batch-import, templates) | `src/tools/export.ts` | exportProjectRecursive() calls vikunjaClient.projects.getProjects({}) (fetching the caller's ENTIRE project list) inside the recursion for every child project when includeChildren is true, purely to client-side filter by parent_project_id. For a deep/wide project tree this is an O(depth) full-catalog refetch; functionally correct (GET /projects does return all accessible projects, so child discovery works) but wasteful and already flagged generically by the file's own top-of-file memory-usage warning -- worth calling out specifically since it's a repeated full listing, not just large payload retention. |
@@ -235,7 +248,7 @@ Every documented Vikunja API operation, grouped by domain, in spec order. Sorted
 
 | Method | Path | Status | MCP Tool | Notes |
 |---|---|---|---|---|
-| GET | `/tasks/{taskID}/assignees` | 🟡 Partial | vikunja_tasks / vikunja_task_assignees | list-assignees does NOT call node-vikunja's getTaskAssignees (which hits this exact endpoint); instead it calls client.tasks.getTask(taskId) and reads task.assignees (AssigneeOperationsService.fetchTaskWithAssignees). Functionally equivalent since Task.assignees is embedded per the models.Task schema, but it silently drops support for the endpoint's page/per_page/s (username search) query params - there is no way to search/paginate assignees on a large task. |
+| GET | `/tasks/{taskID}/assignees` | ✅ Implemented (Wave D) | vikunja_tasks (list-assignees) / vikunja_task_assignees | Direct-REST GET via vikunjaRestRequest (`AssigneeOperationsService.fetchAssigneesViaRest`), not node-vikunja's getTaskAssignees. Correct `s`/`page`/`per_page` query params matching the spec; response is the documented bare `user.User[]` array. This replaces the previous `GET /tasks/{id}` + embedded `assignees` array approach, so username search and pagination are now reachable. |
 | PUT | `/tasks/{taskID}/assignees` | ✅ Implemented | vikunja_tasks(assign) / vikunja_task_assignees(assign) | assignUsers loops this additive per-user endpoint via client.tasks.assignUserToTask, which sends body {user_id: userId} - matches models.TaskAssginee's `user_id` field exactly. This is the deliberate fix (documented in code comments referencing 'upstream issue #15') that avoids the broken bulk endpoint. |
 | DELETE | `/tasks/{taskID}/assignees/{userID}` | ✅ Implemented | vikunja_tasks(unassign) / vikunja_task_assignees(unassign) | removeUsersFromTask loops client.tasks.removeUserFromTask(taskId, userId) -> DELETE /tasks/{taskID}/assignees/{userID}, path params only, matches spec exactly. |
 | GET | `/tasks/{taskID}/comments` | ✅ Implemented | vikunja_tasks(comment) / vikunja_task_comments(list) | CommentOperationsService.fetchTaskComments -> client.tasks.getTaskComments(taskId) -> GET /tasks/{taskID}/comments. Matches path/method. node-vikunja's getTaskComments takes no params at all, so the spec's `order_by` (asc/desc) query param is unreachable/unsupported - minor capability gap, not a correctness bug. |
@@ -251,9 +264,9 @@ Every documented Vikunja API operation, grouped by domain, in spec order. Sorted
 | DELETE | `/tasks/{taskID}/relations/{relationKind}/{otherTaskID}` | ✅ Implemented | vikunja_tasks(unrelate) / vikunja_task_relations(unrelate) | handleRelationSubcommands('unrelate') -> client.tasks.deleteTaskRelation(taskId, relationKind, otherTaskId) -> DELETE /tasks/{taskID}/relations/{relationKind}/{otherTaskID}, path params only. Matches spec's path structure (spec also lists an unused body param, which node-vikunja correctly omits since it's redundant with the path segments). |
 | PUT | `/tasks/{id}/attachments` | ✅ Implemented | vikunja_tasks(attach) | handleAttach builds its own multipart FormData and does a direct fetch() PUT to `${apiUrl}/tasks/{id}/attachments` with field name `files`, matching the spec's formData param exactly. It bypasses both node-vikunja's uploadTaskAttachment and the shared vikunja-rest.ts helper, using authManager's session.apiToken directly with a hardcoded `Authorization: Bearer` header - functionally fine for JWT/API-token bearer auth, but note it does not go through the retry/circuit-breaker (opossum) infrastructure used elsewhere, nor the X-API-token fallback pattern used for assignees/labels. |
 | POST | `/tasks/{taskID}/assignees/bulk` | ❌ Not implemented | — | Deliberately unused. node-vikunja's bulkAssignUsersToTask sends body {user_ids: number[]} (per its BulkAssignees TS interface), but the OpenAPI spec's models.BulkAssignees actually requires {assignees: user.User[]} - a genuine field-name AND shape mismatch in node-vikunja itself. Vikunja's real bulk endpoint has REPLACE semantics (not additive) and silently treats the unrecognized `user_ids` field as an empty assignee list, unassigning everyone. The MCP code correctly avoids this endpoint entirely and loops single PUT assigns instead (see AssigneeOperationsService.ts comment). |
-| GET | `/tasks/{id}/attachments` | ❌ Not implemented | — | No MCP tool calls this endpoint or node-vikunja's getTaskAttachments. Only upload (PUT) is implemented; there is no way to list/browse a task's existing attachments through this MCP server. |
-| GET | `/tasks/{id}/attachments/{attachmentID}` | ❌ Not implemented | — | No MCP tool or code path calls this endpoint or node-vikunja's getTaskAttachment. Attachments can be uploaded but never downloaded or previewed through this server. |
-| DELETE | `/tasks/{id}/attachments/{attachmentID}` | ❌ Not implemented | — | No MCP tool or code path calls this endpoint or node-vikunja's deleteTaskAttachment. Attachments cannot be removed through this server once uploaded. |
+| GET | `/tasks/{id}/attachments` | ✅ Implemented (Wave D) | vikunja_tasks (list-attachments, get-attachment-info) | Direct-REST GET via vikunjaRestRequest, with `page`/`per_page` forwarded when supplied. `get-attachment-info` derives one attachment's metadata (file name, size, mime, created, author) by fetching this list and filtering client-side by id — the spec has no dedicated single-attachment metadata endpoint (fetch-list-and-filter, same shape as `vikunja_webhooks`'s `get` subcommand). |
+| GET | `/tasks/{id}/attachments/{attachmentID}` | 🟡 Partial (Wave D, by design) | vikunja_tasks (download-attachment) | This endpoint returns `application/octet-stream` per the spec; the MCP protocol has no binary content channel, so `download-attachment` never calls it. Instead it returns the direct download URL (built from the session's apiUrl, with the spec's `preview_size` query param supported) plus `Authorization: Bearer` guidance for the caller to fetch it themselves — honest-limitation shape (docs/ENDPOINT-PLAYBOOK.md §7), mirroring `vikunja_download_user_export` in `src/tools/export.ts`. |
+| DELETE | `/tasks/{id}/attachments/{attachmentID}` | ✅ Implemented (Wave D) | vikunja_tasks (delete-attachment) | Correct direct-REST DELETE via vikunjaRestRequest, matching the spec's path/verb exactly. |
 
 ### Labels (standalone) & Teams
 
