@@ -367,19 +367,22 @@ describe('Assignee operations', () => {
       );
     });
 
-    it('should handle task with undefined id in response', async () => {
+    it('should throw when the API response is missing the task id', async () => {
+      // fetchTaskWithAssignees defensively rejects a task payload without an
+      // id rather than fabricating a TaskWithAssignees with `id: undefined`
+      // (see AssigneeOperationsService.fetchTaskWithAssignees) — a task
+      // reference without an id is unusable to the caller either way.
       const mockTask = {
         // id is undefined
         title: 'Test Task',
         assignees: [{ id: 1, name: 'User 1' }],
       };
-      
+
       mockClient.tasks.getTask.mockResolvedValue(mockTask);
 
-      const result = await listAssignees({ id: 123 });
-
-      const markdown = result.content[0].text;
-      expect(markdown).toContain('Test Task');
+      await expect(listAssignees({ id: 123 })).rejects.toThrow(
+        'Task returned from API is missing required id field'
+      );
     });
   });
 
