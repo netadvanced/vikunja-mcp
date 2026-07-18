@@ -23,9 +23,10 @@
 # that tag push is what triggers this workflow to do the equivalent of
 # `scripts/release-publish.sh --push` automatically; the local script remains a manual fallback.
 #
-# Docker tags produced: `:X.Y.Z`, `:latest`, and a floating `:vikunja-<ver>` compatibility tag
-# (e.g. `:vikunja-2.3.0`) derived from the vendored OpenAPI spec — see
-# scripts/lib/vikunja-compat-version.sh and docs/RELEASING.md "Vikunja compatibility".
+# Docker tags produced: `:X.Y.Z`, `:latest`, and `:X.Y.Z-vikunja<A.B.C>` — a per-release
+# compatibility tag (e.g. `:0.3.1-vikunja2.3.0`) suffixed with the Vikunja version derived from
+# the vendored OpenAPI spec — see scripts/lib/vikunja-compat-version.sh and docs/RELEASING.md
+# "Vikunja compatibility".
 # ---------------------------------------------------------------------------
 
 name: Release
@@ -117,7 +118,7 @@ jobs:
           tags: |
             ghcr.io/netadvanced/vikunja-mcp-ng:${{ steps.version.outputs.value }}
             ghcr.io/netadvanced/vikunja-mcp-ng:latest
-            ghcr.io/netadvanced/vikunja-mcp-ng:vikunja-${{ steps.vikunja-compat.outputs.value }}
+            ghcr.io/netadvanced/vikunja-mcp-ng:${{ steps.version.outputs.value }}-vikunja${{ steps.vikunja-compat.outputs.value }}
           labels: |
             org.opencontainers.image.version=${{ steps.version.outputs.value }}
             io.vikunja.compat=${{ steps.vikunja-compat.outputs.value }}

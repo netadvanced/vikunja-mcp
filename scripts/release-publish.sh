@@ -123,11 +123,13 @@ IMAGE_LATEST_TAG="${IMAGE_BASE}:latest"
 
 # Vikunja compatibility tag — single source of truth is the vendored OpenAPI spec, never
 # hand-typed. See scripts/lib/vikunja-compat-version.sh and docs/RELEASING.md "Vikunja
-# compatibility". Prefixed as `vikunja-<ver>` (never a bare `2.3.0`) so it can't collide with our
-# own semver tag namespace. This tag floats: the next release aligned to the same server version
-# re-points it, same idea as `latest` but scoped to a Vikunja release.
+# compatibility". Suffixed onto our own version as `X.Y.Z-vikunja<A.B.C>` (node:20-alpine
+# convention: our version always leads, alignment is only ever a suffix) so it can never be
+# misread as the image being Vikunja itself, and can't collide with our own semver tag namespace.
+# Unlike the old standalone `vikunja-<ver>` tag, this one does NOT float — it names this exact
+# release, not "whatever's newest for this server version".
 VIKUNJA_COMPAT_VERSION="$("${REPO_ROOT}/scripts/lib/vikunja-compat-version.sh")"
-COMPAT_TAG="vikunja-${VIKUNJA_COMPAT_VERSION}"
+COMPAT_TAG="${VERSION}-vikunja${VIKUNJA_COMPAT_VERSION}"
 IMAGE_COMPAT_TAG="${IMAGE_BASE}:${COMPAT_TAG}"
 echo "==> Vikunja compatibility: ${VIKUNJA_COMPAT_VERSION} (image tag: ${COMPAT_TAG})"
 

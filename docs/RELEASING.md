@@ -122,7 +122,7 @@ This script (`scripts/release-publish.sh`) re-runs the full gates, then:
 
 - `npm publish --access public`
 - builds and tags the Docker image `ghcr.io/netadvanced/vikunja-mcp-ng:X.Y.Z`, `:latest`, and a
-  `:vikunja-<ver>` compatibility tag (push only with `--push`) — see §7 below
+  `:X.Y.Z-vikunja<A.B.C>` compatibility tag (push only with `--push`) — see §7 below
 - `gh release create vX.Y.Z` using the changelog section as the release notes
 
 Once the owner installs `docs/github-workflow-release.yml.example` as
@@ -165,15 +165,23 @@ Docker images carry a **Vikunja compatibility tag** in addition to the semver ta
 can pick an image that matches their Vikunja server version:
 
 ```
-ghcr.io/netadvanced/vikunja-mcp-ng:X.Y.Z            (this exact release)
-ghcr.io/netadvanced/vikunja-mcp-ng:latest            (newest release)
-ghcr.io/netadvanced/vikunja-mcp-ng:vikunja-2.3.0     (newest release aligned to Vikunja 2.3.0)
+ghcr.io/netadvanced/vikunja-mcp-ng:X.Y.Z                  (this exact release)
+ghcr.io/netadvanced/vikunja-mcp-ng:X.Y.Z-vikunja<A.B.C>   (this exact release, spelling out
+                                                            what Vikunja version it's aligned to)
+ghcr.io/netadvanced/vikunja-mcp-ng:latest                 (newest release)
 ```
 
-The compat tag is always prefixed `vikunja-<ver>` — never a bare `2.3.0` — so it can't collide
-with our own semver tag namespace. Like `latest`, it **floats**: every release aligned to Vikunja
-`2.3.0` re-points `:vikunja-2.3.0` at the newest one, scoped to that server version instead of
-across all of them.
+e.g. release `0.3.1` aligned to Vikunja `2.3.0` produces `:0.3.1` and `:0.3.1-vikunja2.3.0`.
+
+This follows the same convention as images like `node:20-alpine`: the leading component is always
+*our* version, and the trailing component is a suffix that qualifies it, never a standalone
+identifier. Alignment info only ever appears as a suffix on our own version, so a tag can never be
+misread as "this image *is* Vikunja 2.3.0" — it's always unambiguous that `2.3.0` here describes
+compatibility, not identity. We deliberately do not publish a standalone `:vikunja-<ver>`-style
+tag (an earlier revision of this scheme did): that tag floated, re-pointing at whichever release
+was newest for a given server version, which is exactly the version-number ambiguity this scheme
+exists to eliminate. `X.Y.Z-vikunja<A.B.C>` names one exact release, same as the bare `X.Y.Z` tag
+— if you want "newest", use `:latest`.
 
 **Single source of truth**: `scripts/lib/vikunja-compat-version.sh` derives the compat version
 from the vendored OpenAPI spec's `info.version` field (`docs/vikunja-openapi.json`) — the same
