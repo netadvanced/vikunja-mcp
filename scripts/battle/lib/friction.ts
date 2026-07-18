@@ -18,10 +18,28 @@ const MCP_TOOL_PREFIX = 'mcp__';
  */
 const TOOL_SEARCH_NAME = 'ToolSearch';
 
-/** Patterns in a tool_result's error text that indicate the agent supplied invalid arguments (a discoverability smoking gun) rather than the operation legitimately failing for other reasons (404s, network errors, etc). */
+/**
+ * Patterns in a tool_result's error text that indicate the agent supplied
+ * invalid arguments (a discoverability smoking gun) rather than the
+ * operation legitimately failing for other reasons (404s, network errors,
+ * etc).
+ *
+ * `invalid filter syntax` and `expected condition` were added after the
+ * 20260718-211659-05yr35 battle campaign (filter-high-priority-search
+ * scenario): the harness's own `invalidArgErrorCount` reported 0 for that
+ * run even though 3 of its calls failed with Vikunja's filter-parser error
+ * text ("Invalid filter syntax: Expected condition after logical
+ * operator...") -- a genuine argument-shape mistake (snake_case
+ * `due_date` vs the parser's expected camelCase `dueDate`) that none of the
+ * existing patterns matched because the parser's error text doesn't say
+ * "invalid enum/type/input" etc. See tests/battle/fixtures/filter-syntax-real-errors.jsonl
+ * for the real transcript excerpt this was derived from.
+ */
 const VALIDATION_ERROR_PATTERNS = [
   /VALIDATION_ERROR/i,
   /invalid (?:enum|type|input|argument|value)/i,
+  /invalid filter syntax/i,
+  /expected condition (?:after|before)/i,
   /required/i,
   /expected .* received/i, // typical zod message shape
   /must be a? ?(?:positive|non-negative|number|string|integer)/i,

@@ -61,6 +61,7 @@ import {
 } from './lib/config';
 import { RestClient, login, mintApiToken } from './lib/rest-client';
 import { cleanupByPrefix } from './lib/cleanup';
+import { runSetup } from './lib/setup';
 import { writeMcpConfig } from './lib/mcp-config';
 import { loadAllScenarios, renderScenario } from './lib/scenario';
 import { parseTranscriptText } from './lib/transcript-parser';
@@ -234,6 +235,12 @@ async function runOneScenario(params: {
   log(`[${scenario.id}] cleanup-before (prefix "${scenarioPrefix}")...`);
   const before = await cleanupByPrefix(client, scenarioPrefix);
   if (before.errors.length > 0) log(`[${scenario.id}]   cleanup-before warnings: ${before.errors.join('; ')}`);
+
+  if (rendered.setup.length > 0) {
+    log(`[${scenario.id}] seeding ${rendered.setup.length} setup action(s)...`);
+    const setupResult = await runSetup(client, rendered.setup);
+    if (setupResult.errors.length > 0) log(`[${scenario.id}]   setup warnings: ${setupResult.errors.join('; ')}`);
+  }
 
   writeMcpConfig(mcpConfigPath, {
     vikunjaUrl: VIKUNJA_URL,

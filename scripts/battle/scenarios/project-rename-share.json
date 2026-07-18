@@ -1,0 +1,11 @@
+{
+  "id": "project-rename-share",
+  "title": "Project create + rename + share-by-name",
+  "description": "Dedicated probe for a theoretical footgun flagged but never reproduced in the 20260718-211659-05yr35 campaign: `vikunja_projects`' flat args object has both `title` (the project's own name, used by create/update) and `name` (a link share's label, used by create-share) as sibling fields -- an agent could plausibly confuse the two across a create+rename+share sequence. Also exercises the share-by-name composite (create-share with a `name`) on its own, which no other shipped scenario covers (share-project-by-user creates an unnamed share).",
+  "promptTemplate": "Create a project called \"{{prefix}}Q4 Planning\". Rename it to \"{{prefix}}Q4 Planning (Final)\". Then create a public, read-only share link for it named \"{{prefix}}client-view\".",
+  "optimalCallCount": 3,
+  "verify": [
+    { "type": "project-exists", "titleContains": "{{prefix}}Q4 Planning (Final)" },
+    { "type": "project-has-share", "projectTitleContains": "{{prefix}}Q4 Planning (Final)" }
+  ]
+}

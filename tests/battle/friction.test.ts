@@ -107,6 +107,21 @@ describe('computeFriction', () => {
     expect(friction.totalTokens).toBe(10);
   });
 
+  it('classifies Vikunja filter-parser "Invalid filter syntax" errors as invalid-arg errors (real transcript, campaign 20260718-211659-05yr35)', () => {
+    // Regression fixture for a measurement gap found in the
+    // filter-high-priority-search scenario: 3 of 4 genuinely-failed calls
+    // used real error text from the Vikunja filter parser
+    // ("Invalid filter syntax: Expected condition after logical
+    // operator..."), which none of the pre-existing VALIDATION_ERROR_PATTERNS
+    // matched. The 4th failure (vikunja_filters build's own Zod
+    // invalid_enum_value rejection) was already classified correctly before
+    // this fix -- included here so the fixture documents the full real
+    // sequence, not just the gap.
+    const transcript = parseTranscriptText(loadFixture('filter-syntax-real-errors.jsonl'));
+    const friction = computeFriction(baseScenario, transcript, 'vikunja-battle');
+    expect(friction.invalidArgErrorCount).toBe(4);
+  });
+
   it('without a server name filter, still only counts mcp__-prefixed calls (any server) as in-scope', () => {
     const transcript = parseTranscriptText(loadFixture('with-tool-calls.jsonl'));
     const friction = computeFriction(baseScenario, transcript);

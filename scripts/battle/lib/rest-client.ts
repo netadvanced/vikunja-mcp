@@ -71,6 +71,13 @@ export interface VikunjaRestClient {
   deleteTask(taskId: number): Promise<void>;
   deleteProject(projectId: number): Promise<void>;
   deleteLabel(labelId: number): Promise<void>;
+  /**
+   * Seeds a label ahead of a scenario run (see scripts/battle/lib/setup.ts).
+   * `PUT /labels` is the documented create endpoint (see docs/API_NOTES.md
+   * and src/tools/labels.ts's own create call) -- POST does not exist for
+   * this resource.
+   */
+  createLabel(title: string): Promise<VikunjaLabel>;
 }
 
 export class RestClient implements VikunjaRestClient {
@@ -153,6 +160,10 @@ export class RestClient implements VikunjaRestClient {
 
   deleteLabel(labelId: number): Promise<void> {
     return this.request<void>('DELETE', `/labels/${labelId}`);
+  }
+
+  createLabel(title: string): Promise<VikunjaLabel> {
+    return this.request<VikunjaLabel>('PUT', '/labels', { title });
   }
 }
 

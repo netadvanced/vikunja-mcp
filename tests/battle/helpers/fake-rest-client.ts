@@ -25,6 +25,9 @@ export class FakeRestClient implements VikunjaRestClient {
   deletedProjectIds: number[] = [];
   deletedLabelIds: number[] = [];
   failDeleteProjectIds: Set<number> = new Set();
+  failCreateLabelTitles: Set<string> = new Set();
+  createdLabels: VikunjaLabel[] = [];
+  private nextLabelId = 1000;
 
   request<T>(): Promise<T> {
     throw new Error('not used in these tests');
@@ -83,5 +86,15 @@ export class FakeRestClient implements VikunjaRestClient {
 
   async deleteLabel(labelId: number): Promise<void> {
     this.deletedLabelIds.push(labelId);
+  }
+
+  async createLabel(title: string): Promise<VikunjaLabel> {
+    if (this.failCreateLabelTitles.has(title)) {
+      throw new Error(`simulated failure creating label "${title}"`);
+    }
+    const label: VikunjaLabel = { id: this.nextLabelId++, title };
+    this.createdLabels.push(label);
+    this.labels.push(label);
+    return label;
   }
 }

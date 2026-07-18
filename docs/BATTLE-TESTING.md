@@ -154,7 +154,7 @@ transcript that revealed it).
 ## The scenario library
 
 `scripts/battle/scenarios/*.json`, each validated against `ScenarioSchema`
-(`scripts/battle/types.ts`) at load time. Currently 8 scenarios:
+(`scripts/battle/types.ts`) at load time. Currently 10 scenarios:
 
 | id | probes |
 |---|---|
@@ -163,9 +163,11 @@ transcript that revealed it).
 | `share-project-by-user` | project link-sharing discoverability |
 | `subtask-breakdown` | subtask creation (Vikunja has no first-class subtask resource -- it's a task relation under the hood) |
 | `bulk-priority-bump` | bulk-edit discoverability vs. one-call-per-task |
-| `labels-due-date-combo` | label creation + application + due dates combined in one ask |
+| `labels-due-date-combo` | label creation + application + due dates combined in one ask (create-then-apply path only) |
 | `single-task-smoke` | deliberately the cheapest scenario -- use this one for a first try or a live-smoke proof |
 | `mixed-priority-batch` | varying a per-item field within a single batch-creation call |
+| `existing-label-reuse` | applying an already-existing label (find-then-apply path -- seeded via `setup`, closes the evidence gap `labels-due-date-combo` leaves open) |
+| `project-rename-share` | project create + rename + share-by-name in one prompt -- probes the `title`-vs-`name` field-naming footgun (`vikunja_projects`' flat args object has both) and exercises the share-by-name composite (`create-share` with a `name`) |
 
 ### Anatomy of a scenario file
 
@@ -186,6 +188,15 @@ transcript that revealed it).
   // Optional: pin a model for this scenario specifically (overridden by
   // the CLI's own --model flag if both are given).
   "model": "haiku",
+  // Optional: seed data via direct REST (scripts/battle/lib/setup.ts),
+  // executed after cleanup-before and before the agent is spawned. Use this
+  // when the scenario needs the agent to act on data that already existed
+  // rather than data it just created itself in the same run (e.g. applying
+  // an already-existing label -- see existing-label-reuse.json). Every
+  // string field supports {{prefix}} the same as verify checks do, so
+  // seeded data is swept by the same prefix-based cleanup as everything
+  // else. Currently one action type: { "type": "create-label", "title": "..." }.
+  "setup": [{ "type": "create-label", "title": "{{prefix}}existing-tag" }],
   "verify": [
     { "type": "project-exists", "titleContains": "{{prefix}}Demo" }
     // ... see scripts/battle/types.ts's VerifyCheck union for every
@@ -215,17 +226,27 @@ transcript that revealed it).
    not a naive one-call-per-field count.
 5. Add a unit test in `tests/battle/scenario.test.ts` if the check verifies
    a shape not already covered.
-6. `npm run battle -- --list` to confirm it loads and validates.
-7. `npm run battle -- --scenario <id> --model haiku` for a cheap first run.
+6. If the scenario needs the agent to act on pre-existing data (rather than
+   data it creates in the same prompt), add a `setup` action instead of
+   trying to phrase the prompt around data the agent itself just created --
+   see `existing-label-reuse.json` and `scripts/battle/lib/setup.ts`.
+7. `npm run battle -- --list` to confirm it loads and validates.
+8. `npm run battle -- --scenario <id> --model haiku` for a cheap first run.
 
 ## Testing the harness itself (no live Claude needed)
 
-`scripts/battle/lib/transcript-parser.ts` and `scripts/battle/lib/verify.ts`
-(the two pieces this whole harness's grading depends on) are unit-tested
-against static, recorded fixtures -- `tests/battle/fixtures/*.jsonl` and a
-lightweight in-memory fake of `VikunjaRestClient`
-(`tests/battle/helpers/fake-rest-client.ts`) respectively. Run them like any
-other test:
+`scripts/battle/lib/transcript-parser.ts`, `scripts/battle/lib/friction.ts`,
+and `scripts/battle/lib/verify.ts` (the pieces this whole harness's grading
+depends on) are unit-tested against static, recorded fixtures --
+`tests/battle/fixtures/*.jsonl` and a lightweight in-memory fake of
+`VikunjaRestClient` (`tests/battle/helpers/fake-rest-client.ts`)
+respectively. `filter-syntax-real-errors.jsonl` is derived from a real
+campaign transcript (run `20260718-211659-05yr35`, scenario
+`filter-high-priority-search`) rather than hand-written -- when
+`invalidArgErrorCount`'s `VALIDATION_ERROR_PATTERNS` misses a genuine failure
+in a future campaign, add the real error text as a new fixture the same way
+rather than a synthetic one, so the regex list stays grounded in what
+Vikunja/the tools actually say. Run them like any other test:
 
 ```bash
 jest tests/battle

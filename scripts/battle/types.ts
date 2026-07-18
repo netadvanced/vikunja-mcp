@@ -111,6 +111,33 @@ export type VerifyCheck = z.infer<ReturnType<typeof buildVerifyCheckSchema>>;
 
 export const VerifyCheckSchema = buildVerifyCheckSchema();
 
+// ============================================================================
+// Setup actions ("SEED THE STACK")
+//
+// Executed via direct REST (scripts/battle/lib/setup.ts), after
+// cleanup-before and before the agent is spawned, so a scenario can require
+// the agent to act on data that already existed rather than data it just
+// created itself (e.g. "apply this already-existing label" -- the
+// find-then-apply path, as opposed to create-then-apply). Like `verify`
+// checks, every action's string fields may contain the `{{prefix}}`
+// placeholder, substituted with the run's unique `battle-<runid>-` prefix at
+// render time (see scripts/battle/lib/scenario.ts's `renderScenario`) so
+// seeded data is swept by the same prefix-based cleanup as everything else.
+// ============================================================================
+
+const CreateLabelSetupAction = z.object({
+  type: z.literal('create-label'),
+  title: z.string().min(1),
+});
+
+function buildSetupActionSchema() {
+  return z.discriminatedUnion('type', [CreateLabelSetupAction]);
+}
+
+export type SetupAction = z.infer<ReturnType<typeof buildSetupActionSchema>>;
+
+export const SetupActionSchema = buildSetupActionSchema();
+
 export const ScenarioSchema = z.object({
   id: z.string().regex(/^[a-z0-9-]+$/, 'scenario id must be kebab-case'),
   title: z.string().min(1),
@@ -121,6 +148,8 @@ export const ScenarioSchema = z.object({
   optimalCallCount: z.number().int().positive(),
   /** Model alias/name override for this scenario (e.g. the cheapest scenario pins `haiku` for the live smoke test). */
   model: z.string().optional(),
+  /** Optional seed data created via direct REST before the agent is spawned -- see "Setup actions" above. */
+  setup: z.array(buildSetupActionSchema()).optional(),
   verify: z.array(buildVerifyCheckSchema()).min(1),
 });
 

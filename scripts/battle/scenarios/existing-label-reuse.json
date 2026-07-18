@@ -1,0 +1,13 @@
+{
+  "id": "existing-label-reuse",
+  "title": "Apply an already-existing label",
+  "description": "Closes an evidence gap left by labels-due-date-combo, which only tests the just-created-label path (agent creates the label and immediately carries its fresh id forward). This scenario seeds the label ahead of time via `setup`, so the agent must find-then-apply an already-existing label it does not already have the id for -- the harder path the parked label-ensure composite was evaluated against.",
+  "setup": [{ "type": "create-label", "title": "{{prefix}}existing-tag" }],
+  "promptTemplate": "There is already a label called \"{{prefix}}existing-tag\" in this Vikunja instance. Create a project called \"{{prefix}}Existing Label Project\" with 3 tasks, and apply the existing \"{{prefix}}existing-tag\" label (do not create a new label) to all 3 tasks.",
+  "optimalCallCount": 3,
+  "verify": [
+    { "type": "project-exists", "titleContains": "{{prefix}}Existing Label Project" },
+    { "type": "min-tasks-in-project", "projectTitleContains": "{{prefix}}Existing Label Project", "min": 3 },
+    { "type": "tasks-with-label-count", "projectTitleContains": "{{prefix}}Existing Label Project", "labelTitleContains": "{{prefix}}existing-tag", "min": 3 }
+  ]
+}

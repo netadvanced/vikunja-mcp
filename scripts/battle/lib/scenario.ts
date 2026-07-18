@@ -10,7 +10,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { ScenarioSchema, type Scenario, type VerifyCheck } from '../types';
+import { ScenarioSchema, type Scenario, type SetupAction, type VerifyCheck } from '../types';
 
 const PLACEHOLDER = '{{prefix}}';
 
@@ -18,26 +18,28 @@ function substitute(value: string, prefix: string): string {
   return value.split(PLACEHOLDER).join(prefix);
 }
 
-/** Recursively substitutes `{{prefix}}` in every string field of a verify check. */
-function substituteCheck(check: VerifyCheck, prefix: string): VerifyCheck {
-  const out: Record<string, unknown> = { ...check };
+/** Recursively substitutes `{{prefix}}` in every string field of a plain object (verify check or setup action). */
+function substituteStringFields<T extends Record<string, unknown>>(obj: T, prefix: string): T {
+  const out: Record<string, unknown> = { ...obj };
   for (const [key, value] of Object.entries(out)) {
     if (typeof value === 'string') out[key] = substitute(value, prefix);
   }
-  return out as VerifyCheck;
+  return out as T;
 }
 
 export interface RenderedScenario {
   scenario: Scenario;
   prompt: string;
   checks: VerifyCheck[];
+  setup: SetupAction[];
 }
 
 export function renderScenario(scenario: Scenario, prefix: string): RenderedScenario {
   return {
     scenario,
     prompt: substitute(scenario.promptTemplate, prefix),
-    checks: scenario.verify.map((c) => substituteCheck(c, prefix)),
+    checks: scenario.verify.map((c) => substituteStringFields(c, prefix)),
+    setup: (scenario.setup ?? []).map((a) => substituteStringFields(a, prefix)),
   };
 }
 

@@ -37,6 +37,31 @@ describe('renderScenario', () => {
   });
 });
 
+describe('renderScenario setup actions', () => {
+  it('substitutes {{prefix}} in setup action string fields and defaults to an empty array when setup is absent', () => {
+    const withoutSetup = ScenarioSchema.parse({
+      id: 'no-setup',
+      title: 'No setup',
+      promptTemplate: 'do the thing',
+      optimalCallCount: 1,
+      verify: [{ type: 'project-exists', titleContains: 'x' }],
+    });
+    expect(renderScenario(withoutSetup, 'battle-abc-').setup).toEqual([]);
+
+    const withSetup = ScenarioSchema.parse({
+      id: 'with-setup',
+      title: 'With setup',
+      promptTemplate: 'do the thing',
+      optimalCallCount: 1,
+      setup: [{ type: 'create-label', title: '{{prefix}}existing-tag' }],
+      verify: [{ type: 'project-exists', titleContains: 'x' }],
+    });
+
+    const rendered = renderScenario(withSetup, 'battle-abc-');
+    expect(rendered.setup).toEqual([{ type: 'create-label', title: 'battle-abc-existing-tag' }]);
+  });
+});
+
 describe('shipped scenario library (scripts/battle/scenarios/*.json)', () => {
   const scenarios = loadAllScenarios(SCENARIOS_DIR);
 
@@ -61,7 +86,7 @@ describe('shipped scenario library (scripts/battle/scenarios/*.json)', () => {
     expect(cheapest.some((s) => s.id === 'single-task-smoke')).toBe(true);
   });
 
-  it.each(loadAllScenarios(SCENARIOS_DIR).map((s) => [s.id, s] as const))('%s renders and every check substitutes cleanly', (_id, scenario) => {
+  it.each(loadAllScenarios(SCENARIOS_DIR).map((s) => [s.id, s] as const))('%s renders and every check/setup action substitutes cleanly', (_id, scenario) => {
     const rendered = renderScenario(scenario, 'battle-testrun-x-');
     expect(rendered.prompt).not.toContain('{{prefix}}');
     for (const check of rendered.checks) {
@@ -69,5 +94,14 @@ describe('shipped scenario library (scripts/battle/scenarios/*.json)', () => {
         if (typeof value === 'string') expect(value).not.toContain('{{prefix}}');
       }
     }
+    for (const action of rendered.setup) {
+      for (const value of Object.values(action)) {
+        if (typeof value === 'string') expect(value).not.toContain('{{prefix}}');
+      }
+    }
+  });
+
+  it('at least one shipped scenario seeds data via `setup` (evidence-gap coverage for find-then-apply flows)', () => {
+    expect(scenarios.some((s) => (s.setup ?? []).length > 0)).toBe(true);
   });
 });
