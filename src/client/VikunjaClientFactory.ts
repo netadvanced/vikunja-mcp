@@ -50,6 +50,23 @@ export class VikunjaClientFactory {
   }
 
   /**
+   * Expose the session-holding AuthManager backing this factory.
+   *
+   * Direct-REST call sites (`vikunjaRestRequest`) need an `AuthManager`, not
+   * a `VikunjaClient` — but several Wave D sub-resource migrations (e.g.
+   * `setTaskLabels` in `src/utils/label-bulk.ts`) are called from task CRUD
+   * services that only ever pass a `VikunjaClient`. Rather than threading a
+   * new `AuthManager` parameter through those CRUD call sites (out of scope
+   * for a sub-resource-only migration), REST-migrated utilities that are
+   * reached that way can recover the same session via
+   * `getAuthManagerFromContext()` in `src/client.ts`, which reads it off the
+   * active factory through this getter.
+   */
+  getAuthManager(): AuthManager {
+    return this.authManager;
+  }
+
+  /**
    * Cleanup function to reset client instance
    */
   cleanup(): void {

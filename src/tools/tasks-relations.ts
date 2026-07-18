@@ -6,10 +6,11 @@
 import { z } from 'zod';
 import { MCPError, ErrorCode, type StandardTaskResponse } from '../types';
 import { getClientFromContext } from '../client';
+import type { AuthManager } from '../auth/AuthManager';
+import { vikunjaRestRequest } from '../utils/vikunja-rest';
 import { logger } from '../utils/logger';
 import { validateId as validateSharedId } from '../utils/validation';
 import { handleStatusCodeError } from '../utils/error-handler';
-import type { RelationKind } from 'node-vikunja';
 import { formatAorpAsMarkdown, createStandardResponse } from '../utils/response-factory';
 
 // Use shared validateId from utils/validation
@@ -62,6 +63,7 @@ interface RelationArgs {
 
 export async function handleRelationSubcommands(
   args: RelationArgs,
+  authManager: AuthManager,
 ): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   const client = await getClientFromContext();
 
@@ -90,14 +92,17 @@ export async function handleRelationSubcommands(
           );
         }
 
-        // Create the relation
-        await client.tasks.createTaskRelation(args.id, {
+        // Create the relation via PUT /tasks/{taskID}/relations, body
+        // models.TaskRelation, per the OpenAPI spec.
+        await vikunjaRestRequest(authManager, 'PUT', `/tasks/${args.id}/relations`, {
           task_id: args.id,
           other_task_id: args.otherTaskId,
-          relation_kind: relationKind as RelationKind,
+          relation_kind: relationKind,
         });
 
-        // Fetch the updated task to show all relations
+        // Fetch the updated task to show all relations. GET /tasks/{id} is
+        // task CRUD (owned elsewhere) — deliberate node-vikunja leftover,
+        // kept only to refresh the response payload.
         const updatedTask = await client.tasks.getTask(args.id);
 
         const response: StandardTaskResponse = {
@@ -166,14 +171,25 @@ export async function handleRelationSubcommands(
           );
         }
 
-        // Delete the relation
-        await client.tasks.deleteTaskRelation(
-          args.id,
-          relationKind as RelationKind,
-          args.otherTaskId,
+        // Delete the relation via
+        // DELETE /tasks/{taskID}/relations/{relationKind}/{otherTaskID}. The
+        // spec also declares a required models.TaskRelation body for this
+        // endpoint (alongside the path params), so the full relation is sent
+        // rather than relying on the path segments alone.
+        await vikunjaRestRequest(
+          authManager,
+          'DELETE',
+          `/tasks/${args.id}/relations/${relationKind}/${args.otherTaskId}`,
+          {
+            task_id: args.id,
+            other_task_id: args.otherTaskId,
+            relation_kind: relationKind,
+          },
         );
 
-        // Fetch the updated task to show remaining relations
+        // Fetch the updated task to show remaining relations. Deliberate
+        // node-vikunja leftover — see the matching comment in the 'relate'
+        // case above.
         const updatedTask = await client.tasks.getTask(args.id);
 
         const response: StandardTaskResponse = {

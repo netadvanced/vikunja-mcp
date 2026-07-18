@@ -24,6 +24,7 @@ jest.mock('../src/client/VikunjaClientFactory', () => ({
 import {
   ClientContext,
   getClientFromContext,
+  getAuthManagerFromContext,
   setGlobalClientFactory,
   clearGlobalClientFactory,
   createVikunjaClientFactory,
@@ -170,6 +171,25 @@ describe('Async-Only Client Context Operations', () => {
       await clientContext.clearClientFactory();
 
       await expect(clientContext.getClient()).rejects.toThrow('Authentication required');
+    });
+
+    it('should get the AuthManager from the active factory', async () => {
+      await clientContext.setClientFactory(mockVikunjaClientFactory);
+      const authManager = await clientContext.getAuthManager();
+
+      expect(authManager).toBe(mockAuthManager);
+      expect(mockVikunjaClientFactory.getAuthManager).toHaveBeenCalled();
+    });
+
+    it('should throw when getting the AuthManager without a factory', async () => {
+      await expect(clientContext.getAuthManager()).rejects.toThrow('Authentication required');
+    });
+
+    it('should get the AuthManager via the getAuthManagerFromContext convenience function', async () => {
+      await clientContext.setClientFactory(mockVikunjaClientFactory);
+      const authManager = await getAuthManagerFromContext();
+
+      expect(authManager).toBe(mockAuthManager);
     });
 
     it('should check factory availability asynchronously', async () => {

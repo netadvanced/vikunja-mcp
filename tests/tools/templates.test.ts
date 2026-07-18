@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, jest } from '@jest/globals';
+import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { registerTemplatesTool } from '../../src/tools/templates';
@@ -8,9 +8,13 @@ import { MCPError, ErrorCode } from '../../src/types';
 import { AuthManager } from '../../src/auth/AuthManager';
 import { parseMarkdown } from '../utils/markdown';
 
-// Mock modules
+// Mock modules. getAuthManagerFromContext is used by setTaskLabels
+// (src/utils/label-bulk.ts, migrated to direct REST) — any test here that
+// instantiates a task template with labels needs it resolved (see
+// beforeEach below).
 jest.mock('../../src/client', () => ({
   getClientFromContext: jest.fn(),
+  getAuthManagerFromContext: jest.fn(),
   setGlobalClientFactory: jest.fn(),
   clearGlobalClientFactory: jest.fn(),
 }));
@@ -22,8 +26,9 @@ jest.mock('../../src/storage', () => ({
 }));
 
 // Import mocked functions
-import { getClientFromContext } from '../../src/client';
+import { getClientFromContext, getAuthManagerFromContext } from '../../src/client';
 import { storageManager } from '../../src/storage';
+import { circuitBreakerRegistry } from '../../src/utils/retry';
 
 // Mock data
 const mockUser: User = {
@@ -67,6 +72,8 @@ describe('Templates Tool', () => {
   let mockServer: MockServer;
   let toolHandler: (args: any) => Promise<any>;
   let mockFilterStorage: any;
+  let fetchMock: jest.Mock;
+  let originalFetch: typeof fetch;
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -110,6 +117,22 @@ describe('Templates Tool', () => {
     mockAuthManager = new AuthManager();
     mockAuthManager.connect('https://test.vikunja.io', 'test-token-12345678');
 
+    // setTaskLabels (src/utils/label-bulk.ts) now calls the direct-REST
+    // helper rather than mockClient.tasks.updateTaskLabels — resolve the
+    // same mockAuthManager session and provide a default-success global
+    // fetch so instantiating a template with labels keeps working. Tests
+    // that specifically exercise a label-write failure override fetchMock.
+    (getAuthManagerFromContext as jest.Mock).mockResolvedValue(mockAuthManager);
+    originalFetch = globalThis.fetch;
+    fetchMock = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      text: jest.fn(async () => JSON.stringify({ labels: [] })),
+    } as unknown as Response);
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    circuitBreakerRegistry.clear();
+
     // Setup mock server
     mockServer = {
       tool: jest.fn() as jest.MockedFunction<(name: string, schema: any, handler: any) => void>,
@@ -125,6 +148,10 @@ describe('Templates Tool', () => {
     } else {
       throw new Error('Tool handler not found');
     }
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
   });
 
   describe('create subcommand', () => {
@@ -809,7 +836,6 @@ describe('Templates Tool', () => {
       });
       mockClient.projects.createProject.mockResolvedValue(newProject);
       mockClient.tasks.createTask.mockResolvedValue(newTask);
-      mockClient.tasks.updateTaskLabels.mockResolvedValue(undefined);
 
       const result = await toolHandler({
         subcommand: 'instantiate',
@@ -864,7 +890,7 @@ describe('Templates Tool', () => {
       });
       mockClient.projects.createProject.mockResolvedValue({ ...mockProject, id: 100 });
       mockClient.tasks.createTask.mockResolvedValue({ ...mockTask, id: 200 });
-      mockClient.tasks.updateTaskLabels.mockRejectedValue(new Error('Label not found'));
+      fetchMock.mockRejectedValue(new Error('Label not found'));
 
       const result = await toolHandler({
         subcommand: 'instantiate',
@@ -1163,7 +1189,6 @@ describe('Templates Tool', () => {
 
       // Task created with null ID
       mockClient.tasks.createTask.mockResolvedValue({ ...mockTask, id: null });
-      mockClient.tasks.updateTaskLabels.mockResolvedValue(undefined);
 
       const result = await toolHandler({
         subcommand: 'instantiate',
@@ -1172,7 +1197,13 @@ describe('Templates Tool', () => {
       });
 
       // Should use 0 as fallback for null task ID
-      expect(mockClient.tasks.updateTaskLabels).toHaveBeenCalledWith(0, { labels: [{ id: 1 }, { id: 2 }] });
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://test.vikunja.io/api/v1/tasks/0/labels/bulk',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ labels: [{ id: 1 }, { id: 2 }] }),
+        }),
+      );
     });
 
     it('should handle variable names with regex special characters', async () => {

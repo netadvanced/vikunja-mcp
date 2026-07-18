@@ -28,21 +28,31 @@ jest.mock('../../../src/utils/retry', () => {
 jest.mock('../../../src/utils/logger');
 
 describe('Assignee operations', () => {
+  // fetchTaskWithAssignees/verifyAssignees still read the task via
+  // node-vikunja's client.tasks.getTask (a deliberate leftover — GET
+  // /tasks/{id} is task CRUD, owned by a different wave item), so it's still
+  // mocked here even though assign/unassign themselves now go through REST.
   const mockClient = {
     tasks: {
-      bulkAssignUsersToTask: jest.fn(),
-      assignUserToTask: jest.fn(),
-      removeUserFromTask: jest.fn(),
       getTask: jest.fn(),
     },
   };
 
-  // listAssignees calls the dedicated GET /tasks/{taskID}/assignees endpoint
-  // directly via vikunjaRestRequest, so it needs a mocked global fetch and a
-  // real AuthManager session rather than the node-vikunja mockClient above.
+  // assignUsers/unassignUsers/listAssignees all call the direct-REST helper
+  // (vikunjaRestRequest) now, so tests drive a mocked global fetch and a real
+  // AuthManager session rather than node-vikunja assignUserToTask/
+  // removeUserFromTask mocks.
   let fetchMock: jest.Mock;
   let originalFetch: typeof fetch;
   let authManager: AuthManager;
+
+  const restOk = (body: unknown = {}): Response =>
+    ({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      text: jest.fn(async () => JSON.stringify(body)),
+    }) as unknown as Response;
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -51,7 +61,7 @@ describe('Assignee operations', () => {
     (withRetry as jest.Mock).mockImplementation((fn) => fn());
 
     originalFetch = globalThis.fetch;
-    fetchMock = jest.fn();
+    fetchMock = jest.fn().mockResolvedValue(restOk({}));
     globalThis.fetch = fetchMock as unknown as typeof fetch;
     circuitBreakerRegistry.clear();
 
@@ -70,21 +80,25 @@ describe('Assignee operations', () => {
         title: 'Test Task',
         assignees: [{ id: 1, name: 'User 1' }, { id: 2, name: 'User 2' }],
       };
-      
-      mockClient.tasks.assignUserToTask.mockResolvedValue({});
+
       mockClient.tasks.getTask.mockResolvedValue(mockTask);
 
       const result = await assignUsers({
         id: 123,
         assignees: [1, 2],
-      });
+      }, authManager);
 
-      // Uses the additive per-user endpoint (one call per assignee), NOT the
-      // bulk endpoint that would silently unassign everyone (upstream #15).
-      expect(mockClient.tasks.assignUserToTask).toHaveBeenCalledWith(123, 1);
-      expect(mockClient.tasks.assignUserToTask).toHaveBeenCalledWith(123, 2);
-      expect(mockClient.tasks.assignUserToTask).toHaveBeenCalledTimes(2);
-      expect(mockClient.tasks.bulkAssignUsersToTask).not.toHaveBeenCalled();
+      // Uses the additive per-user endpoint (one PUT call per assignee), NOT
+      // the bulk endpoint that would silently unassign everyone (upstream #15).
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://vikunja.test/api/v1/tasks/123/assignees',
+        expect.objectContaining({ method: 'PUT', body: JSON.stringify({ user_id: 1 }) }),
+      );
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://vikunja.test/api/v1/tasks/123/assignees',
+        expect.objectContaining({ method: 'PUT', body: JSON.stringify({ user_id: 2 }) }),
+      );
+      expect(fetchMock).toHaveBeenCalledTimes(2);
       expect(mockClient.tasks.getTask).toHaveBeenCalledWith(123);
 
       const markdown = result.content[0].text;
@@ -95,7 +109,7 @@ describe('Assignee operations', () => {
     });
 
     it('should warn when assignees are not persisted (silent API failure)', async () => {
-      // assignUserToTask resolves, but the re-fetched task shows no assignees —
+      // The REST PUT resolves, but the re-fetched task shows no assignees —
       // the defense-in-depth verification (adapted from PR #43) must surface it.
       const mockTaskNoAssignees = {
         id: 123,
@@ -103,13 +117,12 @@ describe('Assignee operations', () => {
         assignees: [], // API reported success but nothing persisted
       };
 
-      mockClient.tasks.assignUserToTask.mockResolvedValue({});
       mockClient.tasks.getTask.mockResolvedValue(mockTaskNoAssignees);
 
       const result = await assignUsers({
         id: 123,
         assignees: [1, 2],
-      });
+      }, authManager);
 
       const markdown = result.content[0].text;
       expect(markdown).toContain('not persisted');
@@ -118,7 +131,7 @@ describe('Assignee operations', () => {
     });
 
     it('should not warn and should fail open when verification re-fetch errors', async () => {
-      // assignUserToTask succeeds; the verification re-fetch throws, but the
+      // The REST PUT succeeds; the verification re-fetch throws, but the
       // main fetch succeeds — verification must fail open (no false warning).
       const mockTask = {
         id: 123,
@@ -126,7 +139,6 @@ describe('Assignee operations', () => {
         assignees: [{ id: 1, name: 'User 1' }, { id: 2, name: 'User 2' }],
       };
 
-      mockClient.tasks.assignUserToTask.mockResolvedValue({});
       mockClient.tasks.getTask
         .mockRejectedValueOnce(new Error('verification fetch failed'))
         .mockResolvedValueOnce(mockTask);
@@ -134,7 +146,7 @@ describe('Assignee operations', () => {
       const result = await assignUsers({
         id: 123,
         assignees: [1, 2],
-      });
+      }, authManager);
 
       const markdown = result.content[0].text;
       expect(markdown).toContain("## ✅ Success");
@@ -142,37 +154,37 @@ describe('Assignee operations', () => {
     });
 
     it('should throw error when task id is missing', async () => {
-      await expect(assignUsers({ assignees: [1, 2] })).rejects.toThrow(
+      await expect(assignUsers({ assignees: [1, 2] }, authManager)).rejects.toThrow(
         'Task id is required for assign operation'
       );
     });
 
     it('should throw error when task id is zero', async () => {
-      await expect(assignUsers({ id: 0, assignees: [1, 2] })).rejects.toThrow(
+      await expect(assignUsers({ id: 0, assignees: [1, 2] }, authManager)).rejects.toThrow(
         'Task id is required for assign operation'
       );
     });
 
     it('should throw error when task id is negative', async () => {
-      await expect(assignUsers({ id: -1, assignees: [1, 2] })).rejects.toThrow(
+      await expect(assignUsers({ id: -1, assignees: [1, 2] }, authManager)).rejects.toThrow(
         'id must be a positive integer'
       );
     });
 
     it('should throw error when assignees array is missing', async () => {
-      await expect(assignUsers({ id: 123 })).rejects.toThrow(
+      await expect(assignUsers({ id: 123 }, authManager)).rejects.toThrow(
         'At least one assignee (user id) is required'
       );
     });
 
     it('should throw error when assignees array is empty', async () => {
-      await expect(assignUsers({ id: 123, assignees: [] })).rejects.toThrow(
+      await expect(assignUsers({ id: 123, assignees: [] }, authManager)).rejects.toThrow(
         'At least one assignee (user id) is required'
       );
     });
 
     it('should throw error when assignee id is invalid', async () => {
-      await expect(assignUsers({ id: 123, assignees: [1, -2] })).rejects.toThrow(
+      await expect(assignUsers({ id: 123, assignees: [1, -2] }, authManager)).rejects.toThrow(
         'assignee ID must be a positive integer'
       );
     });
@@ -182,7 +194,7 @@ describe('Assignee operations', () => {
       (isAuthenticationError as jest.Mock).mockReturnValue(true);
       (withRetry as jest.Mock).mockRejectedValue(authError);
 
-      await expect(assignUsers({ id: 123, assignees: [1, 2] })).rejects.toThrow(
+      await expect(assignUsers({ id: 123, assignees: [1, 2] }, authManager)).rejects.toThrow(
         'Failed to assign users to task: Assignee operations may have authentication issues with certain Vikunja API versions. This is a known limitation that prevents assigning users to tasks. (Retried 3 times)'
       );
     });
@@ -191,7 +203,7 @@ describe('Assignee operations', () => {
       const apiError = new Error('API Error');
       (withRetry as jest.Mock).mockRejectedValue(apiError);
 
-      await expect(assignUsers({ id: 123, assignees: [1, 2] })).rejects.toThrow(
+      await expect(assignUsers({ id: 123, assignees: [1, 2] }, authManager)).rejects.toThrow(
         'Failed to assign users to task: API Error'
       );
     });
@@ -200,7 +212,7 @@ describe('Assignee operations', () => {
       const unknownError = { message: 'Unknown error' };
       (withRetry as jest.Mock).mockRejectedValue(unknownError);
 
-      await expect(assignUsers({ id: 123, assignees: [1, 2] })).rejects.toThrow(
+      await expect(assignUsers({ id: 123, assignees: [1, 2] }, authManager)).rejects.toThrow(
         'Failed to assign users to task: [object Object]'
       );
     });
@@ -209,7 +221,7 @@ describe('Assignee operations', () => {
       const mcpError = new MCPError(ErrorCode.VALIDATION_ERROR, 'Validation failed');
       mockClient.tasks.getTask.mockRejectedValue(mcpError);
 
-      await expect(assignUsers({ id: 123, assignees: [1, 2] })).rejects.toThrow(
+      await expect(assignUsers({ id: 123, assignees: [1, 2] }, authManager)).rejects.toThrow(
         'Failed to assign users to task: Validation failed'
       );
     });
@@ -222,18 +234,23 @@ describe('Assignee operations', () => {
         title: 'Test Task',
         assignees: [],
       };
-      
-      mockClient.tasks.removeUserFromTask.mockResolvedValue({});
+
       mockClient.tasks.getTask.mockResolvedValue(mockTask);
 
       const result = await unassignUsers({
         id: 123,
         assignees: [1, 2],
-      });
+      }, authManager);
 
-      expect(mockClient.tasks.removeUserFromTask).toHaveBeenCalledTimes(2);
-      expect(mockClient.tasks.removeUserFromTask).toHaveBeenCalledWith(123, 1);
-      expect(mockClient.tasks.removeUserFromTask).toHaveBeenCalledWith(123, 2);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://vikunja.test/api/v1/tasks/123/assignees/1',
+        expect.objectContaining({ method: 'DELETE' }),
+      );
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://vikunja.test/api/v1/tasks/123/assignees/2',
+        expect.objectContaining({ method: 'DELETE' }),
+      );
       expect(mockClient.tasks.getTask).toHaveBeenCalledWith(123);
 
       const markdown = result.content[0].text;
@@ -244,25 +261,25 @@ describe('Assignee operations', () => {
     });
 
     it('should throw error when task id is missing', async () => {
-      await expect(unassignUsers({ assignees: [1, 2] })).rejects.toThrow(
+      await expect(unassignUsers({ assignees: [1, 2] }, authManager)).rejects.toThrow(
         'Task id is required for unassign operation'
       );
     });
 
     it('should throw error when task id is zero', async () => {
-      await expect(unassignUsers({ id: 0, assignees: [1, 2] })).rejects.toThrow(
+      await expect(unassignUsers({ id: 0, assignees: [1, 2] }, authManager)).rejects.toThrow(
         'Task id is required for unassign operation'
       );
     });
 
     it('should throw error when assignees array is missing', async () => {
-      await expect(unassignUsers({ id: 123 })).rejects.toThrow(
+      await expect(unassignUsers({ id: 123 }, authManager)).rejects.toThrow(
         'At least one assignee (user id) is required to unassign'
       );
     });
 
     it('should throw error when assignees array is empty', async () => {
-      await expect(unassignUsers({ id: 123, assignees: [] })).rejects.toThrow(
+      await expect(unassignUsers({ id: 123, assignees: [] }, authManager)).rejects.toThrow(
         'At least one assignee (user id) is required to unassign'
       );
     });
@@ -272,7 +289,7 @@ describe('Assignee operations', () => {
       (isAuthenticationError as jest.Mock).mockReturnValue(true);
       (withRetry as jest.Mock).mockRejectedValue(authError);
 
-      await expect(unassignUsers({ id: 123, assignees: [1] })).rejects.toThrow(
+      await expect(unassignUsers({ id: 123, assignees: [1] }, authManager)).rejects.toThrow(
         'Failed to remove users from task: Assignee removal operations may have authentication issues with certain Vikunja API versions. This is a known limitation that prevents removing users from tasks. (Retried 3 times)'
       );
     });
@@ -281,7 +298,7 @@ describe('Assignee operations', () => {
       const apiError = new Error('API Error');
       (withRetry as jest.Mock).mockRejectedValue(apiError);
 
-      await expect(unassignUsers({ id: 123, assignees: [1] })).rejects.toThrow(
+      await expect(unassignUsers({ id: 123, assignees: [1] }, authManager)).rejects.toThrow(
         'Failed to remove users from task: API Error'
       );
     });
@@ -292,7 +309,7 @@ describe('Assignee operations', () => {
         .mockResolvedValueOnce({}) // First user succeeds
         .mockRejectedValueOnce(apiError); // Second user fails
 
-      await expect(unassignUsers({ id: 123, assignees: [1, 2] })).rejects.toThrow(
+      await expect(unassignUsers({ id: 123, assignees: [1, 2] }, authManager)).rejects.toThrow(
         'Failed to remove users from task: User not found'
       );
 
@@ -459,29 +476,27 @@ describe('Assignee operations', () => {
       };
       
       // Mock assignment
-      mockClient.tasks.assignUserToTask.mockResolvedValue({});
       mockClient.tasks.getTask.mockResolvedValue(assignedTask);
-      
-      const assignResult = await assignUsers({ id: 123, assignees: [1] });
+
+      const assignResult = await assignUsers({ id: 123, assignees: [1] }, authManager);
 
       const assignMarkdown = assignResult.content[0].text;
       expect(assignMarkdown).toContain('Users assigned to task successfully');
 
       // Mock unassignment
-      mockClient.tasks.removeUserFromTask.mockResolvedValue({});
       mockClient.tasks.getTask.mockResolvedValue(initialTask);
 
-      const unassignResult = await unassignUsers({ id: 123, assignees: [1] });
+      const unassignResult = await unassignUsers({ id: 123, assignees: [1] }, authManager);
 
       const unassignMarkdown = unassignResult.content[0].text;
       expect(unassignMarkdown).toContain('Users removed from task successfully');
     });
 
     it('should handle multiple assignees with mixed validation errors', async () => {
-      await expect(assignUsers({ 
-        id: 123, 
+      await expect(assignUsers({
+        id: 123,
         assignees: [1, 0, -1] // Mix of valid and invalid IDs
-      })).rejects.toThrow('assignee ID must be a positive integer');
+      }, authManager)).rejects.toThrow('assignee ID must be a positive integer');
     });
   });
 });

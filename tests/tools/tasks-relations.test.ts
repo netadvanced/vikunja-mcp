@@ -2,11 +2,12 @@
  * Task Relations Tool Tests
  */
 
-import { beforeEach, describe, expect, it, jest } from '@jest/globals';
+import { beforeEach, afterEach, describe, expect, it, jest } from '@jest/globals';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerTasksTool } from '../../src/tools/tasks';
 import { AuthManager } from '../../src/auth/AuthManager';
 import { MCPError, ErrorCode } from '../../src/types/errors';
+import { circuitBreakerRegistry } from '../../src/utils/retry';
 import { parseMarkdown } from '../utils/markdown';
 
 // Define RelationKind enum for tests
@@ -76,12 +77,13 @@ const mockRelatedTask = {
   project_id: 1,
 };
 
-// Mock client
+// relate/unrelate now call the direct-REST helper (vikunjaRestRequest) for
+// PUT/DELETE /tasks/{taskID}/relations..., so only getTask (a deliberate
+// node-vikunja leftover used to refresh the response) stays on the mock
+// client — REST calls are driven through a mocked global fetch instead.
 const mockClient = {
   tasks: {
     getTask: jest.fn(),
-    createTaskRelation: jest.fn(),
-    deleteTaskRelation: jest.fn(),
   },
 };
 
@@ -109,6 +111,16 @@ function createMockServer(): McpServer & { executeTool: (name: string, args: unk
 describe('Task Relations Tool', () => {
   let server: McpServer & { executeTool: (name: string, args: unknown) => Promise<unknown> };
   let authManager: AuthManager;
+  let fetchMock: jest.Mock;
+  let originalFetch: typeof fetch;
+
+  const restOk = (body: unknown = {}): Response =>
+    ({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      text: jest.fn(async () => JSON.stringify(body)),
+    }) as unknown as Response;
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -121,13 +133,24 @@ describe('Task Relations Tool', () => {
     // Setup default mock implementation
     mockedGetClientFromContext.mockResolvedValue(mockClient as any);
 
+    // relate/unrelate go through vikunjaRestRequest now, so mock global
+    // fetch and clear the process-wide circuit breaker registry so one
+    // test's failure doesn't count against another's.
+    originalFetch = globalThis.fetch;
+    fetchMock = jest.fn().mockResolvedValue(restOk({}));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    circuitBreakerRegistry.clear();
+
     // Register the tool
     registerTasksTool(server, authManager);
   });
 
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
   describe('relate subcommand', () => {
     it('should create a task relation successfully', async () => {
-      mockClient.tasks.createTaskRelation.mockResolvedValue(undefined);
       mockClient.tasks.getTask.mockResolvedValue({
         ...mockTask,
         related_tasks: [
@@ -143,11 +166,17 @@ describe('Task Relations Tool', () => {
         relationKind: 'related',
       });
 
-      expect(mockClient.tasks.createTaskRelation).toHaveBeenCalledWith(1, {
-        task_id: 1,
-        other_task_id: 4,
-        relation_kind: RelationKind.RELATED,
-      });
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://vikunja.test/api/v1/tasks/1/relations',
+        expect.objectContaining({
+          method: 'PUT',
+          body: JSON.stringify({
+            task_id: 1,
+            other_task_id: 4,
+            relation_kind: RelationKind.RELATED,
+          }),
+        }),
+      );
       expect(mockClient.tasks.getTask).toHaveBeenCalledWith(1);
 
       const markdown = (result as any).content[0].text;
@@ -217,7 +246,7 @@ describe('Task Relations Tool', () => {
       ];
 
       for (const kind of relationKinds) {
-        mockClient.tasks.createTaskRelation.mockResolvedValue(undefined);
+        fetchMock.mockResolvedValue(restOk({}));
         mockClient.tasks.getTask.mockResolvedValue(mockTask);
 
         const result = await server.executeTool('vikunja_tasks', {
@@ -236,7 +265,12 @@ describe('Task Relations Tool', () => {
     });
 
     it('should handle API errors', async () => {
-      mockClient.tasks.createTaskRelation.mockRejectedValue(new Error('API Error'));
+      fetchMock.mockResolvedValue({
+        ok: false,
+        status: 400,
+        statusText: 'Bad Request',
+        text: jest.fn(async () => 'API Error'),
+      } as unknown as Response);
 
       await expect(
         server.executeTool('vikunja_tasks', {
@@ -245,11 +279,11 @@ describe('Task Relations Tool', () => {
           otherTaskId: 2,
           relationKind: 'subtask',
         }),
-      ).rejects.toThrow('Failed to create task relation');
+      ).rejects.toThrow('API Error');
     });
 
     it('should handle non-Error thrown values', async () => {
-      mockClient.tasks.createTaskRelation.mockRejectedValue('String error thrown');
+      fetchMock.mockRejectedValue('String error thrown');
 
       await expect(
         server.executeTool('vikunja_tasks', {
@@ -258,13 +292,12 @@ describe('Task Relations Tool', () => {
           otherTaskId: 2,
           relationKind: 'subtask',
         }),
-      ).rejects.toThrow('Failed to create task relation: String error thrown');
+      ).rejects.toThrow('String error thrown');
     });
   });
 
   describe('unrelate subcommand', () => {
     it('should remove a task relation successfully', async () => {
-      mockClient.tasks.deleteTaskRelation.mockResolvedValue(undefined);
       mockClient.tasks.getTask.mockResolvedValue({
         ...mockTask,
         related_tasks: [{ task_id: 3, relation_kind: RelationKind.BLOCKING }],
@@ -277,7 +310,17 @@ describe('Task Relations Tool', () => {
         relationKind: 'subtask',
       });
 
-      expect(mockClient.tasks.deleteTaskRelation).toHaveBeenCalledWith(1, RelationKind.SUBTASK, 2);
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://vikunja.test/api/v1/tasks/1/relations/subtask/2',
+        expect.objectContaining({
+          method: 'DELETE',
+          body: JSON.stringify({
+            task_id: 1,
+            other_task_id: 2,
+            relation_kind: RelationKind.SUBTASK,
+          }),
+        }),
+      );
       expect(mockClient.tasks.getTask).toHaveBeenCalledWith(1);
 
       const markdown = (result as any).content[0].text;
@@ -318,7 +361,12 @@ describe('Task Relations Tool', () => {
     });
 
     it('should handle API errors', async () => {
-      mockClient.tasks.deleteTaskRelation.mockRejectedValue(new Error('Not found'));
+      fetchMock.mockResolvedValue({
+        ok: false,
+        status: 404,
+        statusText: 'Not Found',
+        text: jest.fn(async () => 'Not found'),
+      } as unknown as Response);
 
       await expect(
         server.executeTool('vikunja_tasks', {
@@ -327,11 +375,11 @@ describe('Task Relations Tool', () => {
           otherTaskId: 2,
           relationKind: 'subtask',
         }),
-      ).rejects.toThrow('Failed to remove task relation');
+      ).rejects.toThrow('Not found');
     });
 
     it('should handle non-Error thrown values', async () => {
-      mockClient.tasks.deleteTaskRelation.mockRejectedValue({ code: 'NETWORK_ERROR', message: 'Connection failed' });
+      fetchMock.mockRejectedValue({ code: 'NETWORK_ERROR', message: 'Connection failed' });
 
       await expect(
         server.executeTool('vikunja_tasks', {
@@ -340,7 +388,7 @@ describe('Task Relations Tool', () => {
           otherTaskId: 2,
           relationKind: 'subtask',
         }),
-      ).rejects.toThrow('Failed to remove task relation: Unknown error');
+      ).rejects.toThrow('[object Object]');
     });
   });
 
@@ -492,7 +540,6 @@ describe('Task Relations Tool', () => {
   describe('edge cases', () => {
     it('should validate relation kind with invalid map entry in unrelate', async () => {
       // This covers the uncovered branch where relationKind is not found
-      mockClient.tasks.deleteTaskRelation.mockResolvedValue(undefined);
       mockClient.tasks.getTask.mockResolvedValue(mockTask);
 
       await expect(
@@ -511,10 +558,13 @@ describe('Task Relations Tool', () => {
 
       // Call it with an invalid subcommand
       await expect(
-        handleRelationSubcommands({
-          subcommand: 'invalid-subcommand' as any,
-          id: 1,
-        }),
+        handleRelationSubcommands(
+          {
+            subcommand: 'invalid-subcommand' as any,
+            id: 1,
+          },
+          authManager,
+        ),
       ).rejects.toThrow('Invalid relation subcommand');
     });
   });

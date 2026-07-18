@@ -208,13 +208,24 @@ async function vikunjaRestRequestRaw(
     } catch {
       // Body could not be read — fall back to the status line only.
     }
-    throw new MCPError(
+    const httpError = new MCPError(
       ErrorCode.API_ERROR,
       `Vikunja REST request failed (${method} ${path}): HTTP ${response.status} ${
         response.statusText
       }${detail ? ` — ${detail}` : ''}`,
       { statusCode: response.status },
     );
+    // Also expose the conventional top-level `.status` (mirrors
+    // `.details.statusCode`, which pre-dates this): shared classifiers
+    // written against node-vikunja's error shape —
+    // `isAuthenticationError`/`extractHttpStatus`
+    // (src/utils/auth-error-handler.ts, src/utils/http-error-detail.ts) —
+    // read `.status`/`.response.status` directly on the error object, not
+    // `.details.statusCode`. Without this, a REST-layer 401/403 is invisible
+    // to any caller that classifies errors that way (e.g. an
+    // `isAuthenticationError`-driven retry predicate).
+    Object.assign(httpError, { status: response.status });
+    throw httpError;
   }
 
   const text = await response.text();
@@ -311,13 +322,24 @@ async function vikunjaRestMultipartRequestRaw(
     } catch {
       // Body could not be read — fall back to the status line only.
     }
-    throw new MCPError(
+    const httpError = new MCPError(
       ErrorCode.API_ERROR,
       `Vikunja REST request failed (${method} ${path}): HTTP ${response.status} ${
         response.statusText
       }${detail ? ` — ${detail}` : ''}`,
       { statusCode: response.status },
     );
+    // Also expose the conventional top-level `.status` (mirrors
+    // `.details.statusCode`, which pre-dates this): shared classifiers
+    // written against node-vikunja's error shape —
+    // `isAuthenticationError`/`extractHttpStatus`
+    // (src/utils/auth-error-handler.ts, src/utils/http-error-detail.ts) —
+    // read `.status`/`.response.status` directly on the error object, not
+    // `.details.statusCode`. Without this, a REST-layer 401/403 is invisible
+    // to any caller that classifies errors that way (e.g. an
+    // `isAuthenticationError`-driven retry predicate).
+    Object.assign(httpError, { status: response.status });
+    throw httpError;
   }
 
   const text = await response.text();

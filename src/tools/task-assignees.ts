@@ -55,16 +55,22 @@ export function registerTaskAssigneesTool(
 
         switch (args.operation) {
           case 'assign':
-            return assignUsers({
-              id: args.id,
-              assignees: args.assignees || []
-            });
+            return assignUsers(
+              {
+                id: args.id,
+                assignees: args.assignees || []
+              },
+              authManager,
+            );
 
           case 'unassign':
-            return unassignUsers({
-              id: args.id,
-              assignees: args.assignees || []
-            });
+            return unassignUsers(
+              {
+                id: args.id,
+                assignees: args.assignees || []
+              },
+              authManager,
+            );
 
           case 'list-assignees':
             return listAssignees(

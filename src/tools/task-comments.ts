@@ -56,19 +56,19 @@ export function registerTaskCommentsTool(
 
         switch (args.operation) {
           case 'comment':
-            return handleComment(args);
+            return handleComment(args, authManager);
 
           case 'list':
-            return listComments(args);
+            return listComments(args, authManager);
 
           case 'get':
-            return getComment(args);
+            return getComment(args, authManager);
 
           case 'update':
-            return updateComment(args);
+            return updateComment(args, authManager);
 
           case 'delete':
-            return removeComment(args);
+            return removeComment(args, authManager);
 
           default:
             throw new MCPError(

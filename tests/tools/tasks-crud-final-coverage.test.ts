@@ -8,21 +8,26 @@
  * sibling item M-B).
  */
 
-import { describe, it, expect, beforeEach, jest } from '@jest/globals';
+import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
 import { createTask, getTask, updateTask, deleteTask } from '../../src/tools/tasks/crud';
 import { MCPError, ErrorCode } from '../../src/types';
 import type { MockVikunjaClient } from '../types/mocks';
 import type { AuthManager } from '../../src/auth/AuthManager';
 import { parseMarkdown } from '../utils/markdown';
+import { circuitBreakerRegistry } from '../../src/utils/retry';
 
-// Mock the direct-REST helper used by the migrated CRUD services
+// Mock the direct-REST helper used by the migrated CRUD services. It is the
+// single choke point for both core task ops and (post Wave-D #71)
+// setTaskLabels' POST /tasks/{id}/labels/bulk.
 jest.mock('../../src/utils/vikunja-rest', () => ({
   vikunjaRestRequest: jest.fn(),
 }));
 
-// Mock the client module (still used for labels/assignees sub-resource calls)
+// Mock the client module. getAuthManagerFromContext is used by setTaskLabels
+// (src/utils/label-bulk.ts, migrated to direct REST) to recover the session.
 jest.mock('../../src/client', () => ({
   getClientFromContext: jest.fn(),
+  getAuthManagerFromContext: jest.fn(),
 }));
 
 // Mock logger to suppress output during tests
@@ -39,7 +44,7 @@ import { vikunjaRestRequest } from '../../src/utils/vikunja-rest';
 
 describe('Tasks CRUD - Final Coverage', () => {
   let mockClient: MockVikunjaClient;
-  const { getClientFromContext } = require('../../src/client');
+  const { getClientFromContext, getAuthManagerFromContext } = require('../../src/client');
   const mockAuthManager = {} as AuthManager;
   const mockRest = vikunjaRestRequest as jest.Mock;
 
@@ -61,6 +66,15 @@ describe('Tasks CRUD - Final Coverage', () => {
     } as any;
 
     getClientFromContext.mockResolvedValue(mockClient);
+
+    // setTaskLabels (src/utils/label-bulk.ts) now calls the direct-REST
+    // helper (vikunjaRestRequest, mocked here as mockRest) and recovers its
+    // session via getAuthManagerFromContext — provide one so label updates
+    // in these CRUD tests keep working.
+    getAuthManagerFromContext.mockResolvedValue({
+      getSession: () => ({ apiUrl: 'https://mock.vikunja.test', apiToken: 'mock-token' }),
+    });
+    circuitBreakerRegistry.clear();
   });
 
   describe('getTask success path (lines 209-219)', () => {

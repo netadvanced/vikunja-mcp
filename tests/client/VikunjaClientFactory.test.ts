@@ -318,6 +318,18 @@ describe('VikunjaClientFactory', () => {
     });
   });
 
+  describe('getAuthManager', () => {
+    it('returns the AuthManager passed into the constructor', () => {
+      expect(factory.getAuthManager()).toBe(mockAuthManager);
+    });
+
+    it('does not require a client to have been created first', () => {
+      expect(mockVikunjaClientConstructor).not.toHaveBeenCalled();
+      expect(factory.getAuthManager()).toBe(mockAuthManager);
+      expect(mockVikunjaClientConstructor).not.toHaveBeenCalled();
+    });
+  });
+
   describe('Constructor and Initialization', () => {
     it('should initialize with required dependencies', () => {
       expect(() => new VikunjaClientFactory(mockAuthManager, mockVikunjaClientConstructor))

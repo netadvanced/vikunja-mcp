@@ -68,12 +68,15 @@ export function registerTaskRelationsTool(
         await getClientFromContext();
 
         // Use the existing relation handler
-        return handleRelationSubcommands({
-          subcommand: args.operation,
-          id: args.id,
-          otherTaskId: args.otherTaskId,
-          relationKind: args.relationKind,
-        });
+        return handleRelationSubcommands(
+          {
+            subcommand: args.operation,
+            id: args.id,
+            otherTaskId: args.otherTaskId,
+            relationKind: args.relationKind,
+          },
+          authManager,
+        );
 
       } catch (error) {
         if (error instanceof MCPError) {

@@ -34,22 +34,28 @@ export const AssigneeOperationsService = {
   /**
    * Assign multiple users to a task
    */
-  async assignUsersToTask(taskId: number, assigneeIds: number[]): Promise<void> {
-    const client = await getClientFromContext();
-
+  async assignUsersToTask(
+    authManager: AuthManager,
+    taskId: number,
+    assigneeIds: number[],
+  ): Promise<void> {
     try {
       // Assign users one-by-one via the ADDITIVE single-assign endpoint
-      // (PUT /tasks/{id}/assignees, body { user_id }). We deliberately avoid
-      // bulkAssignUsersToTask: node-vikunja sends `{ user_ids }` to Vikunja's
-      // bulk endpoint, which expects `{ assignees }` and REPLACES the whole
-      // assignee list — an unrecognized field is read as "assign nobody", so
-      // the bulk call silently unassigns everyone instead of adding users
-      // (upstream issue #15). assignUserToTask matches Vikunja's real additive
-      // single-assign model. Calls run concurrently via Promise.all.
+      // (PUT /tasks/{taskID}/assignees, body { user_id }, per the OpenAPI
+      // spec's models.TaskAssginee). We deliberately avoid the bulk endpoint
+      // (POST /tasks/{taskID}/assignees/bulk, models.BulkAssignees): it
+      // REPLACES the whole assignee list rather than adding to it, so a bulk
+      // call would silently unassign everyone instead of adding users
+      // (upstream issue #15). The per-user PUT matches Vikunja's real
+      // additive single-assign model. Calls run concurrently via
+      // Promise.all.
       await Promise.all(
         assigneeIds.map((userId) =>
           withRetry(
-            () => client.tasks.assignUserToTask(taskId, userId),
+            () =>
+              vikunjaRestRequest(authManager, 'PUT', `/tasks/${taskId}/assignees`, {
+                user_id: userId,
+              }),
             {
               ...RETRY_CONFIG.AUTH_ERRORS,
               shouldRetry: (error) => isAuthenticationError(error)
@@ -72,14 +78,17 @@ export const AssigneeOperationsService = {
   /**
    * Remove multiple users from a task
    */
-  async removeUsersFromTask(taskId: number, userIds: number[]): Promise<void> {
-    const client = await getClientFromContext();
-
-    // Remove users from the task with retry logic
+  async removeUsersFromTask(
+    authManager: AuthManager,
+    taskId: number,
+    userIds: number[],
+  ): Promise<void> {
+    // Remove users from the task with retry logic. DELETE
+    // /tasks/{taskID}/assignees/{userID} per the OpenAPI spec — no body.
     for (const userId of userIds) {
       try {
         await withRetry(
-          () => client.tasks.removeUserFromTask(taskId, userId),
+          () => vikunjaRestRequest(authManager, 'DELETE', `/tasks/${taskId}/assignees/${userId}`),
           {
             ...RETRY_CONFIG.AUTH_ERRORS,
             shouldRetry: (error) => isAuthenticationError(error)

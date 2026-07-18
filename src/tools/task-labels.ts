@@ -50,19 +50,25 @@ export function registerTaskLabelsTool(
 
         switch (args.operation) {
           case 'apply-label':
-            return applyLabels({
-              id: args.id,
-              labels: args.labels || []
-            });
+            return applyLabels(
+              {
+                id: args.id,
+                labels: args.labels || []
+              },
+              authManager,
+            );
 
           case 'remove-label':
-            return removeLabels({
-              id: args.id,
-              labels: args.labels || []
-            });
+            return removeLabels(
+              {
+                id: args.id,
+                labels: args.labels || []
+              },
+              authManager,
+            );
 
           case 'list-labels':
-            return listTaskLabels(args);
+            return listTaskLabels(args, authManager);
 
           default:
             throw new MCPError(

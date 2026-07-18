@@ -212,6 +212,32 @@ describe('vikunja-rest helper', () => {
       );
     });
 
+    it('exposes the HTTP status as a top-level `.status` property, not just details.statusCode', async () => {
+      // Shared classifiers built around node-vikunja's error shape
+      // (`isAuthenticationError`, `extractHttpStatus` in
+      // src/utils/auth-error-handler.ts / src/utils/http-error-detail.ts)
+      // read `.status`/`.response.status` directly on the error object, not
+      // `.details.statusCode`. Every REST-layer HTTP error must also expose
+      // `.status` so a `shouldRetry: isAuthenticationError` predicate (used
+      // by e.g. the assignees/labels REST migrations) actually recognizes a
+      // 401/403 from this transport.
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ ok: false, status: 403, statusText: 'Forbidden', text: 'nope' }),
+      );
+
+      try {
+        await vikunjaRestRequest(authManager, 'PUT', '/tasks/1/assignees', undefined, {
+          retry: { maxRetries: 0 },
+        });
+        throw new Error('should have thrown');
+      } catch (error) {
+        expect(error).toBeInstanceOf(MCPError);
+        const mcpError = error as MCPError;
+        expect(mcpError.details?.statusCode).toBe(403);
+        expect((mcpError as unknown as { status?: number }).status).toBe(403);
+      }
+    });
+
     it('omits the detail suffix when the error body is empty', async () => {
       mockFetch.mockResolvedValueOnce(
         mockResponse({

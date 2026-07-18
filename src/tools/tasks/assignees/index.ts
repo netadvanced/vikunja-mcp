@@ -13,15 +13,18 @@ import { AssigneeResponseFormatter } from './AssigneeResponseFormatter';
 /**
  * Assign users to a task
  */
-export async function assignUsers(args: {
-  id?: number;
-  assignees?: number[];
-}): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+export async function assignUsers(
+  args: {
+    id?: number;
+    assignees?: number[];
+  },
+  authManager: AuthManager,
+): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   try {
     const { taskId, assigneeIds } = AssigneeValidationService.validateAssignInput(args);
 
     // Perform the assignment operation
-    await AssigneeOperationsService.assignUsersToTask(taskId, assigneeIds);
+    await AssigneeOperationsService.assignUsersToTask(authManager, taskId, assigneeIds);
 
     // Verify the assignees actually persisted (defense-in-depth against silent
     // API failures — adapted from upstream PR #43). Fails open on fetch errors.
@@ -51,15 +54,18 @@ export async function assignUsers(args: {
 /**
  * Unassign users from a task
  */
-export async function unassignUsers(args: {
-  id?: number;
-  assignees?: number[];
-}): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+export async function unassignUsers(
+  args: {
+    id?: number;
+    assignees?: number[];
+  },
+  authManager: AuthManager,
+): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   try {
     const { taskId, userIds } = AssigneeValidationService.validateUnassignInput(args);
 
     // Perform the unassignment operation
-    await AssigneeOperationsService.removeUsersFromTask(taskId, userIds);
+    await AssigneeOperationsService.removeUsersFromTask(authManager, taskId, userIds);
 
     // Fetch updated task data
     const task = await AssigneeOperationsService.fetchTaskWithAssignees(taskId);

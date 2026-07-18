@@ -1,20 +1,31 @@
 /**
  * Reminder operations for tasks
+ *
+ * Reminders have no dedicated Vikunja sub-resource endpoint — they "ride on"
+ * the full task-update endpoint (`POST /tasks/{id}`, a full-model-replace).
+ * These operations therefore fetch the task, merge the `reminders` array,
+ * and POST the whole task back via the shared
+ * `src/utils/task-rest-transport.ts` helper, rather than node-vikunja's
+ * `getTask`/`updateTask` (see that file's doc comment for why this is a
+ * standalone helper instead of a change to `TaskUpdateService.ts`).
  */
 
-import type { TaskReminder } from '../../types';
 import { MCPError, ErrorCode } from '../../types';
-import { getClientFromContext } from '../../client';
+import type { AuthManager } from '../../auth/AuthManager';
+import { getTaskViaRest, updateTaskViaRest } from '../../utils/task-rest-transport';
 import { validateId, validateDateString } from './validation';
 import { formatAorpAsMarkdown, createAorpFromData } from '../../utils/response-factory';
 
 /**
  * Add a reminder to a task
  */
-export async function addReminder(args: {
-  id?: number;
-  reminderDate?: string;
-}): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+export async function addReminder(
+  args: {
+    id?: number;
+    reminderDate?: string;
+  },
+  authManager: AuthManager,
+): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   try {
     if (!args.id) {
       throw new MCPError(
@@ -32,39 +43,30 @@ export async function addReminder(args: {
     }
     validateDateString(args.reminderDate, 'reminderDate');
 
-    const client = await getClientFromContext();
-
     // Get current task to preserve existing reminders
-    const currentTask = await client.tasks.getTask(args.id);
+    const currentTask = await getTaskViaRest(authManager, args.id);
 
-    // Vikunja v2.3.0 stores an absolute reminder under the `reminder` key.
-    // node-vikunja's typed model still calls it `reminder_date`, so sending
-    // that key makes Vikunja silently store a zero (0001-01-01) reminder.
-    // Read and write the actual API field; preserve any existing reminders
-    // (absolute or relative) verbatim.
-    const existingReminders = (
-      (currentTask.reminders ?? []) as unknown as Array<{
-        reminder?: string;
-        relative_period?: number;
-        relative_to?: string;
-      }>
-    ).map((r) => ({
-      reminder: r.reminder,
-      ...(r.relative_period !== undefined ? { relative_period: r.relative_period } : {}),
-      ...(r.relative_to !== undefined ? { relative_to: r.relative_to } : {}),
-    }));
+    // Vikunja stores an absolute reminder under the `reminder` key
+    // (models.TaskReminder). Preserve any existing reminders (absolute or
+    // relative) verbatim. `reminder` is typed optional in the spec, but a
+    // reminder with no date is meaningless — filter out the (unexpected)
+    // case rather than passing `undefined` through.
+    const existingReminders = (currentTask.reminders ?? [])
+      .filter((r): r is typeof r & { reminder: string } => r.reminder !== undefined)
+      .map((r) => ({
+        reminder: r.reminder,
+        ...(r.relative_period !== undefined ? { relative_period: r.relative_period } : {}),
+        ...(r.relative_to !== undefined ? { relative_to: r.relative_to } : {}),
+      }));
 
     const updatedReminders = [...existingReminders, { reminder: args.reminderDate }];
 
-    // Update task with new reminders array. node-vikunja's Task type does not
-    // describe the `reminder` key, so cast through to the API body it forwards.
-    await client.tasks.updateTask(args.id, {
+    // Update task with new reminders array — full-model-replace, so the
+    // fetched task is spread and only `reminders` is overlaid.
+    await updateTaskViaRest(authManager, args.id, {
       ...currentTask,
       reminders: updatedReminders,
-    } as unknown as Parameters<typeof client.tasks.updateTask>[1]);
-
-    // Fetch updated task
-    await client.tasks.getTask(args.id);
+    });
 
     // Create proper AORP response
     const aorpResult = createAorpFromData(
@@ -103,11 +105,14 @@ export async function addReminder(args: {
  * `reminder` date string (as shown by `list-reminders`) and/or its
  * zero-based positional `reminderIndex` in that same listing.
  */
-export async function removeReminder(args: {
-  id?: number | undefined;
-  reminderDate?: string | undefined;
-  reminderIndex?: number | undefined;
-}): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+export async function removeReminder(
+  args: {
+    id?: number | undefined;
+    reminderDate?: string | undefined;
+    reminderIndex?: number | undefined;
+  },
+  authManager: AuthManager,
+): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   try {
     if (!args.id) {
       throw new MCPError(
@@ -141,22 +146,21 @@ export async function removeReminder(args: {
       );
     }
 
-    const client = await getClientFromContext();
-
     // Get current task
-    const currentTask = await client.tasks.getTask(args.id);
+    const currentTask = await getTaskViaRest(authManager, args.id);
 
     // Vikunja stores reminders under the `reminder` key (models.TaskReminder
-    // has no `id` field), the same field addReminder writes. node-vikunja's
-    // typed model still calls it `reminder_date` / `id`, so read the actual
-    // API shape rather than trusting the (drifted) library type.
-    const existingReminders = (
-      (currentTask.reminders ?? []) as unknown as TaskReminder[]
-    ).map((r: TaskReminder) => ({
-      reminder: r.reminder,
-      ...(r.relative_period !== undefined ? { relative_period: r.relative_period } : {}),
-      ...(r.relative_to !== undefined ? { relative_to: r.relative_to } : {}),
-    }));
+    // has no `id` field), the same field addReminder writes. `reminder` is
+    // typed optional in the spec, but a reminder with no date is
+    // meaningless — filter out the (unexpected) case rather than passing
+    // `undefined` through.
+    const existingReminders = (currentTask.reminders ?? [])
+      .filter((r): r is typeof r & { reminder: string } => r.reminder !== undefined)
+      .map((r) => ({
+        reminder: r.reminder,
+        ...(r.relative_period !== undefined ? { relative_period: r.relative_period } : {}),
+        ...(r.relative_to !== undefined ? { relative_to: r.relative_to } : {}),
+      }));
 
     if (existingReminders.length === 0) {
       throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Task has no reminders to remove');
@@ -191,15 +195,11 @@ export async function removeReminder(args: {
     const removedReminder = existingReminders[targetIndex];
     const updatedReminders = existingReminders.filter((_, i) => i !== targetIndex);
 
-    // Update task with filtered reminders. node-vikunja's Task type does not
-    // describe the `reminder` key, so cast through to the API body it forwards.
-    await client.tasks.updateTask(args.id, {
+    // Update task with filtered reminders — full-model-replace.
+    await updateTaskViaRest(authManager, args.id, {
       ...currentTask,
       reminders: updatedReminders,
-    } as unknown as Parameters<typeof client.tasks.updateTask>[1]);
-
-    // Fetch updated task
-    await client.tasks.getTask(args.id);
+    });
 
     // Create proper AORP response
     const removedDescription = removedReminder?.reminder ?? `index ${targetIndex}`;
@@ -232,9 +232,12 @@ export async function removeReminder(args: {
 /**
  * List all reminders for a task
  */
-export async function listReminders(args: {
-  id?: number;
-}): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+export async function listReminders(
+  args: {
+    id?: number;
+  },
+  authManager: AuthManager,
+): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   try {
     if (!args.id) {
       throw new MCPError(
@@ -244,21 +247,16 @@ export async function listReminders(args: {
     }
     validateId(args.id, 'id');
 
-    const client = await getClientFromContext();
-
     // Get task with reminders
-    const task = await client.tasks.getTask(args.id);
+    const task = await getTaskViaRest(authManager, args.id);
     // Vikunja stores reminders under the `reminder` key (models.TaskReminder
-    // has no `id` field); node-vikunja's typed model still calls it
-    // `reminder_date` / `id`, so read the actual API shape. See addReminder
-    // and removeReminder for the same field-name handling.
-    const reminders = ((task.reminders ?? []) as unknown as TaskReminder[]).map(
-      (r: TaskReminder) => ({
-        reminder: r.reminder,
-        ...(r.relative_period !== undefined ? { relative_period: r.relative_period } : {}),
-        ...(r.relative_to !== undefined ? { relative_to: r.relative_to } : {}),
-      }),
-    );
+    // has no `id` field). See addReminder and removeReminder for the same
+    // field-name handling.
+    const reminders = (task.reminders ?? []).map((r) => ({
+      reminder: r.reminder,
+      ...(r.relative_period !== undefined ? { relative_period: r.relative_period } : {}),
+      ...(r.relative_to !== undefined ? { relative_to: r.relative_to } : {}),
+    }));
 
     const summary = `Found ${reminders.length} reminder(s) for task "${task.title}"`;
     // Surface the identifiers (reminderIndex / reminderDate) callers need

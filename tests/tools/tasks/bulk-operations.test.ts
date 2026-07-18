@@ -2,9 +2,9 @@
  * Tests for bulk operations
  */
 
-import { describe, it, expect, beforeEach, jest } from '@jest/globals';
+import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
 import { bulkUpdateTasks, bulkDeleteTasks, bulkCreateTasks } from '../../../src/tools/tasks/bulk-operations';
-import { getClientFromContext } from '../../../src/client';
+import { getClientFromContext, getAuthManagerFromContext } from '../../../src/client';
 import { MCPError, ErrorCode } from '../../../src/types';
 import { isAuthenticationError } from '../../../src/utils/auth-error-handler';
 import { withRetry } from '../../../src/utils/retry';
@@ -45,12 +45,25 @@ describe('Bulk operations', () => {
     (isAuthenticationError as jest.Mock).mockReturnValue(false);
     (withRetry as jest.Mock).mockImplementation((fn) => fn());
 
+    // setTaskLabels (src/utils/label-bulk.ts) recovers its session via
+    // getAuthManagerFromContext before issuing the direct-REST label-bulk POST.
+    (getAuthManagerFromContext as jest.Mock).mockResolvedValue({
+      getSession: () => ({ apiUrl: 'https://mock.vikunja.test', apiToken: 'mock-token' }),
+    });
+
     // Proxy the core REST calls (GET/POST /tasks/{id}, PUT
     // /projects/{id}/tasks, DELETE /tasks/{id}) through the existing
     // mockClient.tasks.{getTask,updateTask,createTask,deleteTask} mocks, so
     // every test's per-scenario mock configuration (and call-count/args
-    // assertions on those methods) keeps driving behavior unchanged.
+    // assertions on those methods) keeps driving behavior unchanged. The
+    // label sub-resource POST /tasks/{id}/labels/bulk (setTaskLabels, post
+    // Wave-D #71) also flows through this same mocked vikunjaRestRequest and
+    // resolves success by default; label-specific tests assert on mockRest.
     mockRest.mockImplementation(async (_auth: unknown, method: string, path: string, body?: unknown) => {
+      const labelBulkMatch = /^\/tasks\/(\d+)\/labels\/bulk$/.exec(path);
+      if (method === 'POST' && labelBulkMatch?.[1] !== undefined) {
+        return undefined;
+      }
       const taskIdMatch = /^\/tasks\/(\d+)$/.exec(path);
       if (method === 'GET' && taskIdMatch?.[1] !== undefined) {
         return mockClient.tasks.getTask(Number(taskIdMatch[1]));
@@ -379,28 +392,34 @@ describe('Bulk operations', () => {
       it('should set labels via the field-preserving fallback path', async () => {
         mockClient.tasks.getTask.mockResolvedValue({ id: 1, title: 'Task 1' });
         mockClient.tasks.updateTask.mockResolvedValue({ id: 1, title: 'Task 1' });
-        mockClient.tasks.updateTaskLabels.mockResolvedValue({});
 
         const result = await bulkUpdateTasks({ taskIds: [1], field: 'labels', value: [3, 8] });
 
         // labels must never go through the native /tasks/bulk endpoint
         expect(mockClient.tasks.bulkUpdateTasks).not.toHaveBeenCalled();
-        expect(mockClient.tasks.updateTaskLabels).toHaveBeenCalledWith(1, {
-          labels: [{ id: 3 }, { id: 8 }],
-        });
+        // setTaskLabels issues the label-bulk POST through vikunjaRestRequest
+        // with the correct `{ labels: [{ id }, ...] }` payload shape.
+        expect(mockRest).toHaveBeenCalledWith(
+          expect.anything(),
+          'POST',
+          '/tasks/1/labels/bulk',
+          { labels: [{ id: 3 }, { id: 8 }] },
+        );
         expect(result.content[0].text).toContain('## ✅ Success');
       });
 
       it('should coerce a stringified labels array', async () => {
         mockClient.tasks.getTask.mockResolvedValue({ id: 1, title: 'Task 1' });
         mockClient.tasks.updateTask.mockResolvedValue({ id: 1, title: 'Task 1' });
-        mockClient.tasks.updateTaskLabels.mockResolvedValue({});
 
         const result = await bulkUpdateTasks({ taskIds: [1], field: 'labels', value: '[3, 8]' });
 
-        expect(mockClient.tasks.updateTaskLabels).toHaveBeenCalledWith(1, {
-          labels: [{ id: 3 }, { id: 8 }],
-        });
+        expect(mockRest).toHaveBeenCalledWith(
+          expect.anything(),
+          'POST',
+          '/tasks/1/labels/bulk',
+          { labels: [{ id: 3 }, { id: 8 }] },
+        );
         expect(result.content[0].text).toContain('## ✅ Success');
       });
 
@@ -616,7 +635,6 @@ describe('Bulk operations', () => {
         const mockTask = { id: 1, title: 'Test Task', project_id: 1 };
 
         mockClient.tasks.createTask.mockResolvedValue(mockTask);
-        mockClient.tasks.updateTaskLabels.mockResolvedValue({});
         mockClient.tasks.assignUserToTask.mockResolvedValue({});
         mockClient.tasks.getTask.mockResolvedValue({
           ...mockTask,
@@ -633,9 +651,14 @@ describe('Bulk operations', () => {
           }]
         });
 
-        expect(mockClient.tasks.updateTaskLabels).toHaveBeenCalledWith(1, {
-          labels: [{ id: 1 }],
-        });
+        // setTaskLabels issues the label-bulk POST through vikunjaRestRequest
+        // with the correct `{ labels: [{ id }, ...] }` payload shape.
+        expect(mockRest).toHaveBeenCalledWith(
+          expect.anything(),
+          'POST',
+          '/tasks/1/labels/bulk',
+          { labels: [{ id: 1 }] },
+        );
         // Additive per-user assign, not the destructive bulk endpoint (upstream #15)
         expect(mockClient.tasks.assignUserToTask).toHaveBeenCalledWith(1, 1);
         expect(mockClient.tasks.bulkAssignUsersToTask).not.toHaveBeenCalled();

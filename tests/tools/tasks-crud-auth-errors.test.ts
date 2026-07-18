@@ -11,7 +11,7 @@
  * mock for label/assignee methods.
  */
 
-import { describe, it, expect, beforeEach, jest } from '@jest/globals';
+import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
 import { createTask, getTask, updateTask, deleteTask } from '../../src/tools/tasks/crud';
 import { MCPError, ErrorCode } from '../../src/types';
 import type { MockVikunjaClient } from '../types/mocks';
@@ -22,9 +22,13 @@ jest.mock('../../src/utils/vikunja-rest', () => ({
   vikunjaRestRequest: jest.fn(),
 }));
 
-// Mock the client module
+// Mock the client module. getAuthManagerFromContext is used by
+// setTaskLabels (src/utils/label-bulk.ts, migrated to direct REST) — any
+// test here that updates a task's labels needs both this and a mocked
+// global fetch (see beforeEach below).
 jest.mock('../../src/client', () => ({
   getClientFromContext: jest.fn(),
+  getAuthManagerFromContext: jest.fn(),
 }));
 
 // Mock logger to suppress output during tests
@@ -37,18 +41,17 @@ jest.mock('../../src/utils/logger', () => ({
   },
 }));
 
-// Mock retry utility to speed up tests but preserve circuit breaker registry
+// Mock retry utility to speed up tests but preserve everything else (real
+// circuit breaker registry/createCircuitBreaker/RETRY_CONFIG) — the direct-
+// REST helper (src/utils/vikunja-rest.ts), now exercised via setTaskLabels,
+// also imports createCircuitBreaker/isRetryableError from this module, so a
+// partial mock missing them breaks REST calls with
+// "createCircuitBreaker is not a function".
 jest.mock('../../src/utils/retry', () => {
   const actual = jest.requireActual('../../src/utils/retry');
   return {
+    ...actual,
     withRetry: jest.fn().mockImplementation((fn) => fn()),
-    RETRY_CONFIG: {
-      AUTH_ERRORS: {
-        maxRetries: 3,
-      },
-    },
-    // Preserve the real circuit breaker registry for test isolation
-    circuitBreakerRegistry: actual.circuitBreakerRegistry,
   };
 });
 
@@ -58,17 +61,29 @@ import { vikunjaRestRequest } from '../../src/utils/vikunja-rest';
 
 describe('Tasks CRUD - Authentication Error Handling', () => {
   let mockClient: MockVikunjaClient;
-  const { getClientFromContext } = require('../../src/client');
+  const { getClientFromContext, getAuthManagerFromContext } = require('../../src/client');
   const mockAuthManager = {} as AuthManager;
   const mockRest = vikunjaRestRequest as jest.Mock;
 
   /** Sentinel wrapper marking a routeRest handler value as a rejection. */
   const REJECT = (value: unknown): { __reject: true; value: unknown } => ({ __reject: true, value });
 
-  /** Routes vikunjaRestRequest calls to per-HTTP-method fixtures/errors. */
-  function routeRest(handlers: Partial<Record<'GET' | 'POST' | 'PUT' | 'DELETE', unknown>>): void {
-    mockRest.mockImplementation((_auth: unknown, method: string) => {
-      const handler = handlers[method as 'GET' | 'POST' | 'PUT' | 'DELETE'];
+  /**
+   * Routes vikunjaRestRequest calls to per-HTTP-method fixtures/errors.
+   *
+   * Post Wave-D sub-resource migration (#71), `setTaskLabels` also flows
+   * through `vikunjaRestRequest` (POST `/tasks/{id}/labels/bulk`), so a
+   * `labels` handler routes that path independently of the core task POST.
+   */
+  function routeRest(
+    handlers: Partial<Record<'GET' | 'POST' | 'PUT' | 'DELETE', unknown>> & { labels?: unknown },
+  ): void {
+    mockRest.mockImplementation((_auth: unknown, method: string, path?: unknown) => {
+      const isLabelBulk = typeof path === 'string' && path.includes('/labels/bulk');
+      const handler =
+        isLabelBulk && 'labels' in handlers
+          ? handlers.labels
+          : handlers[method as 'GET' | 'POST' | 'PUT' | 'DELETE'];
       if (handler && typeof handler === 'object' && (handler as { __reject?: true }).__reject === true) {
         return Promise.reject((handler as { value: unknown }).value);
       }
@@ -112,6 +127,17 @@ describe('Tasks CRUD - Authentication Error Handling', () => {
     } as any;
 
     getClientFromContext.mockResolvedValue(mockClient);
+
+    // setTaskLabels (src/utils/label-bulk.ts) now calls the direct-REST
+    // helper (vikunjaRestRequest, mocked here as mockRest) rather than
+    // mockClient.tasks.updateTaskLabels, and recovers its session via
+    // getAuthManagerFromContext — provide one so incidental label updates
+    // in these CRUD tests keep working. Tests that specifically exercise
+    // label-path errors route the `/labels/bulk` POST via routeRest's
+    // `labels` handler.
+    getAuthManagerFromContext.mockResolvedValue({
+      getSession: () => ({ apiUrl: 'https://mock.vikunja.test', apiToken: 'mock-token' }),
+    });
   });
 
   describe('createTask authentication errors', () => {
@@ -239,12 +265,13 @@ describe('Tasks CRUD - Authentication Error Handling', () => {
     };
 
     it('should handle authentication error in label update (lines 328-331)', async () => {
-      // Mock successful task fetch and update (core, now REST)
-      routeRest({ GET: mockTask, POST: mockTask });
-
-      // Mock label update failure with 401 auth error
-      const authError = createAuthError(401, 'Unauthorized to update labels');
-      mockClient.tasks.updateTaskLabels.mockRejectedValue(authError);
+      // Core task fetch/update succeed; the label-bulk POST fails with a
+      // 401 auth error.
+      routeRest({
+        GET: mockTask,
+        POST: mockTask,
+        labels: REJECT(createAuthError(401, 'Unauthorized to update labels')),
+      });
 
       await expect(
         updateTask({
@@ -268,11 +295,14 @@ describe('Tasks CRUD - Authentication Error Handling', () => {
     });
 
     it('should handle authentication error in label update with 403 error', async () => {
-      routeRest({ GET: mockTask, POST: mockTask });
-
-      // Mock label update failure with 403 Axios-style auth error
-      const authError = createAxiosAuthError(403, 'Forbidden to update labels');
-      mockClient.tasks.updateTaskLabels.mockRejectedValue(authError);
+      // Core task fetch/update succeed; the label-bulk POST fails with a
+      // 403 auth error (setTaskLabels rethrows it, updateTaskLabels wraps
+      // it as an MCPError).
+      routeRest({
+        GET: mockTask,
+        POST: mockTask,
+        labels: REJECT(createAuthError(403, 'Forbidden to update labels')),
+      });
 
       await expect(
         updateTask({
@@ -418,11 +448,13 @@ describe('Tasks CRUD - Authentication Error Handling', () => {
         assignees: [],
       };
 
-      routeRest({ GET: mockTask, POST: mockTask });
-
-      // Mock label update failure with non-auth error
-      const nonAuthError = new Error('Database connection failed');
-      mockClient.tasks.updateTaskLabels.mockRejectedValue(nonAuthError);
+      // Core task fetch/update succeed; the label-bulk POST fails with a
+      // non-auth (network-level) error.
+      routeRest({
+        GET: mockTask,
+        POST: mockTask,
+        labels: REJECT(new Error('Database connection failed')),
+      });
 
       await expect(
         updateTask({

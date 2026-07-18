@@ -1,9 +1,17 @@
 import { applyLabels, removeLabels, listTaskLabels } from '../../../src/tools/tasks/labels';
 import { getClientFromContext } from '../../../src/client';
-import { MCPError, ErrorCode } from '../../../src/types/index';
+import { AuthManager } from '../../../src/auth/AuthManager';
+import { circuitBreakerRegistry } from '../../../src/utils/retry';
+import { MCPError } from '../../../src/types/index';
 
-// Mock the client
-jest.mock('../../../src/client');
+// applyLabels/removeLabels/listTaskLabels now call the direct-REST helper
+// (vikunjaRestRequest) for the label-on-task endpoints, but still fetch the
+// task itself via node-vikunja's client.tasks.getTask (a deliberate
+// leftover — GET /tasks/{id} is task CRUD, owned by a different wave item),
+// so both a mocked client and a mocked global fetch are needed.
+jest.mock('../../../src/client', () => ({
+  getClientFromContext: jest.fn(),
+}));
 
 // Mock withRetry to call the operation directly without circuit breaker caching
 jest.mock('../../../src/utils/retry', () => ({
@@ -15,19 +23,54 @@ const mockGetClientFromContext = jest.mocked(getClientFromContext);
 describe('Label operations', () => {
   const mockClient = {
     tasks: {
-      addLabelToTask: jest.fn(),
-      removeLabelFromTask: jest.fn(),
       getTask: jest.fn(),
-      getTaskLabels: jest.fn(),
     },
   };
+
+  let authManager: AuthManager;
+  let fetchMock: jest.Mock;
+  let originalFetch: typeof fetch;
+
+  const restOk = (body: unknown): Response =>
+    ({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      text: jest.fn(async () => JSON.stringify(body)),
+    }) as unknown as Response;
+
+  const restError = (status: number, statusText: string, body = ''): Response =>
+    ({
+      ok: false,
+      status,
+      statusText,
+      text: jest.fn(async () => body),
+    }) as unknown as Response;
 
   beforeEach(() => {
     // Use resetAllMocks to also reset mock implementations (not just call history)
     jest.resetAllMocks();
+    circuitBreakerRegistry.clear();
     mockGetClientFromContext.mockResolvedValue(mockClient as any);
-    // Default: task has no labels yet
-    mockClient.tasks.getTaskLabels.mockResolvedValue([]);
+
+    authManager = new AuthManager();
+    authManager.connect('https://vikunja.test', 'tk_test-token');
+
+    originalFetch = globalThis.fetch;
+    fetchMock = jest.fn();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    // Default: task has no labels yet, and label writes succeed.
+    fetchMock.mockImplementation((url: string) => {
+      if (url.endsWith('/labels')) {
+        return Promise.resolve(restOk([]));
+      }
+      return Promise.resolve(restOk({}));
+    });
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
   });
 
   describe('applyLabels', () => {
@@ -38,119 +81,154 @@ describe('Label operations', () => {
         labels: [{ id: 1, title: 'research', hex_color: '3498db' }],
       };
 
-      mockClient.tasks.addLabelToTask.mockResolvedValue({});
       mockClient.tasks.getTask.mockResolvedValue(mockTask);
 
-      const result = await applyLabels({ id: 1, labels: [1] });
+      const result = await applyLabels({ id: 1, labels: [1] }, authManager);
 
-      expect(mockClient.tasks.addLabelToTask).toHaveBeenCalledWith(1, {
-        task_id: 1,
-        label_id: 1,
-      });
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://vikunja.test/api/v1/tasks/1/labels',
+        expect.objectContaining({ method: 'PUT', body: JSON.stringify({ label_id: 1 }) }),
+      );
       expect(mockClient.tasks.getTask).toHaveBeenCalledWith(1);
       expect(result.content[0].text).toContain('Label applied to task successfully');
     });
 
     it('should throw error if task id is missing', async () => {
-      await expect(applyLabels({ labels: [1] })).rejects.toThrow(MCPError);
+      await expect(applyLabels({ labels: [1] }, authManager)).rejects.toThrow(MCPError);
     });
 
     it('should throw error if labels array is empty', async () => {
-      await expect(applyLabels({ id: 1, labels: [] })).rejects.toThrow(MCPError);
+      await expect(applyLabels({ id: 1, labels: [] }, authManager)).rejects.toThrow(MCPError);
     });
 
     it('should handle multiple labels', async () => {
       const mockTask = { id: 1, title: 'Test Task', labels: [] };
-      mockClient.tasks.addLabelToTask.mockResolvedValue({});
       mockClient.tasks.getTask.mockResolvedValue(mockTask);
 
-      const result = await applyLabels({ id: 1, labels: [1, 2] });
+      const result = await applyLabels({ id: 1, labels: [1, 2] }, authManager);
 
-      expect(mockClient.tasks.addLabelToTask).toHaveBeenCalledTimes(2);
+      const putCalls = fetchMock.mock.calls.filter(
+        ([, init]) => (init as RequestInit)?.method === 'PUT',
+      );
+      expect(putCalls).toHaveLength(2);
       expect(result.content[0].text).toContain('Labels applied to task successfully');
     });
 
     it('should skip labels already present on the task', async () => {
       const mockTask = { id: 1, title: 'Test Task', labels: [] };
       // Label 1 is already on the task; only label 2 should be applied.
-      mockClient.tasks.getTaskLabels.mockResolvedValue([{ id: 1, title: 'research' }]);
-      mockClient.tasks.addLabelToTask.mockResolvedValue({});
+      fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+        if (init?.method === 'GET' && url.endsWith('/labels')) {
+          return Promise.resolve(restOk([{ id: 1, title: 'research' }]));
+        }
+        return Promise.resolve(restOk({}));
+      });
       mockClient.tasks.getTask.mockResolvedValue(mockTask);
 
-      const result = await applyLabels({ id: 1, labels: [1, 2] });
+      const result = await applyLabels({ id: 1, labels: [1, 2] }, authManager);
 
-      expect(mockClient.tasks.addLabelToTask).toHaveBeenCalledTimes(1);
-      expect(mockClient.tasks.addLabelToTask).toHaveBeenCalledWith(1, {
-        task_id: 1,
-        label_id: 2,
-      });
+      const putCalls = fetchMock.mock.calls.filter(
+        ([, init]) => (init as RequestInit)?.method === 'PUT',
+      );
+      expect(putCalls).toHaveLength(1);
+      expect(putCalls[0]?.[1]).toMatchObject({ body: JSON.stringify({ label_id: 2 }) });
       expect(result.content[0].text).toContain('already present');
     });
 
     it('should not abort when a label is already on the task', async () => {
       const mockTask = { id: 1, title: 'Test Task', labels: [] };
-      // getTaskLabels reports nothing, but addLabelToTask races and rejects
-      // the first label as a duplicate; the rest must still be applied.
-      mockClient.tasks.addLabelToTask
-        .mockRejectedValueOnce(new Error('This label already exists on the task'))
-        .mockResolvedValueOnce({});
+      // GET /labels reports nothing, but the first PUT races and rejects the
+      // first label as a duplicate; the rest must still be applied.
+      let putCalls = 0;
+      fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+        if (init?.method === 'GET' && url.endsWith('/labels')) {
+          return Promise.resolve(restOk([]));
+        }
+        if (init?.method === 'PUT') {
+          putCalls += 1;
+          if (putCalls === 1) {
+            return Promise.resolve(restError(400, 'Bad Request', 'This label already exists on the task'));
+          }
+          return Promise.resolve(restOk({}));
+        }
+        return Promise.resolve(restOk({}));
+      });
       mockClient.tasks.getTask.mockResolvedValue(mockTask);
 
-      const result = await applyLabels({ id: 1, labels: [1, 2] });
+      const result = await applyLabels({ id: 1, labels: [1, 2] }, authManager);
 
-      expect(mockClient.tasks.addLabelToTask).toHaveBeenCalledTimes(2);
+      expect(putCalls).toBe(2);
       expect(result.content[0].text).toContain('Label applied to task successfully');
     });
 
     it('should report when every requested label is already present', async () => {
       const mockTask = { id: 1, title: 'Test Task', labels: [] };
-      mockClient.tasks.getTaskLabels.mockResolvedValue([
-        { id: 1, title: 'research' },
-        { id: 2, title: 'ops' },
-      ]);
+      fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+        if (init?.method === 'GET' && url.endsWith('/labels')) {
+          return Promise.resolve(
+            restOk([
+              { id: 1, title: 'research' },
+              { id: 2, title: 'ops' },
+            ]),
+          );
+        }
+        return Promise.resolve(restOk({}));
+      });
       mockClient.tasks.getTask.mockResolvedValue(mockTask);
 
-      const result = await applyLabels({ id: 1, labels: [1, 2] });
+      const result = await applyLabels({ id: 1, labels: [1, 2] }, authManager);
 
-      expect(mockClient.tasks.addLabelToTask).not.toHaveBeenCalled();
+      const putCalls = fetchMock.mock.calls.filter(
+        ([, init]) => (init as RequestInit)?.method === 'PUT',
+      );
+      expect(putCalls).toHaveLength(0);
       expect(result.content[0].text).toContain('No labels applied');
     });
 
     it('should handle API errors gracefully', async () => {
-      mockClient.tasks.addLabelToTask.mockRejectedValue(new Error('API Error'));
+      fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+        if (init?.method === 'GET' && url.endsWith('/labels')) {
+          return Promise.resolve(restOk([]));
+        }
+        return Promise.resolve(restError(400, 'Bad Request', 'API Error'));
+      });
 
-      await expect(applyLabels({ id: 1, labels: [1] })).rejects.toThrow(MCPError);
+      await expect(applyLabels({ id: 1, labels: [1] }, authManager)).rejects.toThrow(MCPError);
     });
   });
 
   describe('removeLabels', () => {
     it('should remove labels from a task successfully', async () => {
       const mockTask = { id: 1, title: 'Test Task', labels: null };
-      mockClient.tasks.removeLabelFromTask.mockResolvedValue({});
       mockClient.tasks.getTask.mockResolvedValue(mockTask);
 
-      const result = await removeLabels({ id: 1, labels: [1] });
+      const result = await removeLabels({ id: 1, labels: [1] }, authManager);
 
-      expect(mockClient.tasks.removeLabelFromTask).toHaveBeenCalledWith(1, 1);
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://vikunja.test/api/v1/tasks/1/labels/1',
+        expect.objectContaining({ method: 'DELETE' }),
+      );
       expect(result.content[0].text).toContain('Label removed from task successfully');
     });
 
     it('should throw error if task id is missing', async () => {
-      await expect(removeLabels({ labels: [1] })).rejects.toThrow(MCPError);
+      await expect(removeLabels({ labels: [1] }, authManager)).rejects.toThrow(MCPError);
     });
 
     it('should throw error if labels array is empty', async () => {
-      await expect(removeLabels({ id: 1, labels: [] })).rejects.toThrow(MCPError);
+      await expect(removeLabels({ id: 1, labels: [] }, authManager)).rejects.toThrow(MCPError);
     });
 
     it('should handle multiple labels removal', async () => {
       const mockTask = { id: 1, title: 'Test Task', labels: null };
-      mockClient.tasks.removeLabelFromTask.mockResolvedValue({});
       mockClient.tasks.getTask.mockResolvedValue(mockTask);
 
-      const result = await removeLabels({ id: 1, labels: [1, 2] });
+      const result = await removeLabels({ id: 1, labels: [1, 2] }, authManager);
 
-      expect(mockClient.tasks.removeLabelFromTask).toHaveBeenCalledTimes(2);
+      const deleteCalls = fetchMock.mock.calls.filter(
+        ([, init]) => (init as RequestInit)?.method === 'DELETE',
+      );
+      expect(deleteCalls).toHaveLength(2);
       expect(result.content[0].text).toContain('Labels removed from task successfully');
     });
   });
@@ -158,33 +236,34 @@ describe('Label operations', () => {
   describe('listTaskLabels', () => {
     it('should list labels for a task successfully', async () => {
       const mockTask = { id: 1, title: 'Test Task' };
-      mockClient.tasks.getTaskLabels.mockResolvedValue([
-        { id: 1, title: 'research', hex_color: '3498db' },
-      ]);
+      fetchMock.mockResolvedValue(restOk([{ id: 1, title: 'research', hex_color: '3498db' }]));
       mockClient.tasks.getTask.mockResolvedValue(mockTask);
 
-      const result = await listTaskLabels({ id: 1 });
+      const result = await listTaskLabels({ id: 1 }, authManager);
 
-      expect(mockClient.tasks.getTaskLabels).toHaveBeenCalledWith(1);
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://vikunja.test/api/v1/tasks/1/labels',
+        expect.objectContaining({ method: 'GET' }),
+      );
       expect(result.content[0].text).toContain('Task has 1 label(s)');
     });
 
     it('should throw error if task id is missing', async () => {
-      await expect(listTaskLabels({})).rejects.toThrow(MCPError);
+      await expect(listTaskLabels({}, authManager)).rejects.toThrow(MCPError);
     });
 
     it('should handle task with no labels', async () => {
       const mockTask = { id: 1, title: 'Test Task' };
-      mockClient.tasks.getTaskLabels.mockResolvedValue([]);
+      fetchMock.mockResolvedValue(restOk([]));
       mockClient.tasks.getTask.mockResolvedValue(mockTask);
 
-      const result = await listTaskLabels({ id: 1 });
+      const result = await listTaskLabels({ id: 1 }, authManager);
 
       expect(result.content[0].text).toContain('Task has 0 label(s)');
     });
 
     it('should handle undefined task id', async () => {
-      await expect(listTaskLabels({ id: undefined })).rejects.toThrow(MCPError);
+      await expect(listTaskLabels({ id: undefined }, authManager)).rejects.toThrow(MCPError);
     });
   });
 });

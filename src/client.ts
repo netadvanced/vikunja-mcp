@@ -82,6 +82,25 @@ class ClientContext {
   }
 
   /**
+   * Get the AuthManager backing the active client factory (thread-safe).
+   *
+   * See `VikunjaClientFactory.getAuthManager()` for why this exists: it lets
+   * REST-migrated utilities recover session credentials without requiring
+   * every caller up the stack to thread an `AuthManager` parameter through.
+   */
+  async getAuthManager(): Promise<AuthManager> {
+    const release = await this.factoryMutex.acquire();
+    try {
+      if (this.clientFactory) {
+        return this.clientFactory.getAuthManager();
+      }
+      throw createAuthRequiredError('get Vikunja auth manager');
+    } finally {
+      release();
+    }
+  }
+
+  /**
    * Check if factory is available (thread-safe)
    */
   async hasFactory(): Promise<boolean> {
@@ -100,6 +119,15 @@ class ClientContext {
 export async function getClientFromContext(): Promise<VikunjaClient> {
   const context = await ClientContext.getInstanceAsync();
   return context.getClient();
+}
+
+/**
+ * Convenience function to get the active AuthManager from context
+ * (thread-safe). See `ClientContext.getAuthManager()`.
+ */
+export async function getAuthManagerFromContext(): Promise<AuthManager> {
+  const context = await ClientContext.getInstanceAsync();
+  return context.getAuthManager();
 }
 
 /**

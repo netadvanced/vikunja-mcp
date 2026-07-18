@@ -290,16 +290,16 @@ export function registerTasksTool(
             return deleteTask(args as Parameters<typeof deleteTask>[0], authManager);
 
           case 'assign':
-            return assignUsers(args as Parameters<typeof assignUsers>[0]);
+            return assignUsers(args as Parameters<typeof assignUsers>[0], authManager);
 
           case 'unassign':
-            return unassignUsers(args as Parameters<typeof unassignUsers>[0]);
+            return unassignUsers(args as Parameters<typeof unassignUsers>[0], authManager);
 
           case 'list-assignees':
             return listAssignees(args as Parameters<typeof listAssignees>[0], authManager);
 
           case 'comment':
-            return handleComment(args as Parameters<typeof handleComment>[0]);
+            return handleComment(args as Parameters<typeof handleComment>[0], authManager);
 
           case 'attach':
             return handleAttach(args as TaskAttachArgs, authManager);
@@ -329,30 +329,33 @@ export function registerTasksTool(
           case 'relate':
           case 'unrelate':
           case 'relations':
-            return handleRelationSubcommands({
-              subcommand: args.subcommand,
-              id: args.id,
-              otherTaskId: args.otherTaskId,
-              relationKind: args.relationKind,
-            });
+            return handleRelationSubcommands(
+              {
+                subcommand: args.subcommand,
+                id: args.id,
+                otherTaskId: args.otherTaskId,
+                relationKind: args.relationKind,
+              },
+              authManager,
+            );
 
           // Handle reminder operations
           case 'add-reminder':
-            return addReminder(args as Parameters<typeof addReminder>[0]);
+            return addReminder(args as Parameters<typeof addReminder>[0], authManager);
 
           case 'remove-reminder':
-            return removeReminder(args as Parameters<typeof removeReminder>[0]);
+            return removeReminder(args as Parameters<typeof removeReminder>[0], authManager);
 
           case 'list-reminders':
-            return listReminders(args as Parameters<typeof listReminders>[0]);
+            return listReminders(args as Parameters<typeof listReminders>[0], authManager);
           case 'apply-label':
-            return applyLabels(args as Parameters<typeof applyLabels>[0]);
+            return applyLabels(args as Parameters<typeof applyLabels>[0], authManager);
 
           case 'remove-label':
-            return removeLabels(args as Parameters<typeof removeLabels>[0]);
+            return removeLabels(args as Parameters<typeof removeLabels>[0], authManager);
 
           case 'list-labels':
-            return listTaskLabels(args as Parameters<typeof listTaskLabels>[0]);
+            return listTaskLabels(args as Parameters<typeof listTaskLabels>[0], authManager);
 
           case 'set-bucket':
             return setTaskBucket(args as Parameters<typeof setTaskBucket>[0], authManager);

@@ -5,10 +5,16 @@
 import type { MinimalTask } from '../../types';
 import { MCPError, ErrorCode } from '../../types';
 import { getClientFromContext } from '../../client';
+import type { AuthManager } from '../../auth/AuthManager';
 import { isAuthenticationError } from '../../utils/auth-error-handler';
 import { withRetry, RETRY_CONFIG } from '../../utils/retry';
+import { vikunjaRestRequest } from '../../utils/vikunja-rest';
 import { validateId } from './validation';
 import { createSimpleResponse, formatAorpAsMarkdown } from '../../utils/response-factory';
+import type { components } from '../../types/generated/vikunja-openapi';
+
+/** `models.Label` per the OpenAPI spec, as returned by `GET /tasks/{task}/labels`. */
+type VikunjaLabel = components['schemas']['models.Label'];
 
 /**
  * Detects Vikunja's "label already exists on the task" response so that a
@@ -29,10 +35,13 @@ function isLabelAlreadyOnTaskError(error: unknown): boolean {
  * exists on the task"; treating that as fatal previously stopped the loop and
  * left the remaining requested labels unapplied.
  */
-export async function applyLabels(args: {
-  id?: number;
-  labels?: number[];
-}): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+export async function applyLabels(
+  args: {
+    id?: number;
+    labels?: number[];
+  },
+  authManager: AuthManager,
+): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   try {
     if (!args.id) {
       throw new MCPError(
@@ -49,7 +58,6 @@ export async function applyLabels(args: {
     // Validate label IDs
     args.labels.forEach((id) => validateId(id, 'label ID'));
 
-    const client = await getClientFromContext();
     const taskId = args.id;
     // Deduplicate so a repeated id is not applied or counted twice
     const requestedLabelIds = [...new Set(args.labels)];
@@ -59,7 +67,11 @@ export async function applyLabels(args: {
     const alreadyPresent: number[] = [];
     let toApply = requestedLabelIds;
     try {
-      const currentLabels = await client.tasks.getTaskLabels(taskId);
+      const currentLabels = await vikunjaRestRequest<VikunjaLabel[]>(
+        authManager,
+        'GET',
+        `/tasks/${taskId}/labels`,
+      );
       const existingIds = new Set(
         (Array.isArray(currentLabels) ? currentLabels : [])
           .map((label) => label.id)
@@ -77,14 +89,15 @@ export async function applyLabels(args: {
       // A duplicate is still tolerated per-label below.
     }
 
-    // Add the remaining labels to the task with retry logic
+    // Add the remaining labels to the task with retry logic. PUT
+    // /tasks/{task}/labels per the OpenAPI spec, body { label_id }
+    // (models.LabelTask).
     const newlyApplied: number[] = [];
     for (const labelId of toApply) {
       try {
         await withRetry(
           () =>
-            client.tasks.addLabelToTask(taskId, {
-              task_id: taskId,
+            vikunjaRestRequest(authManager, 'PUT', `/tasks/${taskId}/labels`, {
               label_id: labelId,
             }),
           {
@@ -111,7 +124,10 @@ export async function applyLabels(args: {
       }
     }
 
-    // Fetch the updated task to show current labels
+    // Fetch the updated task to show current labels. GET /tasks/{id} is task
+    // CRUD (owned elsewhere) — this call site is a deliberate leftover on
+    // node-vikunja, kept only to refresh the response payload.
+    const client = await getClientFromContext();
     const task = await client.tasks.getTask(taskId);
 
     let message: string;
@@ -159,10 +175,13 @@ export async function applyLabels(args: {
 /**
  * Remove labels from a task
  */
-export async function removeLabels(args: {
-  id?: number;
-  labels?: number[];
-}): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+export async function removeLabels(
+  args: {
+    id?: number;
+    labels?: number[];
+  },
+  authManager: AuthManager,
+): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   try {
     if (!args.id) {
       throw new MCPError(
@@ -179,17 +198,20 @@ export async function removeLabels(args: {
     // Validate label IDs
     args.labels.forEach((id) => validateId(id, 'label ID'));
 
-    const client = await getClientFromContext();
     const taskId = args.id;
     const labelIds = args.labels;
 
-    // Remove labels from the task with retry logic
+    // Remove labels from the task with retry logic. DELETE
+    // /tasks/{task}/labels/{label} per the OpenAPI spec — no body.
     for (const labelId of labelIds) {
       try {
-        await withRetry(() => client.tasks.removeLabelFromTask(taskId, labelId), {
-          ...RETRY_CONFIG.AUTH_ERRORS,
-          shouldRetry: (error: unknown) => isAuthenticationError(error),
-        });
+        await withRetry(
+          () => vikunjaRestRequest(authManager, 'DELETE', `/tasks/${taskId}/labels/${labelId}`),
+          {
+            ...RETRY_CONFIG.AUTH_ERRORS,
+            shouldRetry: (error: unknown) => isAuthenticationError(error),
+          },
+        );
       } catch (removeError) {
         // Check if it's an auth error after retries
         if (isAuthenticationError(removeError)) {
@@ -202,7 +224,9 @@ export async function removeLabels(args: {
       }
     }
 
-    // Fetch the updated task to show current labels
+    // Fetch the updated task to show current labels. Deliberate node-vikunja
+    // leftover — see the matching comment in applyLabels above.
+    const client = await getClientFromContext();
     const task = await client.tasks.getTask(args.id);
 
     const response = createSimpleResponse(
@@ -235,9 +259,12 @@ export async function removeLabels(args: {
  * labels array embedded in a getTask response is not reliably populated, so
  * relying on it reported zero labels on tasks that actually had some.
  */
-export async function listTaskLabels(args: {
-  id?: number;
-}): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+export async function listTaskLabels(
+  args: {
+    id?: number;
+  },
+  authManager: AuthManager,
+): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   try {
     if (args.id === undefined) {
       throw new MCPError(
@@ -247,13 +274,17 @@ export async function listTaskLabels(args: {
     }
     validateId(args.id, 'id');
 
-    const client = await getClientFromContext();
-
     // Authoritative source for a task's labels
-    const taskLabels = await client.tasks.getTaskLabels(args.id);
+    const taskLabels = await vikunjaRestRequest<VikunjaLabel[]>(
+      authManager,
+      'GET',
+      `/tasks/${args.id}/labels`,
+    );
     const labels = Array.isArray(taskLabels) ? taskLabels : [];
 
-    // Fetch the task itself only for its identifying fields
+    // Fetch the task itself only for its identifying fields. Deliberate
+    // node-vikunja leftover — see the matching comment in applyLabels above.
+    const client = await getClientFromContext();
     const task = await client.tasks.getTask(args.id);
 
     const minimalTask: MinimalTask = {
