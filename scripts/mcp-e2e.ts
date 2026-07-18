@@ -581,24 +581,23 @@ async function testProjectBackgroundsAbsence(h: McpHarness, ctx: FlowContext): P
   ];
 
   for (const attempt of attempts) {
-    try {
-      const result = await h.call('vikunja_projects', attempt.args);
-      // If the call somehow succeeded (or returned an ordinary isError
-      // response instead of a schema rejection), the module is enabled on
-      // this stack — that's a real config drift worth flagging, not a pass.
-      fail(
-        `${attempt.name} subcommand is absent by default`,
-        `expected a schema-validation rejection (backgrounds module disabled) but got ` +
-          `isError=${result.isError}: ${result.text.slice(0, 200)}`,
-      );
-    } catch (e) {
-      const message = (e as Error).message || String(e);
-      assertStep(
-        `${attempt.name} subcommand is absent by default`,
-        /invalid|unrecognized|enum/i.test(message),
-        message.slice(0, 300),
-      );
-    }
+    const result = await h.call('vikunja_projects', attempt.args);
+    // With the module disabled, the subcommand name is absent from
+    // `vikunja_projects`'s schema enum, so the MCP SDK's input validation
+    // rejects the call. As of @modelcontextprotocol/sdk >=1.22 the server
+    // surfaces that as an `isError` tool result ("Input validation error:
+    // Invalid arguments for tool vikunja_projects: ...") rather than a
+    // thrown JSON-RPC error, so `callTool` resolves instead of rejecting.
+    // A schema-shaped rejection is the pass; a non-error result (the
+    // subcommand actually ran) means the module is enabled — real config
+    // drift worth flagging.
+    const schemaRejected = result.isError && /invalid|unrecognized|enum/i.test(result.text);
+    assertStep(
+      `${attempt.name} subcommand is absent by default`,
+      schemaRejected,
+      `expected a schema-validation rejection (backgrounds module disabled) but got ` +
+        `isError=${result.isError}: ${result.text.slice(0, 200)}`,
+    );
   }
 }
 
@@ -942,23 +941,24 @@ async function testNotifications(h: McpHarness): Promise<void> {
  * `EXPECTED_TOOLS_ABSENT`/`testToolList` above, and the same rationale
  * `testAssignees` documents for resolving the self user id via
  * `search-project-users` instead of `vikunja_users`. Calling an
- * unregistered tool is an MCP-protocol-level error (its exact shape isn't
- * part of this harness's contract with the SDK), so this soft-skips rather
- * than asserting one. If the call unexpectedly *succeeds*, that means
- * `vikunja_users` got registered anyway — a real gating regression — so
- * that path is a hard failure, not a skip.
+ * unregistered tool yields an `isError` tool result ("Tool vikunja_users
+ * not found") as of @modelcontextprotocol/sdk >=1.22 — the SDK returns it
+ * rather than throwing a JSON-RPC error — so `callTool` resolves with
+ * `isError: true`. That expected-absence path soft-skips. If the call
+ * instead comes back non-error, `vikunja_users` got registered under
+ * API-token auth — a real gating regression — so that path is a hard
+ * failure, not a skip.
  */
 async function testAvatarSettings(h: McpHarness): Promise<void> {
   log('\n[Avatar settings (soft-skip: vikunja_users is JWT-only)]');
-  try {
-    await h.call('vikunja_users', { subcommand: 'get-avatar' });
+  const result = await h.call('vikunja_users', { subcommand: 'get-avatar' });
+  if (!result.isError) {
     fail(
       'avatar settings gating',
-      'vikunja_users.get-avatar unexpectedly succeeded under API-token auth — JWT-only gating regression?',
+      'vikunja_users.get-avatar unexpectedly succeeded under API-token auth — JWT-only gating regression? ' +
+        result.text.slice(0, 200),
     );
     return;
-  } catch {
-    // Expected: the tool isn't registered under tk_* auth.
   }
   skip(
     'avatar settings (get-avatar/set-avatar/upload-avatar)',
