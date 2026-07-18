@@ -1,6 +1,6 @@
 # Sample: Team collaboration
 
-Scenario from the [README](../../README.md#team-collaboration): granting access to a project by name — a person or a team — without looking up numeric user/team ids first, and being able to see who already has access in one call.
+Scenario from the [samples index](README.md): granting access to a project by name — a person or a team — without looking up numeric user/team ids first, and being able to see who already has access in one call.
 
 **Setup for this walkthrough:** project "Website Relaunch" (`id: 12`) currently has one direct user share (its owner) and one team share ("Design", team id 7, `write`). Vikunja has a registered user `alice`.
 

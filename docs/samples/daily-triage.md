@@ -1,6 +1,6 @@
 # Sample: Daily triage
 
-Scenario from the [README](../../README.md#daily-triage): a cross-project "what should I work on" sweep, first thing in the morning, without asking the assistant to loop over every project one at a time.
+Scenario from the [samples index](README.md): a cross-project "what should I work on" sweep, first thing in the morning, without asking the assistant to loop over every project one at a time.
 
 **Setup for this walkthrough:** the connected account has three active projects — "Website Relaunch" (id 12), "Infra" (id 4), "Q3 Planning" (id 9) — with a mix of done and open tasks at various priorities scattered across all three.
 

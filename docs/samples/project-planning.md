@@ -1,6 +1,6 @@
 # Sample: Planning
 
-Scenario from the [README](../../README.md#planning): standing up a new quarter's project structure from an existing one, and understanding the resulting hierarchy, without manually recreating dozens of tasks and columns.
+Scenario from the [samples index](README.md): standing up a new quarter's project structure from an existing one, and understanding the resulting hierarchy, without manually recreating dozens of tasks and columns.
 
 **Setup for this walkthrough:** "Q2 Product Launch" (`id: 8`) is a fully-built-out project with tasks, labels, comments, attachments, task relations, and a Kanban layout under parent project "Product" (`id: 5`).
 
