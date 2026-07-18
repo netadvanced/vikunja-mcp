@@ -15,8 +15,10 @@ Nothing yet.
 This release is the fork's coming-out story: `netadvanced/vikunja-mcp` started from
 `democratize-technology/vikunja-mcp` at `0.2.2` with a failing test suite and a set of confirmed
 API-contract bugs, and became `vikunja-mcp-ng` — a direct-REST, composite-first, Docker-distributed
-MCP server with roughly triple the capability surface it started with. See
-[docs/ROADMAP.md](docs/ROADMAP.md) for the full wave-by-wave account this entry summarizes.
+MCP server with roughly triple the capability surface it started with. **Aligned to Vikunja
+2.3.0** (see [docs/RELEASING.md](docs/RELEASING.md) "Vikunja compatibility" for what that means
+and how it's tracked). See [docs/ROADMAP.md](docs/ROADMAP.md) for the full wave-by-wave account
+this entry summarizes.
 
 ### Added
 

@@ -104,7 +104,9 @@ fi
 
 TAG_MESSAGE_FILE="$(mktemp)"
 trap 'rm -f "$TAG_MESSAGE_FILE"' EXIT
-sed -n "${START_LINE},${END_LINE}p" "$CHANGELOG" | sed -e '$ { /^$/d }' >"$TAG_MESSAGE_FILE"
+# Command substitution strips trailing blank lines/newlines portably (no GNU-vs-BSD sed games).
+SECTION_TEXT="$(sed -n "${START_LINE},${END_LINE}p" "$CHANGELOG")"
+printf '%s\n' "$SECTION_TEXT" >"$TAG_MESSAGE_FILE"
 
 echo "==> Tag message (from CHANGELOG.md lines ${START_LINE}-${END_LINE}):"
 echo "-----"

@@ -121,19 +121,37 @@ IMAGE_BASE="ghcr.io/netadvanced/vikunja-mcp-ng"
 IMAGE_VERSION_TAG="${IMAGE_BASE}:${VERSION}"
 IMAGE_LATEST_TAG="${IMAGE_BASE}:latest"
 
+# Vikunja compatibility tag — single source of truth is the vendored OpenAPI spec, never
+# hand-typed. See scripts/lib/vikunja-compat-version.sh and docs/RELEASING.md "Vikunja
+# compatibility". Prefixed as `vikunja-<ver>` (never a bare `2.3.0`) so it can't collide with our
+# own semver tag namespace. This tag floats: the next release aligned to the same server version
+# re-points it, same idea as `latest` but scoped to a Vikunja release.
+VIKUNJA_COMPAT_VERSION="$("${REPO_ROOT}/scripts/lib/vikunja-compat-version.sh")"
+COMPAT_TAG="vikunja-${VIKUNJA_COMPAT_VERSION}"
+IMAGE_COMPAT_TAG="${IMAGE_BASE}:${COMPAT_TAG}"
+echo "==> Vikunja compatibility: ${VIKUNJA_COMPAT_VERSION} (image tag: ${COMPAT_TAG})"
+
 if [[ ! -f Dockerfile ]]; then
   echo "ERROR: Dockerfile not found at repo root." >&2
   exit 1
 fi
 
-echo "==> docker build -t ${IMAGE_VERSION_TAG} -t ${IMAGE_LATEST_TAG} ."
-docker build -t "$IMAGE_VERSION_TAG" -t "$IMAGE_LATEST_TAG" .
+echo "==> docker build -t ${IMAGE_VERSION_TAG} -t ${IMAGE_LATEST_TAG} -t ${IMAGE_COMPAT_TAG}"
+docker build \
+  --label "org.opencontainers.image.version=${VERSION}" \
+  --label "io.vikunja.compat=${VIKUNJA_COMPAT_VERSION}" \
+  -t "$IMAGE_VERSION_TAG" \
+  -t "$IMAGE_LATEST_TAG" \
+  -t "$IMAGE_COMPAT_TAG" \
+  .
 
 if [[ "$DO_PUSH" == true ]]; then
   echo "==> docker push ${IMAGE_VERSION_TAG}"
   docker push "$IMAGE_VERSION_TAG"
   echo "==> docker push ${IMAGE_LATEST_TAG}"
   docker push "$IMAGE_LATEST_TAG"
+  echo "==> docker push ${IMAGE_COMPAT_TAG}"
+  docker push "$IMAGE_COMPAT_TAG"
 else
   echo "==> Skipping docker push (pass --push to push to ghcr.io). Images are built and tagged locally."
 fi
@@ -160,7 +178,9 @@ fi
 
 NOTES_FILE="$(mktemp)"
 trap 'rm -f "$NOTES_FILE"' EXIT
-sed -n "${START_LINE},${END_LINE}p" "$CHANGELOG" | sed -e '$ { /^$/d }' >"$NOTES_FILE"
+# Command substitution strips trailing blank lines/newlines portably (no GNU-vs-BSD sed games).
+SECTION_TEXT="$(sed -n "${START_LINE},${END_LINE}p" "$CHANGELOG")"
+printf '%s\n' "$SECTION_TEXT" >"$NOTES_FILE"
 
 RELEASE_EXISTS=false
 if gh release view "$TAG_NAME" --repo netadvanced/vikunja-mcp >/dev/null 2>&1; then
@@ -183,4 +203,5 @@ fi
 echo ""
 echo "=================================================================="
 echo "  Publish complete for ${TAG_NAME} (dry-run: $DRY_RUN, docker push: $DO_PUSH)"
+echo "  Vikunja compatibility: ${VIKUNJA_COMPAT_VERSION} (image tag: ${COMPAT_TAG})"
 echo "=================================================================="

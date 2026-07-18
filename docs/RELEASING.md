@@ -121,8 +121,8 @@ npm run release:publish
 This script (`scripts/release-publish.sh`) re-runs the full gates, then:
 
 - `npm publish --access public`
-- builds and tags the Docker image `ghcr.io/netadvanced/vikunja-mcp-ng:X.Y.Z` and `:latest`
-  (push only with `--push`)
+- builds and tags the Docker image `ghcr.io/netadvanced/vikunja-mcp-ng:X.Y.Z`, `:latest`, and a
+  `:vikunja-<ver>` compatibility tag (push only with `--push`) — see §7 below
 - `gh release create vX.Y.Z` using the changelog section as the release notes
 
 Once the owner installs `docs/github-workflow-release.yml.example` as
@@ -159,7 +159,42 @@ a release PR. Until then, every `0.x` release may contain breaking changes in a 
   unaffected either way: the workflow only ever triggers on a `v*` tag push, never on branches or
   PRs.
 
-## 7. The one rule that matters most
+## 7. Vikunja compatibility
+
+Docker images carry a **Vikunja compatibility tag** in addition to the semver tags, so a deployer
+can pick an image that matches their Vikunja server version:
+
+```
+ghcr.io/netadvanced/vikunja-mcp-ng:X.Y.Z            (this exact release)
+ghcr.io/netadvanced/vikunja-mcp-ng:latest            (newest release)
+ghcr.io/netadvanced/vikunja-mcp-ng:vikunja-2.3.0     (newest release aligned to Vikunja 2.3.0)
+```
+
+The compat tag is always prefixed `vikunja-<ver>` — never a bare `2.3.0` — so it can't collide
+with our own semver tag namespace. Like `latest`, it **floats**: every release aligned to Vikunja
+`2.3.0` re-points `:vikunja-2.3.0` at the newest one, scoped to that server version instead of
+across all of them.
+
+**Single source of truth**: `scripts/lib/vikunja-compat-version.sh` derives the compat version
+from the vendored OpenAPI spec's `info.version` field (`docs/vikunja-openapi.json`) — the same
+spec our generated TypeScript types are built from — normalized from its `git describe` form
+(`v2.3.0-1019-g95b7e673`) down to the base release (`2.3.0`). It cross-checks that against the
+Vikunja image pin in `docker/e2e/docker-compose.yml` and prints a loud warning (not a hard
+failure) if they've drifted apart. Nothing else hand-types this version: `scripts/release-publish.sh`
+and `docs/github-workflow-release.yml.example` both call this script rather than embedding the
+number.
+
+The image also carries this as OCI labels so the alignment survives a retag even without the tag
+name: `org.opencontainers.image.version=<X.Y.Z>` and `io.vikunja.compat=<2.3.0>`.
+
+**Release rule**: if a release changes the base Vikunja version this project targets (a
+`docs/vikunja-openapi.json` refresh or an `e2e` pin bump that moves the base version), that's at
+least a **minor** release per §1 — the tool contract is now validated against a different server
+baseline — and its changelog entry and release notes should lead with *"now aligned to Vikunja
+X.Y.Z"* so deployers notice. Every release's notes state the Vikunja version it's aligned to,
+whether or not it changed.
+
+## 8. The one rule that matters most
 
 **`main` is always releasable.** Every PR — release or otherwise — must land with lint, typecheck,
 and the full test suite (with coverage gate) green. A release should never require "wait, let me
