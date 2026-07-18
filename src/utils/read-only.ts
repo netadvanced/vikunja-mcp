@@ -338,6 +338,17 @@ const ADMIN: ClassificationTable = {
   'set-user-status': 'write',
 };
 
+// vikunja_user_deletion: request/confirm move the current account
+// irreversibly closer to deletion (destructiveHint applies to both, per the
+// tool's design). cancel is the safe "undo" leg — classified 'write' (it
+// mutates server state by aborting the pending request) but deliberately
+// NOT 'destructive', since it removes nothing.
+const USER_DELETION: ClassificationTable = {
+  request: 'destructive',
+  confirm: 'destructive',
+  cancel: 'write',
+};
+
 /** Tool name -> subcommand classification table. */
 export const TOOL_CLASSIFICATIONS: Record<string, ClassificationTable> = {
   vikunja_auth: AUTH,
@@ -366,6 +377,7 @@ export const TOOL_CLASSIFICATIONS: Record<string, ClassificationTable> = {
   vikunja_tokens: TOKENS,
   vikunja_caldav_tokens: CALDAV_TOKENS,
   vikunja_admin: ADMIN,
+  vikunja_user_deletion: USER_DELETION,
 };
 
 // ---------------------------------------------------------------------------

@@ -370,6 +370,23 @@ narrower tool surface exposed to a client): `vikunja_task_bulk` (`operation`:
   - `set-user-status` - Change a user's status without requiring login (`PATCH /admin/users/{id}/status`) (required: userId, status: `active` | `email-confirmation-required` | `disabled` | `account-locked`)
   - `delete-user` - Delete a user (`DELETE /admin/users/{id}`) (required: userId, **`confirm: true`**; optional: mode — `now` for immediate deletion, `scheduled` (default) to trigger the email-confirmation self-deletion flow). **Irreversible in `now` mode** — the tool refuses to run without an explicit `confirm: true` argument.
 
+## User Self-Deletion — deny-by-default + JWT-only
+
+> **Reserved/disabled by default, and JWT-only.** `vikunja_user_deletion` requires
+> BOTH the `userDeletion` module config key to be explicitly set to `true` AND an
+> active JWT session — module config can only narrow what authentication already
+> allows, never expand it, so API-token sessions never see this tool regardless of
+> config. This is the reserved `DANGEROUS_MODULE_KEYS` slot (`src/config/types.ts`)
+> finally getting a tool. **Read [CONFIGURATION.md's `userDeletion` row](CONFIGURATION.md#known-modules)
+> before enabling this module** — it lets an AI assistant delete the connected
+> Vikunja account.
+
+- `vikunja_user_deletion` - Request, confirm, or cancel deletion of the **currently authenticated account** **[Requires JWT authentication]**
+  - `request` - Start the deletion process (`POST /user/deletion/request`) (required: password, **`confirm: true`**). Triggers a confirmation email; the account is not deleted until `confirm` is called with the emailed token. **Irreversible once confirmed** — the tool refuses to run without an explicit `confirm: true` argument.
+  - `confirm` - Complete the deletion using the token Vikunja emailed after `request` (`POST /user/deletion/confirm`) (required: token, **`confirm: true`**). **Irreversible** — the tool refuses to run without an explicit `confirm: true` argument.
+  - `cancel` - Abort an in-progress deletion request (`POST /user/deletion/cancel`) (required: password). The safe "undo" leg — does **not** require `confirm: true`.
+  - **Secrets:** `password` and `token` are never echoed back in tool responses or error messages, and are never written to logs (see `src/utils/security.ts`'s masking conventions).
+
 ## Known limitations
 
 1. **File attachments**: upload (`attach`), list (`list-attachments`), metadata (`get-attachment-info`), and delete (`delete-attachment`) are implemented. `download-attachment` cannot deliver the file's bytes — the Vikunja API returns raw `application/octet-stream` for downloads, and MCP has no binary content channel — so it returns the direct download URL and auth guidance for the caller to fetch it themselves instead.

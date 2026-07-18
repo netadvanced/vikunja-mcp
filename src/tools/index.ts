@@ -41,6 +41,7 @@ import { registerReactionsTool } from './reactions';
 import { registerTokensTool } from './tokens';
 import { registerCaldavTokensTool } from './caldav-tokens';
 import { registerAdminTool } from './admin';
+import { registerUserDeletionTool } from './user-deletion';
 
 // Re-export for testing
 export {
@@ -67,6 +68,7 @@ export {
   registerTokensTool,
   registerCaldavTokensTool,
   registerAdminTool,
+  registerUserDeletionTool,
 };
 
 /**
@@ -226,6 +228,14 @@ export function registerTools(
     // as users/export above).
     if (jwtAuthenticated && isModuleEnabled(modules.admin)) {
       registerAdminTool(server, authManager, clientFactory);
+    }
+
+    // Register user self-deletion tool. Reserved/deny-by-default AND
+    // JWT-only, same composition as admin/users/export above: both the
+    // 'userDeletion' module config key and JWT auth must allow it. This is
+    // the reserved DANGEROUS_MODULE_KEYS slot finally getting a tool.
+    if (jwtAuthenticated && isModuleEnabled(modules.userDeletion)) {
+      registerUserDeletionTool(server, authManager, clientFactory);
     }
   }
 }

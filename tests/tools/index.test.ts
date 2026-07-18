@@ -80,6 +80,10 @@ jest.mock('../../src/tools/admin', () => ({
   registerAdminTool: jest.fn(),
 }));
 
+jest.mock('../../src/tools/user-deletion', () => ({
+  registerUserDeletionTool: jest.fn(),
+}));
+
 // Import mocked functions
 import { registerAuthTool } from '../../src/tools/auth';
 import { registerTasksTool } from '../../src/tools/tasks';
@@ -98,6 +102,7 @@ import { registerReactionsTool } from '../../src/tools/reactions';
 import { registerTokensTool } from '../../src/tools/tokens';
 import { registerCaldavTokensTool } from '../../src/tools/caldav-tokens';
 import { registerAdminTool } from '../../src/tools/admin';
+import { registerUserDeletionTool } from '../../src/tools/user-deletion';
 
 describe('Tool Registration', () => {
   let mockServer: jest.Mocked<McpServer>;
@@ -484,18 +489,6 @@ describe('Tool Registration', () => {
       expect(registerExportTool).not.toHaveBeenCalled();
     });
 
-    it('should keep userDeletion unregistered by default (no tool wired to it yet)', () => {
-      // No VIKUNJA_MCP_MODULE_USER_DELETION set — defaults apply
-      // (deny-by-default). There is currently no registration function for
-      // this reserved module; this test documents that registerTools
-      // succeeds without attempting to register anything for it.
-      const mockClientFactory = { test: 'factory' };
-      mockAuthManager.isAuthenticated.mockReturnValue(true);
-      mockAuthManager.getAuthType.mockReturnValue('jwt');
-
-      expect(() => registerTools(mockServer, mockAuthManager, mockClientFactory)).not.toThrow();
-    });
-
     describe('tokenManagement module (deny-by-default)', () => {
       it('should NOT register vikunja_tokens by default', () => {
         const mockClientFactory = { test: 'factory' };
@@ -662,6 +655,77 @@ describe('Tool Registration', () => {
         registerTools(mockServer, mockAuthManager, mockClientFactory);
 
         expect(registerAdminTool).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('userDeletion module (deny-by-default + JWT-only)', () => {
+      it('should NOT register vikunja_user_deletion by default', () => {
+        // No VIKUNJA_MCP_MODULE_USER_DELETION set — defaults apply
+        // (deny-by-default).
+        const mockClientFactory = { test: 'factory' };
+        mockAuthManager.isAuthenticated.mockReturnValue(true);
+        mockAuthManager.getAuthType.mockReturnValue('jwt');
+
+        registerTools(mockServer, mockAuthManager, mockClientFactory);
+
+        expect(registerUserDeletionTool).not.toHaveBeenCalled();
+      });
+
+      it('should register vikunja_user_deletion when enabled AND JWT-authenticated', () => {
+        process.env.VIKUNJA_MCP_MODULE_USER_DELETION = 'true';
+        const mockClientFactory = { test: 'factory' };
+        mockAuthManager.isAuthenticated.mockReturnValue(true);
+        mockAuthManager.getAuthType.mockReturnValue('jwt');
+
+        registerTools(mockServer, mockAuthManager, mockClientFactory);
+
+        expect(registerUserDeletionTool).toHaveBeenCalledTimes(1);
+        expect(registerUserDeletionTool).toHaveBeenCalledWith(
+          mockServer,
+          mockAuthManager,
+          mockClientFactory,
+        );
+      });
+
+      it('should stay unregistered when enabled but authenticated with an API token (config narrows auth, never expands it)', () => {
+        process.env.VIKUNJA_MCP_MODULE_USER_DELETION = 'true';
+        const mockClientFactory = { test: 'factory' };
+        mockAuthManager.isAuthenticated.mockReturnValue(true);
+        mockAuthManager.getAuthType.mockReturnValue('api-token');
+
+        registerTools(mockServer, mockAuthManager, mockClientFactory);
+
+        expect(registerUserDeletionTool).not.toHaveBeenCalled();
+      });
+
+      it('should stay unregistered when JWT-authenticated but the module is left at its default (off)', () => {
+        const mockClientFactory = { test: 'factory' };
+        mockAuthManager.isAuthenticated.mockReturnValue(true);
+        mockAuthManager.getAuthType.mockReturnValue('jwt');
+
+        registerTools(mockServer, mockAuthManager, mockClientFactory);
+
+        expect(registerUserDeletionTool).not.toHaveBeenCalled();
+      });
+
+      it('should stay unregistered when enabled but not authenticated at all', () => {
+        process.env.VIKUNJA_MCP_MODULE_USER_DELETION = 'true';
+        const mockClientFactory = { test: 'factory' };
+        mockAuthManager.isAuthenticated.mockReturnValue(false);
+
+        registerTools(mockServer, mockAuthManager, mockClientFactory);
+
+        expect(registerUserDeletionTool).not.toHaveBeenCalled();
+      });
+
+      it('should not register vikunja_user_deletion without a clientFactory even when enabled', () => {
+        process.env.VIKUNJA_MCP_MODULE_USER_DELETION = 'true';
+        mockAuthManager.isAuthenticated.mockReturnValue(true);
+        mockAuthManager.getAuthType.mockReturnValue('jwt');
+
+        registerTools(mockServer, mockAuthManager, undefined);
+
+        expect(registerUserDeletionTool).not.toHaveBeenCalled();
       });
     });
 

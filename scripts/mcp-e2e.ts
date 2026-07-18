@@ -426,10 +426,12 @@ const EXPECTED_TOOLS_PRESENT = [
 ].sort();
 
 // Config-gated absences expected with API-token auth (tk_*) and default
-// module config: users/export are JWT-only; tokens/caldav-tokens/admin are
-// deny-by-default ("dangerous") modules with no config file enabling them
-// (caldav-tokens is additionally JWT-only, like export — see
-// src/tools/caldav-tokens.ts).
+// module config: users/export are JWT-only; tokens/caldav-tokens/admin/
+// user_deletion are deny-by-default ("dangerous") modules with no config file
+// enabling them (caldav-tokens is additionally JWT-only, like export — see
+// src/tools/caldav-tokens.ts; user_deletion is additionally JWT-only, same as
+// admin/export — this harness never exercises real account deletion against the
+// stack; asserting its absence under default config is the honest live check).
 const EXPECTED_TOOLS_ABSENT = [
   'vikunja_users',
   'vikunja_export_project',
@@ -439,6 +441,7 @@ const EXPECTED_TOOLS_ABSENT = [
   'vikunja_tokens',
   'vikunja_caldav_tokens',
   'vikunja_admin',
+  'vikunja_user_deletion',
 ];
 
 async function testToolList(h: McpHarness): Promise<void> {
