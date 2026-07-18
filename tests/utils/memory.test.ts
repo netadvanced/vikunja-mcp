@@ -2,7 +2,7 @@
  * Simplified test for memory protection utilities
  */
 
-import type { Task } from 'node-vikunja';
+import type { Task } from '../../src/types/vikunja';
 
 // Mock logger first
 const mockLogger = {

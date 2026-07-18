@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect } from '@jest/globals';
-import type { Task } from 'node-vikunja';
+import type { Task } from '../src/types/vikunja';
 import {
   parseFilterString,
   validateCondition,
