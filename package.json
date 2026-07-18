@@ -29,6 +29,7 @@
     "version:minor": "npm version minor",
     "version:major": "npm version major",
     "test:mcp": "tsx scripts/test-mcp.ts",
+    "test:e2e:mcp": "tsx scripts/mcp-e2e.ts",
     "fetch:api-spec": "curl -sS https://try.vikunja.io/api/v1/docs.json -o docs/vikunja-openapi.json && jq -e . docs/vikunja-openapi.json > /dev/null",
     "generate:api-types": "node scripts/generate-api-types.mjs",
     "e2e:up": "docker/e2e/bootstrap.sh",

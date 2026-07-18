@@ -5,7 +5,9 @@
 
 import { MCPError, ErrorCode } from '../../../types';
 import { getClientFromContext } from '../../../client';
-import type { Task, VikunjaClient } from 'node-vikunja';
+import type { VikunjaClient } from 'node-vikunja';
+import type { AuthManager } from '../../../auth/AuthManager';
+import { vikunjaRestRequest } from '../../../utils/vikunja-rest';
 import { validateDateString, validateId, convertRepeatConfiguration } from '../validation';
 import { isAuthenticationError } from '../../../utils/auth-error-handler';
 import { RETRY_CONFIG } from '../../../utils/retry';
@@ -15,6 +17,10 @@ import { extractHttpErrorDetail } from '../../../utils/http-error-detail';
 import { AUTH_ERROR_MESSAGES } from '../constants';
 import { createTaskResponse } from './TaskResponseFormatter';
 import { formatAorpAsMarkdown } from '../../../utils/response-factory';
+import type { components } from '../../../types/generated/vikunja-openapi';
+
+/** `models.Task` per the OpenAPI spec — request/response shape for the task endpoints. */
+type VikunjaTask = components['schemas']['models.Task'];
 
 export interface UpdateTaskArgs {
   id?: number;
@@ -40,7 +46,7 @@ export interface UpdateTaskArgs {
  * Internal interface for tracking update state and field changes
  */
 interface UpdateState {
-  currentTask: Task;
+  currentTask: VikunjaTask;
   previousState: Record<string, unknown>;
   affectedFields: string[];
 }
@@ -48,7 +54,10 @@ interface UpdateState {
 /**
  * Updates a task with comprehensive field diffing and relationship management
  */
-export async function updateTask(args: UpdateTaskArgs): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+export async function updateTask(
+  args: UpdateTaskArgs,
+  authManager: AuthManager,
+): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   try {
     if (!args.id) {
       throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Task id is required for update operation');
@@ -71,27 +80,25 @@ export async function updateTask(args: UpdateTaskArgs): Promise<{ content: Array
       validateId(args.projectId, 'projectId');
     }
 
-    const client = await getClientFromContext();
-
     // Analyze current state and track changes
-    const updateState = await analyzeUpdateState(client, args.id, args);
+    const updateState = await analyzeUpdateState(authManager, args.id, args);
 
     // Build and apply the update (full-model merge — Vikunja replaces the whole task)
     const updateData = buildUpdateData(updateState.currentTask, args);
-    await client.tasks.updateTask(args.id, updateData);
+    await vikunjaRestRequest<VikunjaTask>(authManager, 'POST', `/tasks/${args.id}`, updateData);
 
     // Update labels if provided
     if (args.labels !== undefined) {
-      await updateTaskLabels(client, args.id, args.labels);
+      await updateTaskLabels(await getClientFromContext(), args.id, args.labels);
     }
 
     // Update assignees if provided
     if (args.assignees !== undefined) {
-      await updateTaskAssignees(client, args.id, args.assignees);
+      await updateTaskAssignees(await getClientFromContext(), args.id, args.assignees);
     }
 
     // Fetch the complete updated task
-    const completeTask = await client.tasks.getTask(args.id);
+    const completeTask = await vikunjaRestRequest<VikunjaTask>(authManager, 'GET', `/tasks/${args.id}`);
 
     // Verify project move actually stuck — Vikunja can report success while leaving
     // the task in the old project (silent failure → data loss if the old project is deleted)
@@ -107,13 +114,13 @@ export async function updateTask(args: UpdateTaskArgs): Promise<{ content: Array
     const response = createTaskResponse(
       'update-task',
       'Task updated successfully',
-      { task: completeTask },
+      { task: completeTask } as unknown as Parameters<typeof createTaskResponse>[2],
       {
         timestamp: new Date().toISOString(),
         affectedFields: updateState.affectedFields,
-        previousState: updateState.previousState as Partial<Task>,
+        previousState: updateState.previousState,
         taskId: args.id,
-      },
+      } as unknown as Parameters<typeof createTaskResponse>[3],
       undefined, // verbosity (ignored - using standard AORP)
       undefined, // useOptimizedFormat (ignored - using standard AORP)
       undefined, // useAorp (ignored - always using AORP)
@@ -130,8 +137,15 @@ export async function updateTask(args: UpdateTaskArgs): Promise<{ content: Array
       ],
     };
   } catch (error) {
-    // Re-throw MCPError instances without modification
+    // Re-throw MCPError instances without modification, except a REST 404,
+    // which is translated to the same friendly "not found" message the
+    // pre-migration node-vikunja error path produced via handleStatusCodeError
+    // (which keys off a bare `.statusCode` property, not the `.details`
+    // nesting vikunjaRestRequest's thrown MCPError uses).
     if (error instanceof MCPError) {
+      if (error.details?.statusCode === 404 && args.id) {
+        throw new MCPError(ErrorCode.NOT_FOUND, `Task with ID ${args.id} not found`);
+      }
       throw error;
     }
 
@@ -155,9 +169,13 @@ export async function updateTask(args: UpdateTaskArgs): Promise<{ content: Array
 /**
  * Analyzes the current task state and determines which fields are being updated
  */
-async function analyzeUpdateState(client: VikunjaClient, taskId: number, args: UpdateTaskArgs): Promise<UpdateState> {
+async function analyzeUpdateState(
+  authManager: AuthManager,
+  taskId: number,
+  args: UpdateTaskArgs,
+): Promise<UpdateState> {
   // Fetch the current task to preserve all fields and track changes
-  const currentTask = await client.tasks.getTask(taskId);
+  const currentTask = await vikunjaRestRequest<VikunjaTask>(authManager, 'GET', `/tasks/${taskId}`);
   const previousState: Record<string, unknown> = {};
   if (currentTask.title !== undefined) previousState.title = currentTask.title;
   if (currentTask.description !== undefined) previousState.description = currentTask.description;
@@ -184,7 +202,13 @@ async function analyzeUpdateState(client: VikunjaClient, taskId: number, args: U
   if (args.done !== undefined && args.done !== currentTask.done) affectedFields.push('done');
   if (args.projectId !== undefined && args.projectId !== currentTask.project_id) affectedFields.push('projectId');
   if (args.repeatAfter !== undefined && args.repeatAfter !== currentTask.repeat_after) affectedFields.push('repeatAfter');
-  if (args.repeatMode !== undefined && args.repeatMode !== currentTask.repeat_mode) affectedFields.push('repeatMode');
+  // args.repeatMode is the user-facing string enum ('day'|'week'|...);
+  // currentTask.repeat_mode is the API's numeric enum (0|1|2) — these were
+  // never the same representation even before this migration (node-vikunja's
+  // type incorrectly claimed both were the string enum), so this comparison
+  // is always true when repeatMode is supplied. Cast preserves that existing
+  // runtime behavior while satisfying the now-correctly-typed comparison.
+  if (args.repeatMode !== undefined && (args.repeatMode as unknown) !== currentTask.repeat_mode) affectedFields.push('repeatMode');
   if (args.labels !== undefined) affectedFields.push('labels');
   if (args.assignees !== undefined) affectedFields.push('assignees');
 
@@ -199,8 +223,8 @@ async function analyzeUpdateState(client: VikunjaClient, taskId: number, args: U
  * Builds the update data object by merging current task data with updates
  * This prevents the API from clearing fields that aren't explicitly updated
  */
-function buildUpdateData(currentTask: Task, args: UpdateTaskArgs): Task {
-  const updateData: Task = {
+function buildUpdateData(currentTask: VikunjaTask, args: UpdateTaskArgs): VikunjaTask {
+  const updateData: VikunjaTask = {
     ...currentTask,
     // Override with any provided updates
     ...(args.title !== undefined && { title: args.title }),
@@ -213,17 +237,20 @@ function buildUpdateData(currentTask: Task, args: UpdateTaskArgs): Task {
     ...(args.done !== undefined && { done: args.done }),
     // Move between projects — must be part of the full-model payload or Vikunja ignores it
     ...(args.projectId !== undefined && { project_id: args.projectId }),
-    // Handle repeat configuration for updates
+    // Handle repeat configuration for updates. The generated
+    // `models.Task.repeat_mode` type (0 | 1 | 2) matches the real API, so no
+    // bypass cast is needed here (unlike node-vikunja's incorrect string enum).
     ...(args.repeatAfter !== undefined || args.repeatMode !== undefined
-      ? ((): Record<string, unknown> => {
+      ? ((): Partial<VikunjaTask> => {
           const repeatConfig = convertRepeatConfiguration(
             args.repeatAfter !== undefined ? args.repeatAfter : currentTask.repeat_after,
             args.repeatMode !== undefined ? args.repeatMode : undefined,
           );
-          const updates: Record<string, unknown> = {};
+          const updates: Partial<VikunjaTask> = {};
           if (repeatConfig.repeat_after !== undefined)
             updates.repeat_after = repeatConfig.repeat_after;
-          if (repeatConfig.repeat_mode !== undefined) updates.repeat_mode = repeatConfig.repeat_mode;
+          if (repeatConfig.repeat_mode !== undefined)
+            updates.repeat_mode = repeatConfig.repeat_mode as 0 | 1 | 2;
           return updates;
         })()
       : {}),
@@ -234,6 +261,9 @@ function buildUpdateData(currentTask: Task, args: UpdateTaskArgs): Task {
 
 /**
  * Updates task labels with authentication error handling.
+ *
+ * Labels are a task sub-resource (sibling item M-B); `setTaskLabels` still
+ * goes through the node-vikunja client rather than the direct-REST helper.
  *
  * The catch surfaces the HTTP status + body of the underlying Vikunja error
  * in both branches. Previously the catch replaced any 403/422 from
@@ -266,7 +296,9 @@ async function updateTaskLabels(client: VikunjaClient, taskId: number, labelIds:
 }
 
 /**
- * Updates task assignees with diff calculation and authentication error handling
+ * Updates task assignees with diff calculation and authentication error
+ * handling. Assignees are a task sub-resource (sibling item M-B); this still
+ * goes through the node-vikunja client rather than the direct-REST helper.
  */
 async function updateTaskAssignees(client: VikunjaClient, taskId: number, newAssigneeIds: number[]): Promise<void> {
   try {

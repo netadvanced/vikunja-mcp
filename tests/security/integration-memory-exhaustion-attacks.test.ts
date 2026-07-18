@@ -31,12 +31,24 @@ const mockGetClientFromContext = getClientFromContext as jest.MockedFunction<typ
 // Cross-project listing (no projectId / allProjects) now attempts the
 // direct-REST GET /tasks endpoint first (RestCrossProjectFilteringStrategy)
 // before falling back to the per-project aggregation this file's attack
-// scenarios exercise. Default global.fetch to a fast, deterministic
-// rejection so every 'list' call below falls back to that aggregation
-// immediately, rather than depending on real (and environment-dependent)
-// network failure timing.
+// scenarios exercise. The per-project aggregation itself (Wave D
+// tasks-core migration) also now goes through `vikunjaRestRequest`
+// (GET /projects, GET /projects/{id}/tasks) rather than the node-vikunja
+// client, so `global.fetch` is mocked as a small router that:
+//  - fails the bare cross-project `GET /tasks` fast with a non-"transient"
+//    message (no retry-triggering keywords — see `isRetryableError`) so the
+//    documented fallback kicks in immediately rather than after real
+//    backoff delays;
+//  - proxies `GET /projects` and `GET /projects/{id}/tasks` through the
+//    existing `mockClient.projects.getProjects` / `mockClient.tasks.getProjectTasks`
+//    mocks, so each test's per-scenario mock configuration keeps driving
+//    behavior (and call-count assertions) unchanged.
 const mockFetch = jest.fn();
 global.fetch = mockFetch as unknown as typeof fetch;
+
+function jsonResponse(data: unknown): { ok: true; status: 200; text: () => Promise<string> } {
+  return { ok: true, status: 200, text: async () => JSON.stringify(data) };
+}
 
 describe('Integration Memory Exhaustion Attack Tests', () => {
   let mockServer: MockServer;
@@ -48,7 +60,6 @@ describe('Integration Memory Exhaustion Attack Tests', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockFetch.mockReset();
-    mockFetch.mockRejectedValue(new Error('mock: REST GET /tasks unavailable'));
     // vikunjaRestRequest protects every call with a process-wide named
     // circuit breaker; clear accumulated stats between tests so a
     // deliberately failing scenario doesn't trip the breaker for a later
@@ -111,6 +122,24 @@ describe('Integration Memory Exhaustion Attack Tests', () => {
     // individual tests override getProjectTasks with their own fixtures.
     mockClient.projects.getProjects.mockResolvedValue([{ id: 1, title: 'Test Project' }] as any);
     mockClient.tasks.getProjectTasks.mockResolvedValue([]);
+
+    // Route global.fetch to the node-vikunja client mocks above — see the
+    // module-level comment on `mockFetch` for why.
+    mockFetch.mockImplementation(async (url: string) => {
+      const path = new URL(url).pathname.replace(/^\/api\/v\d+/, '');
+      if (path === '/tasks') {
+        throw new Error('mock: REST GET /tasks unavailable');
+      }
+      if (path === '/projects') {
+        return jsonResponse(await mockClient.projects.getProjects({ per_page: 1000 }));
+      }
+      const projectTasksMatch = /^\/projects\/(-?\d+)\/tasks$/.exec(path);
+      if (projectTasksMatch?.[1] !== undefined) {
+        const tasks = await mockClient.tasks.getProjectTasks(Number(projectTasksMatch[1]), {});
+        return jsonResponse(tasks);
+      }
+      throw new Error(`mock: unhandled fetch path ${path}`);
+    });
 
     // Setup mock auth manager
     mockAuthManager = createMockTestableAuthManager();

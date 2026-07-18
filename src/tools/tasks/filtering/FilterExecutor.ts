@@ -3,8 +3,8 @@
  * Handles the execution of filters and applies additional post-processing
  */
 
-import type { Task, GetTasksParams } from 'node-vikunja';
 import type { FilterExpression } from '../../../types/filters';
+import type { VikunjaTask as Task, TaskListApiParams as GetTasksParams } from '../../../utils/filtering/types';
 import type { TaskListingArgs, TaskFilterExecutionResult } from '../types/filters';
 import type { TaskFilterStorage, FilteringParams, FilteringMetadata, FilteringArgs } from '../types/filters';
 import type { AuthManager } from '../../../auth/AuthManager';

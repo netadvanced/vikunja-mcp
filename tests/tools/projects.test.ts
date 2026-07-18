@@ -494,6 +494,41 @@ describe('Projects Tool', () => {
       );
     });
 
+    it('should update a root-level project without parentProjectId (real API returns parent_project_id: 0, not undefined)', async () => {
+      // Vikunja's real API always returns a numeric parent_project_id (0 for
+      // a root/top-level project), never omits the field — unlike this
+      // suite's shared `mockProject` fixture, which uses `undefined` for
+      // brevity. That fixture shape masked a real bug: buildProjectUpdatePayload
+      // resolves the omitted parentProjectId to the current project's
+      // parent_project_id (0 for root) for merge-preserve purposes, and
+      // validateProjectData then tried to look 0 up as if it were a real
+      // parent project id to validate, throwing "parentProjectId must be a
+      // positive integer" — meaning updating ANY root-level project without
+      // explicitly repeating parentProjectId always failed. Found via the
+      // MCP-layer e2e harness (scripts/mcp-e2e.ts) against a real Vikunja
+      // server, where every project starts out at the root.
+      const rootProject: Project = { ...mockProject, id: 5, parent_project_id: 0 };
+      mockClient.projects.getProject.mockResolvedValue(rootProject);
+      mockClient.projects.updateProject.mockResolvedValue({
+        ...rootProject,
+        description: 'updated description',
+      });
+
+      await callTool('update', {
+        id: 5,
+        description: 'updated description',
+        // parentProjectId intentionally omitted, like a normal partial update
+      });
+
+      expect(mockClient.projects.updateProject).toHaveBeenCalledWith(
+        5,
+        expect.objectContaining({
+          description: 'updated description',
+          parent_project_id: 0,
+        }),
+      );
+    });
+
     it('should preserve existing title when title is omitted (issue #44)', async () => {
       mockClient.projects.getProject.mockResolvedValue(mockProject);
       mockClient.projects.updateProject.mockResolvedValue({

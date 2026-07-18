@@ -191,7 +191,17 @@ export function validateProjectData(data: {
     validateHexColor(data.hexColor);
   }
 
-  if (data.parentProjectId !== undefined && allProjects) {
+  // parentProjectId === 0 is Vikunja's own "no parent / root project"
+  // sentinel, never a real project id to validate — the caller-facing Zod
+  // schema already enforces `.positive()` for a genuinely *supplied*
+  // parentProjectId, so a 0 reaching here only ever comes from
+  // updateProject's merge-preserve default (buildProjectUpdatePayload
+  // resolving an omitted parentProjectId to the current project's own
+  // parent_project_id, which is 0 for a root project — see
+  // ENDPOINT-PLAYBOOK.md §4). Treating it as "must be a positive integer
+  // AND must exist in allProjects" broke every no-op update of a
+  // already-root-level project.
+  if (data.parentProjectId !== undefined && data.parentProjectId !== 0 && allProjects) {
     validateId(data.parentProjectId, 'parentProjectId');
 
     const parentProject = allProjects.find((p) => p.id === data.parentProjectId);

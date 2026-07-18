@@ -260,15 +260,19 @@ describe('Tasks Tool - SQL-like Filter Syntax', () => {
       const projectId = 42;
       const filter = '(priority >= 4 && done = false)';
 
-      mockClient.tasks.getProjectTasks.mockResolvedValue([mockHighPriorityTask]);
+      // Single-project + filter goes through ServerSideFilteringStrategy
+      // (direct REST GET /projects/{id}/tasks), not node-vikunja's
+      // getProjectTasks.
+      mockRestTasksSuccess([mockHighPriorityTask]);
 
       const result = await callTool('list', { projectId, filter });
 
-      expect(mockClient.tasks.getProjectTasks).toHaveBeenCalledWith(projectId, {
-        filter,
-        page: 1,
-        per_page: 1000,
-      });
+      const query = new URLSearchParams();
+      query.set('page', '1');
+      query.set('per_page', '1000');
+      query.set('filter', filter);
+      const [url] = mockFetch.mock.calls[0] as [string];
+      expect(url).toBe(`https://api.vikunja.test/api/v1/projects/${projectId}/tasks?${query.toString()}`);
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
@@ -308,13 +312,15 @@ describe('Tasks Tool - SQL-like Filter Syntax', () => {
       const filter = '(priority >= 4 && done = false)';
 
       // Simulate the failure: direct REST fails, and so does the
-      // per-project aggregation fallback.
+      // per-project aggregation fallback's own GET /projects call (which
+      // vikunjaRestRequest wraps as an MCPError, propagated as-is by
+      // listTasks rather than re-wrapped generically).
       mockFetch.mockRejectedValue(new Error('Internal Server Error'));
 
       await expect(callTool('list', { filter })).rejects.toThrow(MCPError);
       await expect(callTool('list', { filter })).rejects.toMatchObject({
         code: 'API_ERROR',
-        message: expect.stringContaining('Failed to list tasks'),
+        message: expect.stringContaining('Vikunja REST request failed'),
       });
     });
   });

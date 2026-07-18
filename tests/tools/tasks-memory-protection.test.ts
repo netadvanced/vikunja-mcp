@@ -46,6 +46,10 @@ function mockRestResponse(opts: { ok?: boolean; status?: number; statusText?: st
   } as unknown as Response;
 }
 
+function jsonResponse(data: unknown): Response {
+  return mockRestResponse({ text: JSON.stringify(data) });
+}
+
 describe('Tasks Memory Protection', () => {
   let mockServer: MockServer;
   let mockAuthManager: MockAuthManager;
@@ -118,6 +122,42 @@ describe('Tasks Memory Protection', () => {
     // individual tests override getProjectTasks with their own fixtures.
     mockClient.projects.getProjects.mockResolvedValue([{ id: 1, title: 'Test Project' }] as any);
     mockClient.tasks.getProjectTasks.mockResolvedValue([]);
+
+    // Route the per-project aggregation's GET /projects and
+    // GET /projects/{id}/tasks calls (Wave D tasks-core migration: these now
+    // go through vikunjaRestRequest/fetch, not the node-vikunja client)
+    // through the mockClient config above, so per-test overrides of
+    // mockClient.tasks.getProjectTasks / mockClient.projects.getProjects
+    // keep driving behavior unchanged. The bare cross-project GET /tasks
+    // still rejects fast (see the default mockRejectedValue above) so the
+    // documented fallback kicks in immediately.
+    mockFetch.mockImplementation(async (url: string) => {
+      const parsed = new URL(url);
+      const path = parsed.pathname.replace(/^\/api\/v\d+/, '');
+      if (path === '/tasks') {
+        throw new Error('mock: REST GET /tasks unavailable');
+      }
+      if (path === '/projects') {
+        return jsonResponse(await mockClient.projects.getProjects({ per_page: 1000 }));
+      }
+      const projectTasksMatch = /^\/projects\/(-?\d+)\/tasks$/.exec(path);
+      if (projectTasksMatch?.[1] !== undefined) {
+        // Reconstruct the numeric GetTasksParams shape the node-vikunja
+        // client method used to receive, from the REST query string.
+        const params: Record<string, number | string> = {};
+        const page = parsed.searchParams.get('page');
+        const perPage = parsed.searchParams.get('per_page');
+        const s = parsed.searchParams.get('s');
+        const sortBy = parsed.searchParams.get('sort_by');
+        if (page !== null) params.page = Number(page);
+        if (perPage !== null) params.per_page = Number(perPage);
+        if (s !== null) params.s = s;
+        if (sortBy !== null) params.sort_by = sortBy;
+        const tasks = await mockClient.tasks.getProjectTasks(Number(projectTasksMatch[1]), params);
+        return jsonResponse(tasks);
+      }
+      throw new Error(`mock: unhandled fetch path ${path}`);
+    });
 
     // Setup mock auth manager
     mockAuthManager = createMockTestableAuthManager();

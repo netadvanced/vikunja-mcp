@@ -16,6 +16,14 @@ jest.mock('../../src/client', () => ({
   clearGlobalClientFactory: jest.fn(),
 }));
 
+// Migrated (Wave D, tasks-core): create/get/delete's core calls go through
+// vikunjaRestRequest now. Labels/assignees remain on the node-vikunja client
+// (sub-resource, sibling item M-B) — this file's race-condition/rollback
+// scenarios are entirely about those sub-resource failures.
+jest.mock('../../src/utils/vikunja-rest', () => ({
+  vikunjaRestRequest: jest.fn(),
+}));
+
 // Avoid shared "anonymous" circuit breaker replaying stale ops across tests
 jest.mock('../../src/utils/retry', () => {
   const actual = jest.requireActual('../../src/utils/retry');
@@ -27,6 +35,7 @@ jest.mock('../../src/utils/retry', () => {
 
 // Import the mocked functions
 import { getClientFromContext } from '../../src/client';
+import { vikunjaRestRequest } from '../../src/utils/vikunja-rest';
 
 describe('Tasks Tool - Race Condition Fix', () => {
   let mockServer: MockServer;
@@ -34,6 +43,21 @@ describe('Tasks Tool - Race Condition Fix', () => {
   let mockClient: MockVikunjaClient;
   let toolHandler: (args: any) => Promise<any>;
   let consoleErrorSpy: jest.SpyInstance;
+  const mockRest = vikunjaRestRequest as jest.Mock;
+
+  /** Sentinel wrapper marking a routeRest handler value as a rejection. */
+  const REJECT = (value: unknown): { __reject: true; value: unknown } => ({ __reject: true, value });
+
+  /** Routes vikunjaRestRequest calls to per-HTTP-method fixtures/errors. */
+  function routeRest(handlers: Partial<Record<'GET' | 'POST' | 'PUT' | 'DELETE', unknown>>): void {
+    mockRest.mockImplementation((_auth: unknown, method: string) => {
+      const handler = handlers[method as 'GET' | 'POST' | 'PUT' | 'DELETE'];
+      if (handler && typeof handler === 'object' && (handler as { __reject?: true }).__reject === true) {
+        return Promise.reject((handler as { value: unknown }).value);
+      }
+      return Promise.resolve(handler);
+    });
+  }
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -118,7 +142,7 @@ describe('Tasks Tool - Race Condition Fix', () => {
         project_id: 1,
       };
 
-      mockClient.tasks.createTask.mockResolvedValue(createdTask);
+      routeRest({ PUT: createdTask, DELETE: null });
       mockClient.tasks.addLabelToTask.mockRejectedValue(new Error('Label assignment failed'));
 
       const args = {
@@ -135,7 +159,7 @@ describe('Tasks Tool - Race Condition Fix', () => {
       );
 
       // Verify cleanup was attempted
-      expect(mockClient.tasks.deleteTask).toHaveBeenCalledWith(123);
+      expect(mockRest).toHaveBeenCalledWith(mockAuthManager, 'DELETE', '/tasks/123');
     });
 
     it('should rollback task creation if assignee assignment fails', async () => {
@@ -145,7 +169,7 @@ describe('Tasks Tool - Race Condition Fix', () => {
         project_id: 1,
       };
 
-      mockClient.tasks.createTask.mockResolvedValue(createdTask);
+      routeRest({ PUT: createdTask, DELETE: null });
       mockClient.tasks.addLabelToTask.mockResolvedValue({});
       mockClient.tasks.assignUserToTask.mockRejectedValue(new Error('User assignment failed'));
 
@@ -164,7 +188,7 @@ describe('Tasks Tool - Race Condition Fix', () => {
       );
 
       // Verify cleanup was attempted
-      expect(mockClient.tasks.deleteTask).toHaveBeenCalledWith(456);
+      expect(mockRest).toHaveBeenCalledWith(mockAuthManager, 'DELETE', '/tasks/456');
     });
 
     it('should include error details when rollback fails', async () => {
@@ -174,9 +198,8 @@ describe('Tasks Tool - Race Condition Fix', () => {
         project_id: 1,
       };
 
-      mockClient.tasks.createTask.mockResolvedValue(createdTask);
+      routeRest({ PUT: createdTask, DELETE: REJECT(new Error('Delete failed')) });
       mockClient.tasks.addLabelToTask.mockRejectedValue(new Error('Label assignment failed'));
-      mockClient.tasks.deleteTask.mockRejectedValue(new Error('Delete failed'));
 
       const args = {
         subcommand: 'create',
@@ -191,7 +214,7 @@ describe('Tasks Tool - Race Condition Fix', () => {
       );
 
       // Verify cleanup was attempted and error was logged
-      expect(mockClient.tasks.deleteTask).toHaveBeenCalledWith(789);
+      expect(mockRest).toHaveBeenCalledWith(mockAuthManager, 'DELETE', '/tasks/789');
       expect(consoleErrorSpy).toHaveBeenCalledWith(
         expect.stringContaining('[ERROR] Failed to clean up partially created task:'),
       );
@@ -210,7 +233,7 @@ describe('Tasks Tool - Race Condition Fix', () => {
       await expect(toolHandler(args)).rejects.toThrow('assignee ID must be a positive integer');
 
       // Verify task was NOT created
-      expect(mockClient.tasks.createTask).not.toHaveBeenCalled();
+      expect(mockRest).not.toHaveBeenCalled();
     });
 
     it('should successfully create task with labels and assignees when all operations succeed', async () => {
@@ -226,10 +249,9 @@ describe('Tasks Tool - Race Condition Fix', () => {
         assignees: [{ id: 10, username: 'user1' }],
       };
 
-      mockClient.tasks.createTask.mockResolvedValue(createdTask);
+      routeRest({ PUT: createdTask, GET: completeTask });
       mockClient.tasks.addLabelToTask.mockResolvedValue({});
       mockClient.tasks.assignUserToTask.mockResolvedValue({});
-      mockClient.tasks.getTask.mockResolvedValue(completeTask);
 
       const args = {
         subcommand: 'create',
@@ -248,7 +270,7 @@ describe('Tasks Tool - Race Condition Fix', () => {
       expect(markdown).toContain('Task created successfully');
 
       // Verify no cleanup was attempted
-      expect(mockClient.tasks.deleteTask).not.toHaveBeenCalled();
+      expect(mockRest).not.toHaveBeenCalledWith(mockAuthManager, 'DELETE', expect.anything());
     });
   });
 });

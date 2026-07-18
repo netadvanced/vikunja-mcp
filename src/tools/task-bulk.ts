@@ -87,7 +87,7 @@ export function registerTaskBulkTool(
               projectId: args.projectId,
               tasks: filteredTasks
             };
-            return bulkCreateTasks(filteredArgs);
+            return bulkCreateTasks(filteredArgs, authManager);
           }
 
           case 'bulk-update': {
@@ -101,7 +101,7 @@ export function registerTaskBulkTool(
               field: args.field,
               value: args.value
             };
-            return bulkUpdateTasks(filteredArgs);
+            return bulkUpdateTasks(filteredArgs, authManager);
           }
 
           case 'bulk-delete': {
@@ -110,7 +110,7 @@ export function registerTaskBulkTool(
             const filteredArgs = {
               taskIds: args.taskIds || []
             };
-            return bulkDeleteTasks(filteredArgs);
+            return bulkDeleteTasks(filteredArgs, authManager);
           }
 
           default:

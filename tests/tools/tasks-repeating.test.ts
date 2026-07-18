@@ -9,6 +9,7 @@ import { parseMarkdown } from '../utils/markdown';
 
 // Import the function we're mocking
 import { getClientFromContext } from '../../src/client';
+import { vikunjaRestRequest } from '../../src/utils/vikunja-rest';
 
 // Mock the modules
 jest.mock('../../src/client', () => ({
@@ -17,12 +18,18 @@ jest.mock('../../src/client', () => ({
   clearGlobalClientFactory: jest.fn(),
 }));
 jest.mock('../../src/auth/AuthManager');
+// Migrated (Wave D, tasks-core): create/update's core calls go through
+// vikunjaRestRequest now.
+jest.mock('../../src/utils/vikunja-rest', () => ({
+  vikunjaRestRequest: jest.fn(),
+}));
 
 describe('Tasks Tool - Repeating Tasks', () => {
   let mockClient: MockVikunjaClient;
   let mockAuthManager: MockAuthManager;
   let mockServer: MockServer;
   let toolHandler: (args: any) => Promise<any>;
+  const mockRest = vikunjaRestRequest as jest.Mock;
 
   // Helper function to call a tool
   async function callTool(subcommand: string, args: Record<string, any> = {}) {
@@ -154,8 +161,7 @@ describe('Tasks Tool - Repeating Tasks', () => {
         repeat_mode: 0, // Default mode
       };
 
-      mockClient.tasks.createTask.mockResolvedValue(createdTask);
-      mockClient.tasks.getTask.mockResolvedValue(createdTask);
+      mockRest.mockResolvedValue(createdTask);
 
       const result = await callTool('create', {
         projectId: 17,
@@ -165,8 +171,10 @@ describe('Tasks Tool - Repeating Tasks', () => {
       });
 
       // Verify the API was called with correct parameters
-      expect(mockClient.tasks.createTask).toHaveBeenCalledWith(
-        17,
+      expect(mockRest).toHaveBeenCalledWith(
+        mockAuthManager,
+        'PUT',
+        '/projects/17/tasks',
         expect.objectContaining({
           title: 'Stock up on space ice cream',
           project_id: 17,
@@ -193,8 +201,7 @@ describe('Tasks Tool - Repeating Tasks', () => {
         repeat_mode: 0, // Default mode
       };
 
-      mockClient.tasks.createTask.mockResolvedValue(createdTask);
-      mockClient.tasks.getTask.mockResolvedValue(createdTask);
+      mockRest.mockResolvedValue(createdTask);
 
       const result = await callTool('create', {
         projectId: 17,
@@ -203,8 +210,10 @@ describe('Tasks Tool - Repeating Tasks', () => {
         repeatAfter: 1,
       });
 
-      expect(mockClient.tasks.createTask).toHaveBeenCalledWith(
-        17,
+      expect(mockRest).toHaveBeenCalledWith(
+        mockAuthManager,
+        'PUT',
+        '/projects/17/tasks',
         expect.objectContaining({
           repeat_after: 1 * 7 * 24 * 60 * 60,
           repeat_mode: 0,
@@ -228,8 +237,7 @@ describe('Tasks Tool - Repeating Tasks', () => {
         repeat_mode: 1, // Monthly mode
       };
 
-      mockClient.tasks.createTask.mockResolvedValue(createdTask);
-      mockClient.tasks.getTask.mockResolvedValue(createdTask);
+      mockRest.mockResolvedValue(createdTask);
 
       const result = await callTool('create', {
         projectId: 17,
@@ -239,8 +247,10 @@ describe('Tasks Tool - Repeating Tasks', () => {
       });
 
       // Verify the API was called with monthly mode
-      expect(mockClient.tasks.createTask).toHaveBeenCalledWith(
-        17,
+      expect(mockRest).toHaveBeenCalledWith(
+        mockAuthManager,
+        'PUT',
+        '/projects/17/tasks',
         expect.objectContaining({
           repeat_mode: 1, // Monthly mode
         }),
@@ -263,8 +273,7 @@ describe('Tasks Tool - Repeating Tasks', () => {
         repeat_mode: 0, // Default mode
       };
 
-      mockClient.tasks.createTask.mockResolvedValue(createdTask);
-      mockClient.tasks.getTask.mockResolvedValue(createdTask);
+      mockRest.mockResolvedValue(createdTask);
 
       const result = await callTool('create', {
         projectId: 17,
@@ -273,8 +282,10 @@ describe('Tasks Tool - Repeating Tasks', () => {
         repeatAfter: 1,
       });
 
-      expect(mockClient.tasks.createTask).toHaveBeenCalledWith(
-        17,
+      expect(mockRest).toHaveBeenCalledWith(
+        mockAuthManager,
+        'PUT',
+        '/projects/17/tasks',
         expect.objectContaining({
           repeat_after: 1 * 365 * 24 * 60 * 60,
           repeat_mode: 0,
@@ -308,12 +319,20 @@ describe('Tasks Tool - Repeating Tasks', () => {
         },
       ];
 
-      mockClient.tasks.createTask
-        .mockResolvedValueOnce(createdTasks[0])
-        .mockResolvedValueOnce(createdTasks[1]);
-      mockClient.tasks.getTask
-        .mockResolvedValueOnce(createdTasks[0])
-        .mockResolvedValueOnce(createdTasks[1]);
+      // Route by request shape rather than call order: bulk-create runs the
+      // per-task PUT+GET pairs with concurrency, so call order across tasks
+      // isn't guaranteed.
+      mockRest.mockImplementation((_auth: unknown, method: string, path: string, body?: { title?: string }) => {
+        if (method === 'PUT') {
+          const match = createdTasks.find((t) => t.title === body?.title);
+          return Promise.resolve(match);
+        }
+        if (method === 'GET') {
+          const match = createdTasks.find((t) => path === `/tasks/${t.id}`);
+          return Promise.resolve(match);
+        }
+        return Promise.resolve(undefined);
+      });
 
       const result = await callTool('bulk-create', {
         projectId: 17,
@@ -355,9 +374,10 @@ describe('Tasks Tool - Repeating Tasks', () => {
         repeat_mode: 0,
       };
 
-      mockClient.tasks.getTask.mockResolvedValueOnce(existingTask);
-      mockClient.tasks.updateTask.mockResolvedValue(updatedTask);
-      mockClient.tasks.getTask.mockResolvedValueOnce(updatedTask);
+      mockRest
+        .mockResolvedValueOnce(existingTask) // analyzeUpdateState's GET
+        .mockResolvedValueOnce(updatedTask) // POST /tasks/{id}
+        .mockResolvedValueOnce(updatedTask); // final GET
 
       const result = await callTool('update', {
         id: 1,
@@ -365,8 +385,10 @@ describe('Tasks Tool - Repeating Tasks', () => {
         repeatMode: 'week',
       });
 
-      expect(mockClient.tasks.updateTask).toHaveBeenCalledWith(
-        1,
+      expect(mockRest).toHaveBeenCalledWith(
+        mockAuthManager,
+        'POST',
+        '/tasks/1',
         expect.objectContaining({
           repeat_after: 1 * 7 * 24 * 60 * 60,
           repeat_mode: 0,

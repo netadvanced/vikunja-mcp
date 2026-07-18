@@ -25,9 +25,8 @@
  * by `FilteringContext` when the listing is cross-project.
  */
 
-import type { Task, GetTasksParams } from 'node-vikunja';
 import type { TaskFilteringStrategy } from './TaskFilteringStrategy';
-import type { FilteringArgs, FilteringParams, FilteringResult } from './types';
+import type { FilteringArgs, FilteringParams, FilteringResult, TaskListApiParams, VikunjaTask } from './types';
 import { ClientSideFilteringStrategy } from './ClientSideFilteringStrategy';
 import { vikunjaRestRequest } from '../vikunja-rest';
 import { MCPError, ErrorCode } from '../../types';
@@ -36,12 +35,14 @@ import { logger } from '../logger';
 /**
  * Builds the `GET /tasks` query string from the shared API params plus the
  * task-list-only extras (`order_by`, `filter_timezone`,
- * `filter_include_nulls`, `expand`) that only this direct-REST path can
- * honor — node-vikunja's `GetTasksParams`-driven call sites are out of
- * scope for this change (see docs/ENDPOINT-PLAYBOOK.md's direct-REST rule).
+ * `filter_include_nulls`, `expand`) — single-project listing
+ * (`ClientSideFilteringStrategy`/`ServerSideFilteringStrategy`) does not
+ * honor these, since they were never part of node-vikunja's `GetTasksParams`
+ * shape that the pre-migration single-project call sites used (see
+ * docs/ENDPOINT-PLAYBOOK.md's direct-REST rule).
  */
 export function buildTasksListQuery(
-  apiParams: GetTasksParams,
+  apiParams: TaskListApiParams,
   filterString: string | undefined,
   args: FilteringArgs,
 ): string {
@@ -86,7 +87,7 @@ export class RestCrossProjectFilteringStrategy implements TaskFilteringStrategy 
         path,
       });
 
-      const tasks = await vikunjaRestRequest<Task[]>(authManager, 'GET', path);
+      const tasks = await vikunjaRestRequest<VikunjaTask[]>(authManager, 'GET', path);
       const safeTasks = Array.isArray(tasks) ? tasks : [];
 
       logger.info('Direct REST GET /tasks succeeded for cross-project listing', {

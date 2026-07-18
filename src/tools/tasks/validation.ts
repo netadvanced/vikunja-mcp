@@ -2,9 +2,12 @@
  * Validation utilities for task operations
  */
 
-import type { Task } from 'node-vikunja';
+import type { components } from '../../types/generated/vikunja-openapi';
 import { MCPError, ErrorCode } from '../../types';
 import { validateId as validateSharedId } from '../../utils/validation';
+
+/** `models.Task` per the OpenAPI spec. */
+type Task = components['schemas']['models.Task'];
 
 /**
  * Validates that a date string is in valid ISO 8601 format

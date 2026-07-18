@@ -3,16 +3,20 @@
  * Extends the base filter types with task-specific functionality
  */
 
-import type { Task } from 'node-vikunja';
 import type {
   FilterExpression,
   SavedFilter,
   FilterValidationConfig
 } from '../../../types/filters';
-import type { GetTasksParams } from 'node-vikunja';
 import type { AorpBuilderConfig } from '../../../types';
 import type { SimpleFilterStorage } from '../../../storage';
 import type { AuthManager } from '../../../auth/AuthManager';
+import type { VikunjaTask, TaskListApiParams } from '../../../utils/filtering/types';
+
+/** `models.Task` per the OpenAPI spec. */
+type Task = VikunjaTask;
+/** Query params shared by the task-listing endpoints. */
+type GetTasksParams = TaskListApiParams;
 
 /**
  * Arguments for filtering operations

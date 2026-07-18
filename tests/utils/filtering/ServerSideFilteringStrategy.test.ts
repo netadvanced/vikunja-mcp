@@ -1,21 +1,28 @@
 /**
  * Tests for ServerSideFilteringStrategy
  * Ensures server-side filtering behavior is properly tested
+ *
+ * Migrated (Wave D, tasks-core) off the node-vikunja client onto
+ * `vikunjaRestRequest`. The cross-project ("all projects") branch calls the
+ * same (non-existent) `GET /tasks/all` path node-vikunja's `getAllTasks`
+ * used pre-migration — see ServerSideFilteringStrategy's doc comment for why
+ * that literal call-site migration is preserved rather than redirected to a
+ * different, working endpoint. This branch is unreachable in production
+ * (FilteringContext always routes cross-project listings through
+ * RestCrossProjectFilteringStrategy first) but is still exercised directly
+ * here since the class remains independently unit-tested.
  */
 
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 import { ServerSideFilteringStrategy } from '../../../src/utils/filtering/ServerSideFilteringStrategy';
 import type { FilteringParams } from '../../../src/utils/filtering/types';
-import type { MockVikunjaClient } from '../../types/mocks';
-import type { Task } from 'node-vikunja';
+import type { AuthManager } from '../../../src/auth/AuthManager';
 import { MCPError, ErrorCode } from '../../../src/types';
 
-// Mock the client
-jest.mock('../../../src/client', () => ({
-  getClientFromContext: jest.fn(),
+jest.mock('../../../src/utils/vikunja-rest', () => ({
+  vikunjaRestRequest: jest.fn(),
 }));
 
-// Mock logger
 jest.mock('../../../src/utils/logger', () => ({
   logger: {
     info: jest.fn(),
@@ -25,19 +32,33 @@ jest.mock('../../../src/utils/logger', () => ({
   },
 }));
 
-// Mock validation
 jest.mock('../../../src/tools/tasks/validation', () => ({
   validateId: jest.fn(),
 }));
 
-import { getClientFromContext } from '../../../src/client';
+import { vikunjaRestRequest } from '../../../src/utils/vikunja-rest';
 import { validateId } from '../../../src/tools/tasks/validation';
+
+interface MockTask {
+  id: number;
+  title: string;
+  description: string;
+  done: boolean;
+  priority: number;
+  percent_done: number;
+  due_date: string;
+  created: string;
+  updated: string;
+  project_id: number;
+  assignees: unknown[];
+  labels: unknown[];
+}
 
 describe('ServerSideFilteringStrategy', () => {
   let strategy: ServerSideFilteringStrategy;
-  let mockClient: MockVikunjaClient;
-  
-  const mockTask: Task = {
+  let mockAuthManager: AuthManager;
+
+  const mockTask: MockTask = {
     id: 1,
     title: 'Test Task',
     description: 'Test Description',
@@ -50,32 +71,14 @@ describe('ServerSideFilteringStrategy', () => {
     project_id: 1,
     assignees: [],
     labels: [],
-  } as Task;
+  };
 
   beforeEach(() => {
     jest.clearAllMocks();
-    
+
     strategy = new ServerSideFilteringStrategy();
-    
-    mockClient = {
-      tasks: {
-        getAllTasks: jest.fn(),
-        getProjectTasks: jest.fn(),
-        // Add other required methods
-        createTask: jest.fn(),
-        getTask: jest.fn(),
-        updateTask: jest.fn(),
-        deleteTask: jest.fn(),
-        getTaskComments: jest.fn(),
-        createTaskComment: jest.fn(),
-        updateTaskLabels: jest.fn(),
-        bulkAssignUsersToTask: jest.fn(),
-        removeUserFromTask: jest.fn(),
-        bulkUpdateTasks: jest.fn(),
-      },
-    } as MockVikunjaClient;
-    
-    (getClientFromContext as jest.MockedFunction<typeof getClientFromContext>).mockResolvedValue(mockClient);
+    mockAuthManager = {} as AuthManager;
+
     (validateId as jest.MockedFunction<typeof validateId>).mockImplementation(() => {});
   });
 
@@ -85,7 +88,8 @@ describe('ServerSideFilteringStrategy', () => {
         args: {},
         filterExpression: null,
         filterString: undefined,
-        params: { page: 1, per_page: 10 }
+        params: { page: 1, per_page: 10 },
+        authManager: mockAuthManager,
       };
 
       await expect(strategy.execute(params)).rejects.toThrow(MCPError);
@@ -95,70 +99,86 @@ describe('ServerSideFilteringStrategy', () => {
       });
     });
 
-    it('should use getAllTasks for all projects filtering', async () => {
+    it('should throw INTERNAL_ERROR when authManager is not provided', async () => {
+      const params: FilteringParams = {
+        args: {},
+        filterExpression: null,
+        filterString: 'priority >= 3',
+        params: { page: 1, per_page: 10 },
+      };
+
+      await expect(strategy.execute(params)).rejects.toMatchObject({
+        code: ErrorCode.INTERNAL_ERROR,
+        message: 'ServerSideFilteringStrategy requires an authManager',
+      });
+      expect(vikunjaRestRequest).not.toHaveBeenCalled();
+    });
+
+    it('should use GET /tasks/all for all projects filtering', async () => {
       const params: FilteringParams = {
         args: { allProjects: true },
         filterExpression: null,
         filterString: 'priority >= 3',
-        params: { page: 1, per_page: 10 }
+        params: { page: 1, per_page: 10 },
+        authManager: mockAuthManager,
       };
 
-      mockClient.tasks.getAllTasks.mockResolvedValue([mockTask]);
+      (vikunjaRestRequest as jest.Mock).mockResolvedValue([mockTask]);
 
       const result = await strategy.execute(params);
 
-      expect(mockClient.tasks.getAllTasks).toHaveBeenCalledWith({
-        page: 1,
-        per_page: 10,
-        filter: 'priority >= 3'
-      });
-      expect(mockClient.tasks.getProjectTasks).not.toHaveBeenCalled();
+      expect(vikunjaRestRequest).toHaveBeenCalledWith(
+        mockAuthManager,
+        'GET',
+        '/tasks/all?page=1&per_page=10&filter=priority+%3E%3D+3',
+      );
       expect(result.tasks).toEqual([mockTask]);
       expect(result.metadata.serverSideFilteringUsed).toBe(true);
       expect(result.metadata.serverSideFilteringAttempted).toBe(true);
       expect(result.metadata.clientSideFiltering).toBe(false);
     });
 
-    it('should use getAllTasks when no projectId is specified', async () => {
+    it('should use GET /tasks/all when no projectId is specified', async () => {
       const params: FilteringParams = {
         args: {},
         filterExpression: null,
         filterString: 'done = false',
-        params: { page: 1, per_page: 10 }
+        params: { page: 1, per_page: 10 },
+        authManager: mockAuthManager,
       };
 
-      mockClient.tasks.getAllTasks.mockResolvedValue([mockTask]);
+      (vikunjaRestRequest as jest.Mock).mockResolvedValue([mockTask]);
 
       const result = await strategy.execute(params);
 
-      expect(mockClient.tasks.getAllTasks).toHaveBeenCalledWith({
-        page: 1,
-        per_page: 10,
-        filter: 'done = false'
-      });
+      expect(vikunjaRestRequest).toHaveBeenCalledWith(
+        mockAuthManager,
+        'GET',
+        '/tasks/all?page=1&per_page=10&filter=done+%3D+false',
+      );
       expect(result.metadata.filteringNote).toBe('Server-side filtering used (modern Vikunja)');
     });
 
-    it('should use getProjectTasks for specific project filtering', async () => {
+    it('should use GET /projects/{id}/tasks for specific project filtering', async () => {
       const projectId = 42;
       const params: FilteringParams = {
         args: { projectId, allProjects: false },
         filterExpression: null,
         filterString: 'priority >= 3',
-        params: { page: 1, per_page: 10 }
+        params: { page: 1, per_page: 10 },
+        authManager: mockAuthManager,
       };
 
-      mockClient.tasks.getProjectTasks.mockResolvedValue([mockTask]);
+      (vikunjaRestRequest as jest.Mock).mockResolvedValue([mockTask]);
 
       const result = await strategy.execute(params);
 
       expect(validateId).toHaveBeenCalledWith(projectId, 'projectId');
-      expect(mockClient.tasks.getProjectTasks).toHaveBeenCalledWith(projectId, {
-        page: 1,
-        per_page: 10,
-        filter: 'priority >= 3'
-      });
-      expect(mockClient.tasks.getAllTasks).not.toHaveBeenCalled();
+      expect(vikunjaRestRequest).toHaveBeenCalledWith(
+        mockAuthManager,
+        'GET',
+        '/projects/42/tasks?page=1&per_page=10&filter=priority+%3E%3D+3',
+      );
       expect(result.tasks).toEqual([mockTask]);
     });
 
@@ -167,11 +187,12 @@ describe('ServerSideFilteringStrategy', () => {
         args: {},
         filterExpression: null,
         filterString: 'priority >= 3',
-        params: { page: 1, per_page: 10 }
+        params: { page: 1, per_page: 10 },
+        authManager: mockAuthManager,
       };
 
       const apiError = new Error('Server-side filtering not supported');
-      mockClient.tasks.getAllTasks.mockRejectedValue(apiError);
+      (vikunjaRestRequest as jest.Mock).mockRejectedValue(apiError);
 
       await expect(strategy.execute(params)).rejects.toThrow(apiError);
     });
@@ -181,7 +202,8 @@ describe('ServerSideFilteringStrategy', () => {
         args: { projectId: -1 },
         filterExpression: null,
         filterString: 'priority >= 3',
-        params: { page: 1, per_page: 10 }
+        params: { page: 1, per_page: 10 },
+        authManager: mockAuthManager,
       };
 
       const validationError = new MCPError(ErrorCode.VALIDATION_ERROR, 'Invalid project ID');
@@ -190,7 +212,7 @@ describe('ServerSideFilteringStrategy', () => {
       });
 
       await expect(strategy.execute(params)).rejects.toThrow(validationError);
-      expect(mockClient.tasks.getProjectTasks).not.toHaveBeenCalled();
+      expect(vikunjaRestRequest).not.toHaveBeenCalled();
     });
 
     it('should include filter string in API parameters', async () => {
@@ -199,19 +221,19 @@ describe('ServerSideFilteringStrategy', () => {
         args: {},
         filterExpression: null,
         filterString,
-        params: { page: 2, per_page: 50, sort_by: 'priority' }
+        params: { page: 2, per_page: 50, sort_by: 'priority' },
+        authManager: mockAuthManager,
       };
 
-      mockClient.tasks.getAllTasks.mockResolvedValue([mockTask]);
+      (vikunjaRestRequest as jest.Mock).mockResolvedValue([mockTask]);
 
       await strategy.execute(params);
 
-      expect(mockClient.tasks.getAllTasks).toHaveBeenCalledWith({
-        page: 2,
-        per_page: 50,
-        sort_by: 'priority',
-        filter: filterString
-      });
+      expect(vikunjaRestRequest).toHaveBeenCalledWith(
+        mockAuthManager,
+        'GET',
+        `/tasks/all?page=2&per_page=50&sort_by=priority&filter=${encodeURIComponent(filterString).replace(/%20/g, '+')}`,
+      );
     });
 
     it('should return correct metadata structure', async () => {
@@ -219,10 +241,11 @@ describe('ServerSideFilteringStrategy', () => {
         args: {},
         filterExpression: null,
         filterString: 'priority >= 3',
-        params: { page: 1, per_page: 10 }
+        params: { page: 1, per_page: 10 },
+        authManager: mockAuthManager,
       };
 
-      mockClient.tasks.getAllTasks.mockResolvedValue([mockTask]);
+      (vikunjaRestRequest as jest.Mock).mockResolvedValue([mockTask]);
 
       const result = await strategy.execute(params);
 
@@ -241,11 +264,12 @@ describe('ServerSideFilteringStrategy', () => {
         args: {},
         filterExpression: null,
         filterString: 'priority >= 3',
-        params: { page: 1, per_page: 10 }
+        params: { page: 1, per_page: 10 },
+        authManager: mockAuthManager,
       };
 
       const networkError = new Error('Network connection failed');
-      mockClient.tasks.getAllTasks.mockRejectedValue(networkError);
+      (vikunjaRestRequest as jest.Mock).mockRejectedValue(networkError);
 
       await expect(strategy.execute(params)).rejects.toThrow(networkError);
     });
@@ -255,11 +279,12 @@ describe('ServerSideFilteringStrategy', () => {
         args: {},
         filterExpression: null,
         filterString: 'priority >= 3',
-        params: { page: 1, per_page: 10 }
+        params: { page: 1, per_page: 10 },
+        authManager: mockAuthManager,
       };
 
       const authError = new Error('Unauthorized');
-      mockClient.tasks.getAllTasks.mockRejectedValue(authError);
+      (vikunjaRestRequest as jest.Mock).mockRejectedValue(authError);
 
       await expect(strategy.execute(params)).rejects.toThrow(authError);
     });
@@ -269,11 +294,12 @@ describe('ServerSideFilteringStrategy', () => {
         args: {},
         filterExpression: null,
         filterString: 'invalid filter syntax',
-        params: { page: 1, per_page: 10 }
+        params: { page: 1, per_page: 10 },
+        authManager: mockAuthManager,
       };
 
       const syntaxError = new Error('Invalid filter syntax');
-      mockClient.tasks.getAllTasks.mockRejectedValue(syntaxError);
+      (vikunjaRestRequest as jest.Mock).mockRejectedValue(syntaxError);
 
       await expect(strategy.execute(params)).rejects.toThrow(syntaxError);
     });
@@ -285,7 +311,8 @@ describe('ServerSideFilteringStrategy', () => {
         args: {},
         filterExpression: null,
         filterString: '',
-        params: { page: 1, per_page: 10 }
+        params: { page: 1, per_page: 10 },
+        authManager: mockAuthManager,
       };
 
       await expect(strategy.execute(params)).rejects.toThrow(MCPError);
@@ -296,11 +323,12 @@ describe('ServerSideFilteringStrategy', () => {
         args: {},
         filterExpression: null,
         filterString: '   ',
-        params: { page: 1, per_page: 10 }
+        params: { page: 1, per_page: 10 },
+        authManager: mockAuthManager,
       };
 
       // Whitespace filter should be passed through to API (may cause server error)
-      mockClient.tasks.getAllTasks.mockRejectedValue(new Error('Invalid filter'));
+      (vikunjaRestRequest as jest.Mock).mockRejectedValue(new Error('Invalid filter'));
 
       await expect(strategy.execute(params)).rejects.toThrow();
     });
@@ -310,20 +338,20 @@ describe('ServerSideFilteringStrategy', () => {
         args: { projectId: 0, allProjects: false },
         filterExpression: null,
         filterString: 'priority >= 3',
-        params: { page: 1, per_page: 10 }
+        params: { page: 1, per_page: 10 },
+        authManager: mockAuthManager,
       };
 
-      const emptyTaskArray: Task[] = [];
-      mockClient.tasks.getProjectTasks.mockResolvedValue(emptyTaskArray);
+      (vikunjaRestRequest as jest.Mock).mockResolvedValue([]);
 
       const result = await strategy.execute(params);
 
       expect(validateId).toHaveBeenCalledWith(0, 'projectId');
-      expect(mockClient.tasks.getProjectTasks).toHaveBeenCalledWith(0, {
-        page: 1,
-        per_page: 10,
-        filter: 'priority >= 3'
-      });
+      expect(vikunjaRestRequest).toHaveBeenCalledWith(
+        mockAuthManager,
+        'GET',
+        '/projects/0/tasks?page=1&per_page=10&filter=priority+%3E%3D+3',
+      );
       expect(result.tasks).toEqual([]);
     });
 
@@ -332,11 +360,12 @@ describe('ServerSideFilteringStrategy', () => {
         args: {},
         filterExpression: null,
         filterString: 'priority >= 3',
-        params: { page: 1, per_page: 10 }
+        params: { page: 1, per_page: 10 },
+        authManager: mockAuthManager,
       };
 
       // Mock API returning undefined (edge case)
-      mockClient.tasks.getAllTasks.mockResolvedValue(undefined as any);
+      (vikunjaRestRequest as jest.Mock).mockResolvedValue(undefined);
 
       const result = await strategy.execute(params);
 

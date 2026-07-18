@@ -4,12 +4,16 @@
  */
 
 import { MCPError, ErrorCode } from '../../../types';
-import { getClientFromContext } from '../../../client';
-import type { Task, VikunjaClient } from 'node-vikunja';
+import type { AuthManager } from '../../../auth/AuthManager';
+import { vikunjaRestRequest } from '../../../utils/vikunja-rest';
 import { validateId } from '../validation';
 import { transformApiError, handleFetchError, handleStatusCodeError } from '../../../utils/error-handler';
 import { createTaskResponse } from './TaskResponseFormatter';
 import { formatAorpAsMarkdown } from '../../../utils/response-factory';
+import type { components } from '../../../types/generated/vikunja-openapi';
+
+/** `models.Task` per the OpenAPI spec — GET /tasks/{id}'s response shape. */
+type VikunjaTask = components['schemas']['models.Task'];
 
 export interface DeleteTaskArgs {
   id?: number;
@@ -19,27 +23,30 @@ export interface DeleteTaskArgs {
 /**
  * Deletes a task with graceful error handling and informative response
  */
-export async function deleteTask(args: DeleteTaskArgs): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+export async function deleteTask(
+  args: DeleteTaskArgs,
+  authManager: AuthManager,
+): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   try {
     if (!args.id) {
       throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Task id is required for delete operation');
     }
     validateId(args.id, 'id');
 
-    const client = await getClientFromContext();
-
     // Try to get task before deletion for response, but handle failure gracefully
-    const deletionContext = await gatherDeletionContext(client, args.id);
+    const deletionContext = await gatherDeletionContext(authManager, args.id);
 
     // Perform the deletion
-    await client.tasks.deleteTask(args.id);
+    await vikunjaRestRequest(authManager, 'DELETE', `/tasks/${args.id}`);
 
     const response = createTaskResponse(
       'delete-task',
       deletionContext.taskToDelete
         ? `Task "${deletionContext.taskToDelete.title}" deleted successfully`
         : `Task ${args.id} deleted successfully`,
-      deletionContext.taskToDelete ? { task: deletionContext.taskToDelete } : { deletedTaskId: args.id },
+      (deletionContext.taskToDelete
+        ? { task: deletionContext.taskToDelete }
+        : { deletedTaskId: args.id }) as unknown as Parameters<typeof createTaskResponse>[2],
       {
         timestamp: new Date().toISOString(),
         taskId: args.id,
@@ -61,8 +68,14 @@ export async function deleteTask(args: DeleteTaskArgs): Promise<{ content: Array
       ],
     };
   } catch (error) {
-    // Re-throw MCPError instances without modification
+    // A REST 404 is translated to the same friendly "not found" message the
+    // pre-migration node-vikunja error path produced via handleStatusCodeError
+    // (which keys off a bare `.statusCode` property). vikunjaRestRequest
+    // always throws MCPError with the status nested under `.details`.
     if (error instanceof MCPError) {
+      if (error.details?.statusCode === 404 && args.id) {
+        throw new MCPError(ErrorCode.NOT_FOUND, `Task with ID ${args.id} not found`);
+      }
       throw error;
     }
 
@@ -87,7 +100,7 @@ export async function deleteTask(args: DeleteTaskArgs): Promise<{ content: Array
  * Internal interface for deletion context information
  */
 interface DeletionContext {
-  taskToDelete: Task | undefined;
+  taskToDelete: VikunjaTask | undefined;
   retrievalSuccess: boolean;
 }
 
@@ -95,12 +108,12 @@ interface DeletionContext {
  * Gathers information about the task before deletion for better response messaging
  * Handles cases where the task might not exist or be accessible
  */
-async function gatherDeletionContext(client: VikunjaClient, taskId: number): Promise<DeletionContext> {
-  let taskToDelete: Task | undefined;
+async function gatherDeletionContext(authManager: AuthManager, taskId: number): Promise<DeletionContext> {
+  let taskToDelete: VikunjaTask | undefined;
   let retrievalSuccess = false;
 
   try {
-    taskToDelete = await client.tasks.getTask(taskId);
+    taskToDelete = await vikunjaRestRequest<VikunjaTask>(authManager, 'GET', `/tasks/${taskId}`);
     retrievalSuccess = true;
   } catch {
     // If we can't get the task, proceed with deletion anyway

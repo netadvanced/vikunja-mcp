@@ -2,9 +2,25 @@
  * Type definitions for the filtering strategy pattern
  */
 
-import type { Task, GetTasksParams } from 'node-vikunja';
 import type { FilterExpression } from '../../types/filters';
 import type { AuthManager } from '../../auth/AuthManager';
+import type { components } from '../../types/generated/vikunja-openapi';
+
+/** `models.Task` per the OpenAPI spec. */
+export type VikunjaTask = components['schemas']['models.Task'];
+
+/**
+ * Query params shared by the task-listing endpoints (page/per_page/s/sort_by
+ * plus the server-side `filter` string). Mirrors node-vikunja's
+ * `GetTasksParams` shape without depending on the (EOL) node-vikunja package.
+ */
+export interface TaskListApiParams {
+  page?: number;
+  per_page?: number;
+  s?: string;
+  sort_by?: string;
+  filter?: string;
+}
 
 /**
  * Arguments for filtering operations
@@ -21,8 +37,11 @@ export interface FilteringArgs {
   done?: boolean;
   /**
    * The documented GET /tasks `order_by` param ('asc' | 'desc', paired with
-   * `sort_by`). Only honored by `RestCrossProjectFilteringStrategy` — the
-   * single-project node-vikunja call site is out of scope for this change.
+   * `sort_by`). Only honored by `RestCrossProjectFilteringStrategy` —
+   * single-project listing (`ClientSideFilteringStrategy`/
+   * `ServerSideFilteringStrategy`) never supported this param even
+   * pre-migration, so it stays REST-cross-project-only to preserve exact
+   * behavior.
    */
   orderBy?: 'asc' | 'desc';
   /** GET /tasks `filter_timezone` param. Same REST-only scope as `orderBy`. */
@@ -40,7 +59,7 @@ export interface FilteringParams {
   args: FilteringArgs;
   filterExpression: FilterExpression | null;
   filterString: string | undefined;
-  params: GetTasksParams;
+  params: TaskListApiParams;
   /**
    * Active auth manager, required by strategies that call the direct-REST
    * helper (`RestCrossProjectFilteringStrategy`). Kept as its own field
@@ -64,7 +83,7 @@ export interface FilteringMetadata {
  * Result of a filtering operation
  */
 export interface FilteringResult {
-  tasks: Task[];
+  tasks: VikunjaTask[];
   metadata: FilteringMetadata;
 }
 

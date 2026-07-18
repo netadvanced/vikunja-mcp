@@ -1,15 +1,26 @@
 /**
  * Edge case tests for tasks/crud.ts to ensure comprehensive coverage
  * Targets defensive programming patterns and boundary conditions
+ *
+ * Migrated (Wave D, tasks-core) off the node-vikunja client onto
+ * `vikunjaRestRequest` for the core create/get/update/delete calls.
+ * Labels/assignees remain on the node-vikunja client (sub-resource,
+ * sibling item M-B).
  */
 
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 import { createTask, getTask, updateTask, deleteTask } from '../../src/tools/tasks/crud';
 import { MCPError, ErrorCode } from '../../src/types';
 import type { MockVikunjaClient } from '../types/mocks';
+import type { AuthManager } from '../../src/auth/AuthManager';
 import { parseMarkdown } from '../utils/markdown';
 
-// Mock the client module
+// Mock the direct-REST helper used by the migrated CRUD services
+jest.mock('../../src/utils/vikunja-rest', () => ({
+  vikunjaRestRequest: jest.fn(),
+}));
+
+// Mock the client module (still used for labels/assignees sub-resource calls)
 jest.mock('../../src/client', () => ({
   getClientFromContext: jest.fn(),
 }));
@@ -24,9 +35,35 @@ jest.mock('../../src/utils/logger', () => ({
   },
 }));
 
+import { vikunjaRestRequest } from '../../src/utils/vikunja-rest';
+
 describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
   let mockClient: MockVikunjaClient;
   const { getClientFromContext } = require('../../src/client');
+  const mockAuthManager = {} as AuthManager;
+  const mockRest = vikunjaRestRequest as jest.Mock;
+
+  /** Sentinel wrapper marking a routeRest handler value as a rejection. */
+  const REJECT = (value: unknown): { __reject: true; value: unknown } => ({ __reject: true, value });
+
+  /**
+   * Routes vikunjaRestRequest calls to per-HTTP-method fixtures/errors. Good
+   * enough for these tests since each one does at most a handful of calls
+   * per method (GET for fetch/re-fetch, POST for update, PUT for create,
+   * DELETE for delete/rollback). Wrap a handler in `REJECT(...)` to make
+   * that method's calls reject instead of resolve — plain `instanceof Error`
+   * detection isn't reliable here since some tests deliberately reject with
+   * non-Error values (strings, plain objects, undefined).
+   */
+  function routeRest(handlers: Partial<Record<'GET' | 'POST' | 'PUT' | 'DELETE', unknown>>): void {
+    mockRest.mockImplementation((_auth: unknown, method: string) => {
+      const handler = handlers[method as 'GET' | 'POST' | 'PUT' | 'DELETE'];
+      if (handler && typeof handler === 'object' && (handler as { __reject?: true }).__reject === true) {
+        return Promise.reject((handler as { value: unknown }).value);
+      }
+      return Promise.resolve(handler);
+    });
+  }
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -52,16 +89,15 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
   describe('createTask edge cases', () => {
     it('should handle empty description field correctly', async () => {
       const createdTask = { id: 1, title: 'Test Task', project_id: 1 };
-      mockClient.tasks.createTask.mockResolvedValue(createdTask);
-      mockClient.tasks.getTask.mockResolvedValue(createdTask);
+      routeRest({ PUT: createdTask, GET: createdTask });
 
       const result = await createTask({
         projectId: 1,
         title: 'Test Task',
         description: '', // Empty string
-      });
+      }, mockAuthManager);
 
-      expect(mockClient.tasks.createTask).toHaveBeenCalledWith(1, {
+      expect(mockRest).toHaveBeenCalledWith(mockAuthManager, 'PUT', '/projects/1/tasks', {
         title: 'Test Task',
         project_id: 1,
         description: '',
@@ -75,8 +111,7 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
 
     it('should handle undefined optional fields correctly', async () => {
       const createdTask = { id: 1, title: 'Test Task', project_id: 1 };
-      mockClient.tasks.createTask.mockResolvedValue(createdTask);
-      mockClient.tasks.getTask.mockResolvedValue(createdTask);
+      routeRest({ PUT: createdTask, GET: createdTask });
 
       const result = await createTask({
         projectId: 1,
@@ -84,9 +119,9 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
         description: undefined,
         dueDate: undefined,
         priority: undefined,
-      });
+      }, mockAuthManager);
 
-      expect(mockClient.tasks.createTask).toHaveBeenCalledWith(1, {
+      expect(mockRest).toHaveBeenCalledWith(mockAuthManager, 'PUT', '/projects/1/tasks', {
         title: 'Test Task',
         project_id: 1,
       });
@@ -99,17 +134,16 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
 
     it('should handle zero values correctly', async () => {
       const createdTask = { id: 1, title: 'Test Task', project_id: 1, priority: 0 };
-      mockClient.tasks.createTask.mockResolvedValue(createdTask);
-      mockClient.tasks.getTask.mockResolvedValue(createdTask);
+      routeRest({ PUT: createdTask, GET: createdTask });
 
       const result = await createTask({
         projectId: 1,
         title: 'Test Task',
         priority: 0, // Zero is valid
         repeatAfter: 0, // Zero is valid
-      });
+      }, mockAuthManager);
 
-      expect(mockClient.tasks.createTask).toHaveBeenCalledWith(1, {
+      expect(mockRest).toHaveBeenCalledWith(mockAuthManager, 'PUT', '/projects/1/tasks', {
         title: 'Test Task',
         project_id: 1,
         priority: 0,
@@ -125,17 +159,16 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
 
     it('should handle empty arrays correctly', async () => {
       const createdTask = { id: 1, title: 'Test Task', project_id: 1 };
-      mockClient.tasks.createTask.mockResolvedValue(createdTask);
-      mockClient.tasks.getTask.mockResolvedValue(createdTask);
+      routeRest({ PUT: createdTask, GET: createdTask });
 
       const result = await createTask({
         projectId: 1,
         title: 'Test Task',
         labels: [], // Empty array
         assignees: [], // Empty array
-      });
+      }, mockAuthManager);
 
-      expect(mockClient.tasks.createTask).toHaveBeenCalledWith(1, {
+      expect(mockRest).toHaveBeenCalledWith(mockAuthManager, 'PUT', '/projects/1/tasks', {
         title: 'Test Task',
         project_id: 1,
       });
@@ -152,14 +185,14 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
 
     it('should fail when labels are requested but task has no ID', async () => {
       const createdTaskNoId = { title: 'Test Task', project_id: 1 }; // No ID
-      mockClient.tasks.createTask.mockResolvedValue(createdTaskNoId);
+      routeRest({ PUT: createdTaskNoId });
 
       await expect(
         createTask({
           projectId: 1,
           title: 'Test Task',
           labels: [1, 2], // Labels provided but task has no ID
-        }),
+        }, mockAuthManager),
       ).rejects.toThrow('did not return a task id');
 
       // Should not attempt label operations without task ID
@@ -169,14 +202,14 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
 
     it('should fail when assignees are requested but task has no ID', async () => {
       const createdTaskNoId = { title: 'Test Task', project_id: 1 }; // No ID
-      mockClient.tasks.createTask.mockResolvedValue(createdTaskNoId);
+      routeRest({ PUT: createdTaskNoId });
 
       await expect(
         createTask({
           projectId: 1,
           title: 'Test Task',
           assignees: [1, 2], // Assignees provided but task has no ID
-        }),
+        }, mockAuthManager),
       ).rejects.toThrow('did not return a task id');
 
       expect(mockClient.tasks.bulkAssignUsersToTask).not.toHaveBeenCalled();
@@ -198,8 +231,7 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
     };
 
     it('should handle updating with same values (no changes)', async () => {
-      mockClient.tasks.getTask.mockResolvedValue(mockTask);
-      mockClient.tasks.updateTask.mockResolvedValue(mockTask);
+      routeRest({ GET: mockTask, POST: mockTask });
 
       const result = await updateTask({
         id: 1,
@@ -207,10 +239,10 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
         description: 'Original Description', // Same value
         priority: 1, // Same value
         done: false, // Same value
-      });
+      }, mockAuthManager);
 
-      // Should still call updateTask but with no affected fields
-      expect(mockClient.tasks.updateTask).toHaveBeenCalledWith(1, {
+      // Should still call the update endpoint but with no affected fields
+      expect(mockRest).toHaveBeenCalledWith(mockAuthManager, 'POST', '/tasks/1', {
         ...mockTask,
         title: 'Original Title',
         description: 'Original Description',
@@ -232,18 +264,15 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
         repeat_mode: 1,
       };
 
-      mockClient.tasks.getTask
-        .mockResolvedValueOnce(currentTask)
-        .mockResolvedValueOnce(currentTask);
-      mockClient.tasks.updateTask.mockResolvedValue(currentTask);
+      routeRest({ GET: currentTask, POST: currentTask });
 
       const result = await updateTask({
         id: 1,
         repeatMode: 'week', // Should convert to number
-      });
+      }, mockAuthManager);
 
-      // Should call updateTask with expected repeat configuration
-      expect(mockClient.tasks.updateTask).toHaveBeenCalledWith(1, expect.objectContaining({
+      // Should call the update endpoint with expected repeat configuration
+      expect(mockRest).toHaveBeenCalledWith(mockAuthManager, 'POST', '/tasks/1', expect.objectContaining({
         repeat_mode: 0, // Week mode converts to 0
       }));
 
@@ -260,18 +289,17 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
         repeat_mode: 0,
       };
 
-      mockClient.tasks.getTask
-        .mockResolvedValueOnce(currentTask)
-        .mockResolvedValueOnce(currentTask);
-      mockClient.tasks.updateTask.mockResolvedValue(currentTask);
+      routeRest({ GET: currentTask, POST: currentTask });
 
       const result = await updateTask({
         id: 1,
         repeatAfter: 5, // Only update repeat after
-      });
+      }, mockAuthManager);
 
-      expect(mockClient.tasks.updateTask).toHaveBeenCalledWith(
-        1,
+      expect(mockRest).toHaveBeenCalledWith(
+        mockAuthManager,
+        'POST',
+        '/tasks/1',
         expect.objectContaining({
           repeat_after: 5, // Without repeatMode, value is used as-is (seconds)
         })
@@ -289,16 +317,15 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
         assignees: [{ id: 1 }, { id: 2 }],
       };
 
-      mockClient.tasks.getTask
-        .mockResolvedValueOnce(taskWithAssignees)
-        .mockResolvedValueOnce(taskWithAssignees);
-      mockClient.tasks.updateTask.mockResolvedValue(taskWithAssignees);
+      routeRest({ GET: taskWithAssignees, POST: taskWithAssignees });
+      // updateTaskAssignees's diff-calculation fetch (still node-vikunja client)
+      mockClient.tasks.getTask.mockResolvedValue(taskWithAssignees);
       mockClient.tasks.removeUserFromTask.mockResolvedValue(undefined);
 
       const result = await updateTask({
         id: 1,
         assignees: [], // Remove all assignees
-      });
+      }, mockAuthManager);
 
       // Should remove all existing assignees
       expect(mockClient.tasks.removeUserFromTask).toHaveBeenCalledWith(1, 1);
@@ -318,16 +345,14 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
         assignees: null, // Null assignees
       };
 
-      mockClient.tasks.getTask
-        .mockResolvedValueOnce(taskWithNullAssignees)
-        .mockResolvedValueOnce(taskWithNullAssignees);
-      mockClient.tasks.updateTask.mockResolvedValue(taskWithNullAssignees);
+      routeRest({ GET: taskWithNullAssignees, POST: taskWithNullAssignees });
+      mockClient.tasks.getTask.mockResolvedValue(taskWithNullAssignees);
       mockClient.tasks.assignUserToTask.mockResolvedValue(undefined);
 
       const result = await updateTask({
         id: 1,
         assignees: [1, 2], // Add assignees to task with null assignees
-      });
+      }, mockAuthManager);
 
       // Should add all assignees (since current is empty due to null), one
       // additive per-user call each
@@ -346,15 +371,13 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
 
   describe('deleteTask edge cases', () => {
     it('should handle task not found during pre-delete fetch gracefully', async () => {
-      // Mock getTask to fail (task not found)
-      mockClient.tasks.getTask.mockRejectedValue(new Error('Task not found'));
-      // Mock successful deletion
-      mockClient.tasks.deleteTask.mockResolvedValue(undefined);
+      // Mock GET to fail (task not found), DELETE to succeed
+      routeRest({ GET: REJECT(new Error('Task not found')), DELETE: null });
 
-      const result = await deleteTask({ id: 1 });
+      const result = await deleteTask({ id: 1 }, mockAuthManager);
 
       // Should still proceed with deletion
-      expect(mockClient.tasks.deleteTask).toHaveBeenCalledWith(1);
+      expect(mockRest).toHaveBeenCalledWith(mockAuthManager, 'DELETE', '/tasks/1');
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
@@ -365,28 +388,22 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
     });
 
     it('should handle various error types during deletion', async () => {
-      // Mock successful getTask
       const mockTask = { id: 1, title: 'Test Task' };
-      mockClient.tasks.getTask.mockResolvedValue(mockTask);
-      
-      // Mock deleteTask to fail with non-Error object
-      mockClient.tasks.deleteTask.mockRejectedValue({ status: 500, message: 'Server error' });
+      // Mock DELETE to fail with non-Error object
+      routeRest({ GET: mockTask, DELETE: REJECT({ status: 500, message: 'Server error' }) });
 
-      await expect(deleteTask({ id: 1 })).rejects.toThrow(
+      await expect(deleteTask({ id: 1 }, mockAuthManager)).rejects.toThrow(
         'Failed to delete task: Unknown error'
       );
     });
 
     it('should handle string errors during deletion', async () => {
-      // Mock successful getTask
       const mockTask = { id: 1, title: 'Test Task' };
-      mockClient.tasks.getTask.mockResolvedValue(mockTask);
-
-      // Mock deleteTask to fail with string
-      mockClient.tasks.deleteTask.mockRejectedValue('String error message');
+      // Mock DELETE to fail with string
+      routeRest({ GET: mockTask, DELETE: REJECT('String error message') });
 
       // The error handler now preserves string messages for better debugging
-      await expect(deleteTask({ id: 1 })).rejects.toThrow(
+      await expect(deleteTask({ id: 1 }, mockAuthManager)).rejects.toThrow(
         'Failed to delete task: String error message'
       );
     });
@@ -394,30 +411,27 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
 
   describe('getTask edge cases', () => {
     it('should handle various error types in getTask', async () => {
-      // Mock getTask to fail with non-Error object
-      mockClient.tasks.getTask.mockRejectedValue({ code: 404, message: 'Not found' });
+      routeRest({ GET: REJECT({ code: 404, message: 'Not found' }) });
 
-      await expect(getTask({ id: 1 })).rejects.toThrow(
+      await expect(getTask({ id: 1 }, mockAuthManager)).rejects.toThrow(
         'Failed to get task: Unknown error'
       );
     });
 
     it('should handle string errors in getTask', async () => {
-      // Mock getTask to fail with string
-      mockClient.tasks.getTask.mockRejectedValue('Database connection lost');
+      routeRest({ GET: REJECT('Database connection lost') });
 
       // The error handler now preserves string messages for better debugging
-      await expect(getTask({ id: 1 })).rejects.toThrow(
+      await expect(getTask({ id: 1 }, mockAuthManager)).rejects.toThrow(
         'Failed to get task: Database connection lost'
       );
     });
 
     it('should handle undefined error in getTask', async () => {
-      // Mock getTask to fail with undefined
-      mockClient.tasks.getTask.mockRejectedValue(undefined);
+      routeRest({ GET: REJECT(undefined) });
 
       // Undefined errors still show as "Unknown error"
-      await expect(getTask({ id: 1 })).rejects.toThrow(
+      await expect(getTask({ id: 1 }, mockAuthManager)).rejects.toThrow(
         'Failed to get task: Unknown error'
       );
     });
@@ -426,23 +440,23 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
   describe('validation edge cases', () => {
     it('should handle validation errors for zero and negative IDs', async () => {
       // Zero projectId triggers the "required" check first
-      await expect(createTask({ projectId: 0, title: 'Test' })).rejects.toThrow(
+      await expect(createTask({ projectId: 0, title: 'Test' }, mockAuthManager)).rejects.toThrow(
         'projectId is required to create a task'
       );
 
-      await expect(createTask({ projectId: -1, title: 'Test' })).rejects.toThrow(
+      await expect(createTask({ projectId: -1, title: 'Test' }, mockAuthManager)).rejects.toThrow(
         'projectId must be a positive integer'
       );
 
-      await expect(getTask({ id: 0 })).rejects.toThrow(
+      await expect(getTask({ id: 0 }, mockAuthManager)).rejects.toThrow(
         'Task id is required for get operation'
       );
 
-      await expect(updateTask({ id: -1, title: 'Test' })).rejects.toThrow(
+      await expect(updateTask({ id: -1, title: 'Test' }, mockAuthManager)).rejects.toThrow(
         'id must be a positive integer'
       );
 
-      await expect(deleteTask({ id: 0 })).rejects.toThrow(
+      await expect(deleteTask({ id: 0 }, mockAuthManager)).rejects.toThrow(
         'Task id is required for delete operation'
       );
     });
@@ -453,14 +467,14 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
           projectId: 1,
           title: 'Test',
           dueDate: 'invalid-date',
-        })
+        }, mockAuthManager)
       ).rejects.toThrow('dueDate must be a valid ISO 8601 date string');
 
       await expect(
         updateTask({
           id: 1,
           dueDate: '2024-13-45', // Invalid date
-        })
+        }, mockAuthManager)
       ).rejects.toThrow('dueDate must be a valid ISO 8601 date string');
     });
 
@@ -470,7 +484,7 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
           projectId: 1,
           title: 'Test',
           assignees: [1, 0, 2], // 0 is invalid
-        })
+        }, mockAuthManager)
       ).rejects.toThrow('assignee ID must be a positive integer');
 
       await expect(
@@ -478,7 +492,7 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
           projectId: 1,
           title: 'Test',
           assignees: [1, -5, 2], // -5 is invalid
-        })
+        }, mockAuthManager)
       ).rejects.toThrow('assignee ID must be a positive integer');
     });
   });
@@ -486,42 +500,40 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
   describe('simple error context tests', () => {
     it('should handle assignee failure during createTask', async () => {
       const createdTask = { id: 1, title: 'Test Task', project_id: 1 };
-      mockClient.tasks.createTask.mockResolvedValue(createdTask);
-      
+      // PUT (create) succeeds; DELETE (rollback) succeeds.
+      routeRest({ PUT: createdTask, DELETE: null });
+
       // Mock assignee assignment failure
       const assigneeError = new Error('Assignee assignment failed');
       mockClient.tasks.assignUserToTask.mockRejectedValue(assigneeError);
-      
-      // Mock successful rollback
-      mockClient.tasks.deleteTask.mockResolvedValue(undefined);
 
       await expect(
         createTask({
           projectId: 1,
           title: 'Test Task',
           assignees: [1, 2],
-        })
+        }, mockAuthManager)
       ).rejects.toThrow('Failed to complete task creation: Assignee assignment failed');
+
+      expect(mockRest).toHaveBeenCalledWith(mockAuthManager, 'DELETE', '/tasks/1');
     });
 
     it('should handle rollback failure during createTask', async () => {
       const createdTask = { id: 1, title: 'Test Task', project_id: 1 };
-      mockClient.tasks.createTask.mockResolvedValue(createdTask);
-      
+      // PUT (create) succeeds; DELETE (rollback) fails.
+      const deleteError = new Error('Delete failed');
+      routeRest({ PUT: createdTask, DELETE: REJECT(deleteError) });
+
       // Mock label assignment failure
       const labelError = new Error('Label assignment failed');
       mockClient.tasks.addLabelToTask.mockRejectedValue(labelError);
-      
-      // Mock failed rollback
-      const deleteError = new Error('Delete failed');
-      mockClient.tasks.deleteTask.mockRejectedValue(deleteError);
 
       await expect(
         createTask({
           projectId: 1,
           title: 'Test Task',
           labels: [1, 2],
-        })
+        }, mockAuthManager)
       ).rejects.toThrow('Task rollback also failed');
     });
   });

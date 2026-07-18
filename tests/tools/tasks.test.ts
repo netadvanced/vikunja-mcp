@@ -36,6 +36,34 @@ jest.mock('../../src/client', () => ({
 }));
 jest.mock('../../src/auth/AuthManager');
 
+// Migrated (Wave D, tasks-core): the core create/get/update/delete/list
+// calls in TaskCreationService/TaskReadService/TaskUpdateService/
+// TaskDeletionService/ClientSideFilteringStrategy/ServerSideFilteringStrategy/
+// RestCrossProjectFilteringStrategy/bulk-operations-simplified.ts go through
+// vikunjaRestRequest -> fetch now, instead of the node-vikunja client.
+// Labels/assignees/comments/reminders/relations remain on the node-vikunja
+// client (sub-resource, sibling item M-B); the 'list-assignees' describe
+// block below already mocks global.fetch itself for its own dedicated
+// REST calls and overrides/restores globalThis.fetch around this file-level
+// default.
+const mockFetch = jest.fn();
+globalThis.fetch = mockFetch as unknown as typeof fetch;
+
+/** Minimal Response-like object for the REST helper. */
+function mockRestResponse(opts: { ok?: boolean; status?: number; statusText?: string; text?: string }): Response {
+  const { ok = true, status = 200, statusText = 'OK', text = '' } = opts;
+  return {
+    ok,
+    status,
+    statusText,
+    text: jest.fn(async () => text),
+  } as unknown as Response;
+}
+
+function jsonResponse(data: unknown): Response {
+  return mockRestResponse({ text: JSON.stringify(data) });
+}
+
 // Avoid shared "anonymous" circuit breaker replaying stale ops across tests
 jest.mock('../../src/utils/retry', () => {
   const actual = jest.requireActual('../../src/utils/retry');
@@ -174,6 +202,72 @@ describe('Tasks Tool', () => {
         getShareAuth: jest.fn(),
       },
     } as MockVikunjaClient;
+
+    // Proxy the migrated core REST calls (GET/POST/DELETE /tasks/{id}, PUT
+    // /projects/{id}/tasks, GET /projects, GET /projects/{id}/tasks,
+    // GET /tasks/all) through the existing mockClient.{tasks,projects}
+    // mocks above, so every test's per-scenario mock configuration (and
+    // call-count/args assertions on those node-vikunja-shaped methods)
+    // keeps driving behavior unchanged. The bare cross-project GET /tasks
+    // (RestCrossProjectFilteringStrategy's direct-REST primary path) always
+    // rejects fast here so tests exercise the per-project aggregation
+    // fallback they were written against. A rejected mockClient method call
+    // propagates as a genuine fetch()-layer rejection, which the real
+    // vikunjaRestRequest wraps into an MCPError, same as a real network
+    // failure would.
+    mockFetch.mockReset();
+    circuitBreakerRegistry.clear();
+    mockFetch.mockImplementation(async (url: string, init?: { method?: string; body?: string }) => {
+      const parsedUrl = new URL(url);
+      const pathname = parsedUrl.pathname.replace(/^\/api\/v\d+/, '');
+      const method = init?.method ?? 'GET';
+      const body = init?.body !== undefined ? JSON.parse(init.body) : undefined;
+
+      if (pathname === '/tasks') {
+        throw new Error('mock: direct REST GET /tasks unavailable');
+      }
+
+      const parseParams = (): Record<string, unknown> => {
+        const params: Record<string, unknown> = {};
+        const page = parsedUrl.searchParams.get('page');
+        const perPage = parsedUrl.searchParams.get('per_page');
+        const s = parsedUrl.searchParams.get('s');
+        const sortBy = parsedUrl.searchParams.get('sort_by');
+        const filter = parsedUrl.searchParams.get('filter');
+        if (page !== null) params.page = Number(page);
+        if (perPage !== null) params.per_page = Number(perPage);
+        if (s !== null) params.s = s;
+        if (sortBy !== null) params.sort_by = sortBy;
+        if (filter !== null) params.filter = filter;
+        return params;
+      };
+
+      if (pathname === '/projects') {
+        return jsonResponse(await mockClient.projects.getProjects({ per_page: 1000 }));
+      }
+      if (pathname === '/tasks/all') {
+        return jsonResponse(await mockClient.tasks.getAllTasks(parseParams()));
+      }
+      const projectTasksMatch = /^\/projects\/(-?\d+)\/tasks$/.exec(pathname);
+      if (projectTasksMatch?.[1] !== undefined) {
+        if (method === 'PUT') {
+          return jsonResponse(await mockClient.tasks.createTask(Number(projectTasksMatch[1]), body));
+        }
+        return jsonResponse(
+          await mockClient.tasks.getProjectTasks(Number(projectTasksMatch[1]), parseParams()),
+        );
+      }
+
+      const taskIdMatch = /^\/tasks\/(\d+)$/.exec(pathname);
+      if (taskIdMatch?.[1] !== undefined) {
+        const taskId = Number(taskIdMatch[1]);
+        if (method === 'GET') return jsonResponse(await mockClient.tasks.getTask(taskId));
+        if (method === 'POST') return jsonResponse(await mockClient.tasks.updateTask(taskId, body));
+        if (method === 'DELETE') return jsonResponse(await mockClient.tasks.deleteTask(taskId));
+      }
+
+      throw new Error(`mockFetch: unhandled ${method} ${pathname}`);
+    });
 
     // Setup mock auth manager
     mockAuthManager = createMockTestableAuthManager();
@@ -360,16 +454,21 @@ describe('Tasks Tool', () => {
     it('should handle API errors', async () => {
       // Cross-project aggregation calls getProjects first; a failure there
       // (unlike a single project's getProjectTasks, which is caught and
-      // skipped per-project) fails the whole listing.
+      // skipped per-project) fails the whole listing. The GET /projects
+      // call now goes through vikunjaRestRequest, which wraps the
+      // underlying failure into an MCPError (propagated as-is by
+      // listTasks) rather than a bare "Failed to list tasks" wrapper.
       mockClient.projects.getProjects.mockRejectedValue(new Error('API Error'));
 
-      await expect(callTool('list')).rejects.toThrow('Failed to list tasks: API Error');
+      await expect(callTool('list')).rejects.toThrow('Vikunja REST request failed (GET /projects?per_page=1000): API Error');
     });
 
     it('should handle non-Error API errors', async () => {
       mockClient.projects.getProjects.mockRejectedValue('String error');
 
-      await expect(callTool('list')).rejects.toThrow('Failed to list tasks: String error');
+      await expect(callTool('list')).rejects.toThrow(
+        'Vikunja REST request failed (GET /projects?per_page=1000): String error',
+      );
     });
   });
 
@@ -523,12 +622,15 @@ describe('Tasks Tool', () => {
     it('should handle API errors', async () => {
       mockClient.tasks.createTask.mockRejectedValue(new Error('Creation failed'));
 
+      // PUT /projects/{id}/tasks now goes through vikunjaRestRequest, which
+      // wraps the underlying failure into an MCPError (propagated as-is by
+      // createTask rather than re-wrapped generically).
       await expect(
         callTool('create', {
           title: 'Test',
           projectId: 1,
         }),
-      ).rejects.toThrow('Failed to create task: Creation failed');
+      ).rejects.toThrow('Vikunja REST request failed (PUT /projects/1/tasks): Creation failed');
     });
 
     it('should handle non-Error API errors in create', async () => {
@@ -539,7 +641,7 @@ describe('Tasks Tool', () => {
           title: 'Test',
           projectId: 1,
         }),
-      ).rejects.toThrow('Failed to create task');
+      ).rejects.toThrow('Vikunja REST request failed (PUT /projects/1/tasks)');
     });
 
     it('should rollback task creation when label assignment fails', async () => {
@@ -720,8 +822,11 @@ describe('Tasks Tool', () => {
     it('should handle task not found', async () => {
       mockClient.tasks.getTask.mockRejectedValue(new Error('Task not found'));
 
+      // GET /tasks/{id} now goes through vikunjaRestRequest, which wraps
+      // the underlying failure into an MCPError (propagated as-is by
+      // getTask rather than re-wrapped generically).
       await expect(callTool('get', { id: 999 })).rejects.toThrow(
-        'Failed to get task: Task not found',
+        'Vikunja REST request failed (GET /tasks/999): Task not found',
       );
     });
 
@@ -729,7 +834,7 @@ describe('Tasks Tool', () => {
       mockClient.tasks.getTask.mockRejectedValue({ code: 404 });
 
       await expect(callTool('get', { id: 1 })).rejects.toThrow(
-        'Failed to get task',
+        'Vikunja REST request failed (GET /tasks/1)',
       );
     });
 
@@ -1099,12 +1204,15 @@ describe('Tasks Tool', () => {
       mockClient.tasks.getTask.mockResolvedValue(mockTask);
       mockClient.tasks.updateTask.mockRejectedValue('Update failed');
 
+      // POST /tasks/{id} now goes through vikunjaRestRequest, which wraps
+      // the underlying failure into an MCPError (propagated as-is by
+      // updateTask rather than re-wrapped generically).
       await expect(
         callTool('update', {
           id: 1,
           title: 'Test',
         }),
-      ).rejects.toThrow('Failed to update task: Update failed');
+      ).rejects.toThrow('Vikunja REST request failed (POST /tasks/1): Update failed');
     });
 
     it('should update recurring task settings', async () => {
@@ -1181,8 +1289,11 @@ describe('Tasks Tool', () => {
     it('should handle deletion errors', async () => {
       mockClient.tasks.deleteTask.mockRejectedValue(new Error('Cannot delete task'));
 
+      // DELETE /tasks/{id} now goes through vikunjaRestRequest, which wraps
+      // the underlying failure into an MCPError (propagated as-is by
+      // deleteTask rather than re-wrapped generically).
       await expect(callTool('delete', { id: 1 })).rejects.toThrow(
-        'Failed to delete task: Cannot delete task',
+        'Vikunja REST request failed (DELETE /tasks/1): Cannot delete task',
       );
     });
 
@@ -1204,12 +1315,12 @@ describe('Tasks Tool', () => {
     it('should handle non-Error API errors in delete', async () => {
       mockClient.tasks.deleteTask.mockRejectedValue(500);
 
-      // handleStatusCode only surfaces Error/string rejection values; any
-      // other shape (numbers included) is reported as "Unknown error" so
-      // arbitrary upstream payloads never leak into the user-visible
-      // message (see tests/utils/error-handler.test.ts and
-      // tests/tools/tasks-relations.test.ts for the same contract).
-      await expect(callTool('delete', { id: 1 })).rejects.toThrow('Failed to delete task: Unknown error');
+      // DELETE /tasks/{id} now goes through vikunjaRestRequest, which wraps
+      // any rejection value (String(error), for non-Error/non-string
+      // shapes) into an MCPError, propagated as-is by deleteTask.
+      await expect(callTool('delete', { id: 1 })).rejects.toThrow(
+        'Vikunja REST request failed (DELETE /tasks/1): 500',
+      );
     });
 
     it('should validate task ID', async () => {
@@ -1725,7 +1836,11 @@ describe('Tasks Tool', () => {
       // caught and skipped - see PR #22).
       mockClient.projects.getProjects.mockRejectedValue(networkError);
 
-      await expect(callTool('list')).rejects.toThrow('Failed to list tasks: Network error');
+      // GET /projects now goes through vikunjaRestRequest, which wraps the
+      // underlying failure into an MCPError (propagated as-is by listTasks).
+      await expect(callTool('list')).rejects.toThrow(
+        'Vikunja REST request failed (GET /projects?per_page=1000): Network error',
+      );
     });
 
     it('should handle rate limiting', async () => {
@@ -1733,14 +1848,18 @@ describe('Tasks Tool', () => {
       (rateLimitError as any).response = { status: 429 };
       mockClient.projects.getProjects.mockRejectedValue(rateLimitError);
 
-      await expect(callTool('list')).rejects.toThrow('Failed to list tasks: Rate limit exceeded');
+      await expect(callTool('list')).rejects.toThrow(
+        'Vikunja REST request failed (GET /projects?per_page=1000): Rate limit exceeded',
+      );
     });
 
     it('should handle malformed JSON responses', async () => {
       // This would typically happen at the node-vikunja level
       mockClient.projects.getProjects.mockRejectedValue(new SyntaxError('Unexpected token'));
 
-      await expect(callTool('list')).rejects.toThrow('Failed to list tasks: Unexpected token');
+      await expect(callTool('list')).rejects.toThrow(
+        'Vikunja REST request failed (GET /projects?per_page=1000): Unexpected token',
+      );
     });
 
     it('should handle client initialization errors', async () => {

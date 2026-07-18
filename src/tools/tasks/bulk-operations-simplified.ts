@@ -10,15 +10,20 @@
 
 import { MCPError, ErrorCode, createStandardResponse, getClientFromContext, logger, isAuthenticationError, RETRY_CONFIG, transformApiError, handleFetchError } from '../../index';
 import type { Assignee } from '../../types';
+import type { AuthManager } from '../../auth/AuthManager';
+import { vikunjaRestRequest } from '../../utils/vikunja-rest';
 import { withRetry } from '../../utils/retry';
 import { setTaskLabels } from '../../utils/label-bulk';
 import { BatchProcessor } from '../../utils/performance/batch-processor';
-import type { Task } from 'node-vikunja';
+import type { components } from '../../types/generated/vikunja-openapi';
 import { convertRepeatConfiguration, applyFieldUpdate } from './validation';
 import { formatAorpAsMarkdown } from '../../utils/response-factory';
 import { AUTH_ERROR_MESSAGES, REPEAT_MODE_MAP } from './constants';
 import { bulkOperationValidator } from './bulk/BulkOperationValidator';
 import type { BulkUpdateArgs, BulkDeleteArgs, BulkCreateArgs, BulkCreateTaskData } from './bulk/BulkOperationValidator';
+
+/** `models.Task` per the OpenAPI spec — request/response shape for the task endpoints. */
+type Task = components['schemas']['models.Task'];
 
 // ==================== BATCH PROCESSORS ====================
 
@@ -50,7 +55,7 @@ interface SuccessResponse {
 }
 
 const successResponse = (op: string, msg: string, tasks: Task[], meta: Record<string, unknown>): SuccessResponse => ({
-  content: [{ type: 'text' as const, text: formatAorpAsMarkdown(createStandardResponse(op, msg, { tasks }, { timestamp: new Date().toISOString(), ...meta })) }]
+  content: [{ type: 'text' as const, text: formatAorpAsMarkdown(createStandardResponse(op, msg, { tasks } as unknown as Parameters<typeof createStandardResponse>[2], { timestamp: new Date().toISOString(), ...meta })) }]
 });
 
 /**
@@ -75,20 +80,23 @@ function resolveBulkUpdateValue(field: string | undefined, value: unknown): unkn
  * priority, etc.) get cleared. Using the merge path matches single-task
  * `update` and avoids silent data loss (see GitHub issue #46).
  */
-export async function bulkUpdateTasks(args: BulkUpdateArgs): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+export async function bulkUpdateTasks(args: BulkUpdateArgs, authManager: AuthManager): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   try {
     validateBulkUpdate(args);
     // Validation ensures taskIds exists
     const taskIds = args.taskIds ?? [];
+    // Assignees/labels are a task sub-resource (sibling item M-B) — still
+    // applied via the node-vikunja client below when the requested field is
+    // 'assignees' or 'labels'.
     const client = await getClientFromContext();
     const fieldValue = resolveBulkUpdateValue(args.field, args.value);
 
     const updateResult = await processors.update.processBatches(taskIds, async (taskId) => {
-      const current = await client.tasks.getTask(taskId);
+      const current = await vikunjaRestRequest<Task>(authManager, 'GET', `/tasks/${taskId}`);
       // Spread current task so fields not being changed survive Vikunja's full replace
       const update = applyFieldUpdate({ ...current }, args.field, fieldValue);
 
-      const updated = await client.tasks.updateTask(taskId, update);
+      const updated = await vikunjaRestRequest<Task>(authManager, 'POST', `/tasks/${taskId}`, update);
 
       if (args.field === 'assignees' && Array.isArray(args.value)) {
         const currentAssignees = (await client.tasks.getTask(taskId)).assignees?.map((a: Assignee) => a.id) || [];
@@ -139,15 +147,14 @@ export async function bulkUpdateTasks(args: BulkUpdateArgs): Promise<{ content: 
 
 // ==================== BULK DELETE ====================
 
-export async function bulkDeleteTasks(args: BulkDeleteArgs): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+export async function bulkDeleteTasks(args: BulkDeleteArgs, authManager: AuthManager): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   try {
     validateBulkDelete(args);
     // Validation ensures taskIds exists
     const taskIds = args.taskIds ?? [];
-    const client = await getClientFromContext();
 
-    const fetchResult = await processors.delete.processBatches(taskIds, async (id) => await client.tasks.getTask(id));
-    const deletionResult = await processors.delete.processBatches(taskIds, async (id) => { await client.tasks.deleteTask(id); return { taskId: id, deleted: true }; });
+    const fetchResult = await processors.delete.processBatches(taskIds, async (id) => await vikunjaRestRequest<Task>(authManager, 'GET', `/tasks/${id}`));
+    const deletionResult = await processors.delete.processBatches(taskIds, async (id) => { await vikunjaRestRequest(authManager, 'DELETE', `/tasks/${id}`); return { taskId: id, deleted: true }; });
 
     if (deletionResult.failed.length > 0) {
       const failedIds = deletionResult.failed.map(f => f.originalItem);
@@ -169,7 +176,7 @@ export async function bulkDeleteTasks(args: BulkDeleteArgs): Promise<{ content: 
 
 // ==================== BULK CREATE ====================
 
-export async function bulkCreateTasks(args: BulkCreateArgs): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+export async function bulkCreateTasks(args: BulkCreateArgs, authManager: AuthManager): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   try {
     validateBulkCreate(args);
   } catch (error) {
@@ -179,6 +186,8 @@ export async function bulkCreateTasks(args: BulkCreateArgs): Promise<{ content: 
   }
 
   try {
+    // Assignees/labels are a task sub-resource (sibling item M-B) — still
+    // applied via the node-vikunja client below.
     const client = await getClientFromContext();
     // Validation ensures projectId and tasks exist
     const projectId = args.projectId ?? 0;
@@ -197,10 +206,11 @@ export async function bulkCreateTasks(args: BulkCreateArgs): Promise<{ content: 
         if (t.repeatAfter !== undefined || t.repeatMode !== undefined) {
           const rc = convertRepeatConfiguration(t.repeatAfter, t.repeatMode);
           if (rc.repeat_after !== undefined) newTask.repeat_after = rc.repeat_after;
-          if (rc.repeat_mode !== undefined) (newTask as Record<string, unknown>).repeat_mode = rc.repeat_mode;
+          if (rc.repeat_mode !== undefined) newTask.repeat_mode = rc.repeat_mode as 0 | 1 | 2;
         }
 
-        const created = await client.tasks.createTask(projectId, newTask);
+        // PUT /projects/{id}/tasks per the OpenAPI spec (models.Task body).
+        const created = await vikunjaRestRequest<Task>(authManager, 'PUT', `/projects/${projectId}/tasks`, newTask);
         if (!created.id) return created;
 
         // Narrow type - id is guaranteed to exist after early return
@@ -230,10 +240,10 @@ export async function bulkCreateTasks(args: BulkCreateArgs): Promise<{ content: 
               throw assigneeError;
             }
           }
-          return await client.tasks.getTask(createdId);
+          return await vikunjaRestRequest<Task>(authManager, 'GET', `/tasks/${createdId}`);
         } catch (updateError) {
           // Clean up the created task since labels/assignees failed
-          try { await client.tasks.deleteTask(createdId); } catch (deleteError) { logger.error('Cleanup failed', deleteError); }
+          try { await vikunjaRestRequest(authManager, 'DELETE', `/tasks/${createdId}`); } catch (deleteError) { logger.error('Cleanup failed', deleteError); }
           // Wrap label errors to distinguish from createTask errors
           if (updateError instanceof Error && !(updateError instanceof MCPError)) {
             const wrappedError = new MCPError(ErrorCode.API_ERROR, updateError.message);

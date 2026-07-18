@@ -82,7 +82,7 @@ async function listTasks(
     const response = createTaskResponse(
       'list-tasks',
       `Found ${taskCount} tasks${filteringMessage}`,
-      { tasks: filteringResult.tasks || [] },
+      { tasks: filteringResult.tasks || [] } as unknown as Parameters<typeof createTaskResponse>[2],
       {
         timestamp: new Date().toISOString(),
         count: taskCount,
@@ -205,8 +205,9 @@ export function registerTasksTool(
       done: z.boolean().optional(),
       // GET /tasks query params honored for cross-project listing (direct
       // REST — see RestCrossProjectFilteringStrategy). Single-project
-      // listing still goes through node-vikunja's getProjectTasks, which
-      // does not support these, so they are silently unused in that case.
+      // listing (ClientSideFilteringStrategy/ServerSideFilteringStrategy)
+      // calls GET /projects/{id}/tasks, which never supported these extra
+      // params, so they are silently unused in that case.
       orderBy: z.enum(['asc', 'desc']).optional(),
       filterTimezone: z.string().optional(),
       filterIncludeNulls: z.boolean().optional(),
@@ -277,16 +278,16 @@ export function registerTasksTool(
           }
 
           case 'create':
-            return createTask(args as Parameters<typeof createTask>[0]);
+            return createTask(args as Parameters<typeof createTask>[0], authManager);
 
           case 'get':
-            return getTask(args as Parameters<typeof getTask>[0]);
+            return getTask(args as Parameters<typeof getTask>[0], authManager);
 
           case 'update':
-            return updateTask(args as Parameters<typeof updateTask>[0]);
+            return updateTask(args as Parameters<typeof updateTask>[0], authManager);
 
           case 'delete':
-            return deleteTask(args as Parameters<typeof deleteTask>[0]);
+            return deleteTask(args as Parameters<typeof deleteTask>[0], authManager);
 
           case 'assign':
             return assignUsers(args as Parameters<typeof assignUsers>[0], authManager);
@@ -316,13 +317,13 @@ export function registerTasksTool(
             return downloadAttachment(args as AttachmentSubcommandArgs, authManager);
 
           case 'bulk-update':
-            return bulkUpdateTasks(args as Parameters<typeof bulkUpdateTasks>[0]);
+            return bulkUpdateTasks(args as Parameters<typeof bulkUpdateTasks>[0], authManager);
 
           case 'bulk-delete':
-            return bulkDeleteTasks(args as Parameters<typeof bulkDeleteTasks>[0]);
+            return bulkDeleteTasks(args as Parameters<typeof bulkDeleteTasks>[0], authManager);
 
           case 'bulk-create':
-            return bulkCreateTasks(args as Parameters<typeof bulkCreateTasks>[0]);
+            return bulkCreateTasks(args as Parameters<typeof bulkCreateTasks>[0], authManager);
 
           // Handle relation subcommands
           case 'relate':

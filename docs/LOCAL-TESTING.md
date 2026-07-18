@@ -179,4 +179,100 @@ scripted REST calls assume; it does **not** confirm that `src/tools/*.ts`
 sends those exact requests. Cross-check against `docs/API-COVERAGE.md`
 (which *is* audited against the actual tool source) for tool-level
 correctness, and treat a clean `test:mcp` run as necessary but not
-sufficient evidence that the MCP tools themselves are correct.
+sufficient evidence that the MCP tools themselves are correct. The harness
+below (`test:e2e:mcp`) closes that gap.
+
+## True MCP-layer e2e harness (`npm run test:e2e:mcp`)
+
+`scripts/mcp-e2e.ts` is the harness that actually exercises `src/tools/*.ts`
+end to end, addressing the limitation above. Unlike `test:mcp`, it:
+
+1. Runs `npm run build`.
+2. Spawns `dist/index.js` as a real child process over stdio.
+3. Connects to it with `@modelcontextprotocol/sdk`'s `Client` +
+   `StdioClientTransport` — the same transport a real MCP client (Claude
+   Desktop, Claude Code, etc.) uses.
+4. Drives the server exclusively through `client.callTool()`. Every
+   assertion in the run is against the actual tool response text (ids,
+   titles, field values it round-trips), not just absence of an error.
+
+Run it against the local stack:
+
+```bash
+npm run e2e:up   # if not already running
+npm run test:e2e:mcp
+```
+
+It requires no environment variables — the stack's fixed local port
+(`http://localhost:33456`) is hard-coded, and credentials are obtained
+itself the same way `docker/e2e/bootstrap.sh` does (log in as `e2e-test`,
+mint a fresh `tk_*` API token via `PUT /tokens`, tolerating the 201 the real
+server returns where the spec documents 200). It doesn't need
+`docker/e2e/.env` to exist.
+
+### Coverage
+
+`list-tools` (asserting the expected tool set, including the tools that
+should be *absent* under API-token auth and default module config —
+`vikunja_users`/`vikunja_export_*` are JWT-only, `vikunja_tokens`/
+`vikunja_admin` are deny-by-default "dangerous" modules), then a
+representative flow through the real tools: auth status/info/connect,
+projects create/get/update/list, tasks create/update/list (both
+project-scoped and the cross-project `GET /tasks` aggregation path),
+labels create + apply to a task, assignees (resolved via project-user
+search, then assign/list), comments create/list/get/update/delete,
+reminders add/list/remove, Kanban list-views/list-buckets/set-bucket,
+notifications list, and saved filters create/list/delete.
+
+### Safety: never touches a real Vikunja instance
+
+The harness deliberately does **not** read the ambient `VIKUNJA_URL` /
+`VIKUNJA_API_TOKEN` environment variables that the MCP server itself (and
+`scripts/test-mcp.ts`) honor. A developer's shell commonly has those
+exported for day-to-day use of the server against a real Vikunja account
+(direnv, a personal MCP client config, etc.) — during this harness's own
+development, an early version *did* fall back to `process.env.VIKUNJA_URL`
+when unset, and because the developer's shell already exported it for
+unrelated reasons, a full run silently created, searched, and deleted data
+against a real production Vikunja account instead of the disposable local
+stack (fully cleaned up automatically by the harness's own teardown, but
+the near-miss is exactly why this exists). To make that class of mistake
+structurally impossible:
+
+- The target URL is hard-coded to the documented local e2e port and is
+  only overridable via the harness-specific `MCP_E2E_VIKUNJA_URL` — never
+  the ambient `VIKUNJA_URL` — and is then required to resolve to
+  `localhost`/`127.0.0.1`/`::1` or the process aborts immediately, before
+  building or spawning anything.
+- The API token is always freshly minted against that (now
+  guaranteed-local) server; the ambient `VIKUNJA_API_TOKEN` is never
+  consulted. `MCP_E2E_VIKUNJA_API_TOKEN` (again, a distinct name) can
+  supply one explicitly, but only against the same localhost-checked URL.
+- The spawned child process's env is built from a copy of `process.env`
+  with `VIKUNJA_URL`/`VIKUNJA_API_TOKEN`/`VIKUNJA_API_TOKEN_FILE` stripped
+  before overlaying the harness's own verified-local values, so no ambient
+  credential can leak through to the server under test even indirectly.
+
+### Idempotency / re-runnability
+
+All test data is created under projects/labels/saved-filters named with the
+`mcp-e2e-` prefix. Every run sweeps for and deletes any leftover
+`mcp-e2e-*` data at startup (cleanup-by-name-prefix), so a prior failed or
+interrupted run never blocks a fresh one, and also deletes everything it
+creates in a `finally` block at the end — so the Vikunja UI is left clean
+for a human to inspect between runs.
+
+### Findings categorization
+
+Every mismatch the harness finds is reported as one of:
+
+- **harness** — a problem with the harness script itself (e.g. couldn't
+  parse a response it should have been able to).
+- **tool-bug** — the MCP tool layer sends or parses something wrong against
+  the real server. Fixed inline when trivial and clearly in-scope (with a
+  regression test), otherwise documented for follow-up.
+- **server-drift** — the real server's behavior differs from the documented
+  spec / this repo's implementation is correct but the pinned local Vikunja
+  version's behavior isn't (e.g. an endpoint 500s regardless of what's sent
+  — reproduced with a raw, tool-independent request to confirm it isn't
+  this codebase's fault before filing it here).

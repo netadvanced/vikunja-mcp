@@ -11,11 +11,13 @@ import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals
 import { extractHttpErrorDetail, extractHttpStatus } from '../src/utils/http-error-detail';
 import { updateTask } from '../src/tools/tasks/crud/TaskUpdateService';
 import { getClientFromContext, getAuthManagerFromContext } from '../src/client';
+import { vikunjaRestRequest } from '../src/utils/vikunja-rest';
 import { isAuthenticationError } from '../src/utils/auth-error-handler';
 import { MCPError } from '../src/types';
-import { circuitBreakerRegistry } from '../src/utils/retry';
+import type { AuthManager } from '../src/auth/AuthManager';
 
 jest.mock('../src/client');
+jest.mock('../src/utils/vikunja-rest');
 jest.mock('../src/utils/auth-error-handler');
 jest.mock('../src/utils/logger');
 
@@ -107,44 +109,44 @@ describe('updateTaskLabels surfaces real HTTP status', () => {
     },
   } as Record<string, Record<string, jest.Mock>>;
 
-  // setTaskLabels (src/utils/label-bulk.ts) now calls the direct-REST
-  // helper for POST /tasks/{id}/labels/bulk rather than node-vikunja's
-  // updateTaskLabels, so these tests drive a mocked global fetch (and a
-  // resolved AuthManager session) instead of mocking that method.
-  let fetchMock: jest.Mock;
-  let originalFetch: typeof fetch;
+  const mockAuthManager = {} as AuthManager;
+
+  // Both the core task GET/POST and setTaskLabels' POST /tasks/{id}/labels/bulk
+  // (src/utils/label-bulk.ts, migrated to direct REST) flow through the mocked
+  // vikunjaRestRequest. Core calls resolve the base task; label failures are
+  // injected per-test by rejecting the /labels/bulk path.
+  const mockRestRejectingLabels = (err: unknown): void => {
+    (vikunjaRestRequest as jest.Mock).mockImplementation(async (_am: unknown, _method: string, path?: unknown) => {
+      if (typeof path === 'string' && path.includes('/labels/bulk')) {
+        throw err;
+      }
+      return { ...baseTask };
+    });
+  };
 
   beforeEach(() => {
     jest.clearAllMocks();
-    circuitBreakerRegistry.clear();
     (getClientFromContext as jest.Mock).mockResolvedValue(mockClient);
     (getAuthManagerFromContext as jest.Mock).mockResolvedValue({
       getSession: () => ({ apiUrl: 'https://vikunja.test', apiToken: 'tk_test-token' }),
     });
+    // Core task fetch/update and the label-bulk POST all flow through the
+    // mocked vikunjaRestRequest; default to resolving the base task.
+    (vikunjaRestRequest as jest.Mock).mockResolvedValue({ ...baseTask });
     mockClient.tasks.getTask.mockResolvedValue({ ...baseTask });
     mockClient.tasks.updateTask.mockResolvedValue({ ...baseTask });
-
-    originalFetch = globalThis.fetch;
-    fetchMock = jest.fn();
-    globalThis.fetch = fetchMock as unknown as typeof fetch;
-  });
-
-  afterEach(() => {
-    globalThis.fetch = originalFetch;
   });
 
   it('propagates HTTP 403 status + body for an auth-classified label failure', async () => {
     (isAuthenticationError as jest.Mock).mockReturnValue(true);
-    fetchMock.mockResolvedValueOnce({
-      ok: false,
-      status: 403,
-      statusText: 'Forbidden',
-      text: jest.fn(async () => JSON.stringify({ code: 7003, message: 'You do not have access' })),
-    } as unknown as Response);
+    // vikunjaRestRequest throws an error carrying a top-level `.status`;
+    // setTaskLabels rethrows it as a plain Error preserving message + status,
+    // so extractHttpErrorDetail can surface "HTTP 403" + the body message.
+    mockRestRejectingLabels(Object.assign(new Error('You do not have access'), { status: 403 }));
 
     let captured: MCPError | null = null;
     try {
-      await updateTask({ id: TASK_ID, labels: [5] });
+      await updateTask({ id: TASK_ID, labels: [5] }, mockAuthManager);
     } catch (err) {
       captured = err instanceof MCPError ? err : null;
     }
@@ -155,16 +157,11 @@ describe('updateTaskLabels surfaces real HTTP status', () => {
 
   it('propagates HTTP 422 status + body for a non-auth label failure', async () => {
     (isAuthenticationError as jest.Mock).mockReturnValue(false);
-    fetchMock.mockResolvedValueOnce({
-      ok: false,
-      status: 422,
-      statusText: 'Unprocessable Entity',
-      text: jest.fn(async () => JSON.stringify({ code: 4001, message: 'Invalid label id' })),
-    } as unknown as Response);
+    mockRestRejectingLabels(Object.assign(new Error('Invalid label id'), { status: 422 }));
 
     let capturedMessage = '';
     try {
-      await updateTask({ id: TASK_ID, labels: [99999] });
+      await updateTask({ id: TASK_ID, labels: [99999] }, mockAuthManager);
     } catch (err) {
       capturedMessage = err instanceof MCPError ? err.message : String(err);
     }
@@ -176,16 +173,15 @@ describe('updateTaskLabels surfaces real HTTP status', () => {
 
   it('preserves the original error when no HTTP status can be inferred', async () => {
     (isAuthenticationError as jest.Mock).mockReturnValue(false);
-    // A network-level failure (fetch itself rejects, no HTTP response at
-    // all) carries no `.status` — this is the "no HTTP status can be
-    // inferred" case, distinct from the HTTP-error-response cases above.
-    // Persistent (not "Once"): a network error is retried by the REST
-    // helper's default policy, so every attempt must reject the same way.
-    fetchMock.mockRejectedValue(new Error('network blip'));
+    // A network-level failure carries no `.status` — this is the "no HTTP
+    // status can be inferred" case, distinct from the HTTP-error-response
+    // cases above. setTaskLabels rethrows it as a plain status-less Error,
+    // so updateTaskLabels preserves the original message unchanged.
+    mockRestRejectingLabels(new Error('network blip'));
 
     let capturedMessage = '';
     try {
-      await updateTask({ id: TASK_ID, labels: [5] });
+      await updateTask({ id: TASK_ID, labels: [5] }, mockAuthManager);
     } catch (err) {
       capturedMessage = err instanceof Error ? err.message : String(err);
     }
