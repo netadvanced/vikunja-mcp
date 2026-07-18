@@ -10,6 +10,47 @@ pre-1.0 semantics — see [docs/RELEASING.md](docs/RELEASING.md) for what that m
 
 Nothing yet.
 
+
+## [0.3.1] - 2026-07-18
+
+A small patch release: a response-formatting bugfix plus the release engineering machinery
+this very release was cut with, and two late chores/docs polish items. No tool signatures or
+config shapes changed. Aligned to Vikunja 2.3.0 (unchanged from 0.3.0).
+
+### Added
+
+- Release engineering machinery: SemVer policy documentation, a Keep a Changelog
+  `CHANGELOG.md`, and three dependency-free scripts (`release-prepare`/`release-tag`/
+  `release-publish`) implementing the checklist in `docs/RELEASING.md`. A tag-triggered GitHub
+  Actions publish workflow ships as an example file only
+  (`docs/github-workflow-release.yml.example`), pending the owner's decision to enable Actions
+  repo-wide (#88).
+- Docker images now carry a Vikunja compatibility tag derived from the vendored OpenAPI spec's
+  version, plus matching OCI labels (`org.opencontainers.image.version`, `io.vikunja.compat`),
+  so a deployer can pick an image aligned to their Vikunja server version (#88).
+
+### Fixed
+
+- List responses no longer silently render an empty body for collections over 10 items — the
+  hidden cutoff in `formatSuccessMessage` is replaced with a token-safe 50-item render cap, with
+  an explicit "Showing 50 of N" notice beyond that (#85, via #87).
+- List rendering no longer alternates between a rich heading layout and a plain line depending on
+  item shape, which produced broken-looking interleaved lists — all list items now render
+  consistently as numbered lines with sub-bullet detail; single-item ("get") responses keep their
+  heading layout (#86, via #87).
+
+### Documentation
+
+- Rewrote README as a minimal landing page (pitch, badges, fork notice, one hero example, quick
+  start, capabilities table), leaning on `docs/TOOLS.md` and `docs/samples/` for depth. From-source
+  install is now primary; the npm package name isn't secured yet and isn't advertised (#90).
+
+### Chores
+
+- Revised the Docker Vikunja-compatibility tag introduced in #88 from a standalone floating
+  `vikunja-<ver>` tag to a per-release suffix on our own version (`X.Y.Z-vikunja<A.B.C>`,
+  `node:20-alpine`-style), eliminating the version-number ambiguity of the earlier scheme (#91).
+
 ## [0.3.0] - 2026-07-18
 
 This release is the fork's coming-out story: `netadvanced/vikunja-mcp` started from
@@ -80,10 +121,11 @@ at `0.2.2`. Everything above `[0.3.0]` in this file describes work done on the f
 upstream project.
 
 <!--
-No `v*` tags exist on this fork yet (release automation lands in this same change — see
-docs/RELEASING.md). Once v0.3.1+ is tagged, these links should switch to standard
-compare-between-tags links, e.g. `.../compare/v0.3.0...v0.3.1`.
+v0.3.0 predates this fork's first `v*` tag (v0.3.1), so it has no tag to compare from and keeps
+a commits/main link. From v0.3.1 onward, releases are tagged and use standard
+compare-between-tags links.
 -->
-[Unreleased]: https://github.com/netadvanced/vikunja-mcp/commits/main/
+[Unreleased]: https://github.com/netadvanced/vikunja-mcp/compare/v0.3.1...main
+[0.3.1]: https://github.com/netadvanced/vikunja-mcp/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/netadvanced/vikunja-mcp/commits/main/
 [0.2.2]: https://github.com/democratize-technology/vikunja-mcp/releases/tag/0.2.2
