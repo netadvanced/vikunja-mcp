@@ -76,7 +76,7 @@ describe('simple-response - Task Formatting', () => {
       expect(result).not.toContain('Priority:');
     });
 
-    it('should format multiple tasks', () => {
+    it('should format multiple tasks as a uniform numbered list (no heading blocks)', () => {
       const tasks: Task[] = [
         {
           id: 1,
@@ -107,20 +107,54 @@ describe('simple-response - Task Formatting', () => {
         { count: 2 }
       );
 
+      // List items use plain numbered lines, never `### ` headings (#86).
+      expect(result).not.toContain('### ');
+
       // First task
-      expect(result).toContain('### 1. **Task 1**');
+      expect(result).toContain('1. **Task 1** (ID: 1)');
       expect(result).toContain('**Description:**');
       expect(result).toContain('First task');
       expect(result).toContain('⭐⭐⭐⭐⭐ (5/5)');
 
       // Second task
-      expect(result).toContain('### 2. **Task 2**');
+      expect(result).toContain('2. **Task 2** (ID: 2)');
       expect(result).toContain('✅ Done');
       expect(result).toContain('⭐⭐ (2/5)');
       expect(result).toContain('**Labels:**');
       expect(result).toContain('low-priority');
       expect(result).toContain('**Assignees:**');
       expect(result).toContain('user2');
+    });
+
+    it('should render a uniform numbered line for consecutive rich and sparse items (issue #86)', () => {
+      // Mixed collection: rich (has description), sparse, rich (has priority),
+      // sparse, rich (has labels) — mirrors the 19-project example from the
+      // issue where "rich" and "sparse" items were interleaved.
+      const items: Task[] = [
+        { id: 76, project_id: 1, title: 'Tenant', done: false, repeat_after: 0 },
+        { id: 7, project_id: 1, title: 'DEV - Sandpit', description: 'Sandbox env', done: false, repeat_after: 0 },
+        { id: 84, project_id: 1, title: 'Raccordement clients', done: false, repeat_after: 0 },
+        { id: 85, project_id: 1, title: 'Gestion chantiers BGR', done: false, repeat_after: 0 },
+        { id: 86, project_id: 1, title: 'Bugs project', description: 'Bug tracker', done: false, repeat_after: 0 },
+      ];
+
+      const result = formatSuccessMessage(
+        'list-projects',
+        'Found 5 projects',
+        { tasks: items },
+        { count: 5 }
+      );
+
+      // No document headings should appear inside the list — every item is a
+      // plain numbered line, whether or not it has extra detail.
+      expect(result).not.toMatch(/###\s*\d+\./);
+      expect(result).toContain('1. **Tenant** (ID: 76)');
+      expect(result).toContain('2. **DEV - Sandpit** (ID: 7)');
+      expect(result).toContain('   - **Description:** Sandbox env');
+      expect(result).toContain('3. **Raccordement clients** (ID: 84)');
+      expect(result).toContain('4. **Gestion chantiers BGR** (ID: 85)');
+      expect(result).toContain('5. **Bugs project** (ID: 86)');
+      expect(result).toContain('   - **Description:** Bug tracker');
     });
 
     it('should format task with multiple assignees', () => {
@@ -445,7 +479,10 @@ describe('simple-response - Task Formatting', () => {
       expect(result).toContain('0 item(s)');
     });
 
-    it('should handle more than 10 items (should not display)', () => {
+    it('should render the full itemized list for more than 10 items (issue #85 — no silent cutoff)', () => {
+      // Regression for #85: the old `<= 10` guard silently rendered an EMPTY
+      // body above 10 items while the header count stayed correct. A
+      // non-empty collection must never render a silent-empty body.
       const tasks: Task[] = Array.from({ length: 15 }, (_, i) => ({
         id: i + 1,
         project_id: 1,
@@ -463,9 +500,11 @@ describe('simple-response - Task Formatting', () => {
 
       expect(result).toContain('**Results:**');
       expect(result).toContain('15 item(s)');
-      // Items should not be displayed when > 10
-      expect(result).not.toContain('### 1.');
-      expect(result).not.toContain('Task 1');
+      // All 15 items must be rendered — 15 is well under the render cap.
+      expect(result).toContain('1. **Task 1** (ID: 1)');
+      expect(result).toContain('15. **Task 15** (ID: 15)');
+      // No truncation notice needed below the cap.
+      expect(result).not.toMatch(/Showing \d+ of \d+/);
     });
 
     it('should handle exactly 10 items (should display)', () => {
@@ -486,11 +525,74 @@ describe('simple-response - Task Formatting', () => {
 
       expect(result).toContain('**Results:**');
       expect(result).toContain('10 item(s)');
-      // Items should be displayed when <= 10
-      expect(result).toContain('### 1.');
+      expect(result).toContain('1. **Task 1** (ID: 1)');
       expect(result).toContain('Task 1');
-      expect(result).toContain('### 10.');
+      expect(result).toContain('10. **Task 10** (ID: 10)');
       expect(result).toContain('Task 10');
+    });
+
+    it('should render items beyond the render cap with an explicit truncation notice, never a silent-empty body (issue #85)', () => {
+      // 60 items exceeds the 50-item render cap: the first 50 must render,
+      // and the response must say so explicitly rather than silently
+      // dropping items 51-60.
+      const tasks: Task[] = Array.from({ length: 60 }, (_, i) => ({
+        id: i + 1,
+        project_id: 1,
+        title: `Task ${i + 1}`,
+        done: false,
+        repeat_after: 0
+      }));
+
+      const result = formatSuccessMessage(
+        'list-tasks',
+        'Found 60 tasks',
+        { tasks },
+        { count: 60 }
+      );
+
+      expect(result).toContain('**Results:** 60 item(s)');
+      // First 50 items are rendered in full.
+      expect(result).toContain('1. **Task 1** (ID: 1)');
+      expect(result).toContain('50. **Task 50** (ID: 50)');
+      // Items beyond the cap are not individually rendered...
+      expect(result).not.toContain('51. **Task 51**');
+      expect(result).not.toContain('60. **Task 60**');
+      // ...but an explicit, discoverable truncation notice must be present.
+      expect(result).toMatch(/Showing 50 of 60/);
+      expect(result).toMatch(/page|perPage/);
+    });
+
+    it('should render the itemized list for a bare array of more than 10 items (issue #85, bare-array branch)', () => {
+      // Same fix applied to the second (`Array.isArray(data)`) branch, not
+      // just the named-collection branch.
+      const items = Array.from({ length: 12 }, (_, i) => ({ id: i + 1, title: `Item ${i + 1}` }));
+
+      const result = formatSuccessMessage(
+        'list-items',
+        'Found 12 items',
+        items as unknown as Parameters<typeof formatSuccessMessage>[2],
+        { count: 12 }
+      );
+
+      expect(result).toContain('**Results:** 12 item(s)');
+      expect(result).toContain('1. **Item 1** (ID: 1)');
+      expect(result).toContain('12. **Item 12** (ID: 12)');
+      expect(result).not.toMatch(/Showing \d+ of \d+/);
+    });
+
+    it('should format a list of primitive (non-object) items as plain numbered lines', () => {
+      const items = ['alpha', 'beta', 42];
+
+      const result = formatSuccessMessage(
+        'list-items',
+        'Found 3 items',
+        items as unknown as Parameters<typeof formatSuccessMessage>[2],
+        { count: 3 }
+      );
+
+      expect(result).toContain('1. "alpha"');
+      expect(result).toContain('2. "beta"');
+      expect(result).toContain('3. 42');
     });
   });
 });

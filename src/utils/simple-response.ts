@@ -138,19 +138,17 @@ export function formatSuccessMessage(
 
     if (collection && Array.isArray(collection)) {
       content += `**Results:** ${collection.length} item(s)\n\n`;
-      if (collection.length > 0 && collection.length <= 10) {
-        content += formatDataItems(collection as DataItem[]);
-      }
+      content += formatDataItemsList(collection as DataItem[]);
     } else if (Array.isArray(data)) {
       content += `**Results:** ${data.length} item(s)\n\n`;
-      if (data.length > 0 && data.length <= 10) {
-        content += formatDataItems(data as DataItem[]);
-      }
+      content += formatDataItemsList(data as DataItem[]);
     } else if (looksLikeSingleResource) {
-      // Route single resources through formatDataItems, which uses the rich
-      // formatTaskItem renderer for Task-shaped objects and a compact
-      // id/title line for everything else.
-      content += formatDataItems([data as DataItem]);
+      // Route single resources through formatSingleDataItem, which uses the
+      // rich formatTaskItem heading renderer for Task-shaped objects and a
+      // compact id/title line for everything else. This is a single-item
+      // ("get") response, so the heading layout stays legitimate here — only
+      // multi-item list rendering (formatDataItemsList) changes.
+      content += formatSingleDataItem(data as DataItem);
     } else if (data && typeof data === 'object') {
       content += formatObjectData(data as Record<string, unknown>);
     }
@@ -204,43 +202,65 @@ export function formatErrorMessage(
 }
 
 /**
- * Format a single Task object with rich details
+ * Format a single Task object with rich details as a markdown heading block.
+ *
+ * This heading layout (`### N. **Title**` + detail bullets) is used ONLY for
+ * single-item ("get"/"create"/"update") responses via formatSingleDataItem,
+ * where a lone `###` section header is legitimate document structure. It
+ * must NOT be used for multi-item lists (see formatDataItemsList /
+ * formatListItemLine below) — mixing heading blocks into a numbered list is
+ * issue #86.
  */
 function formatTaskItem(task: Task, index: number): string {
   const parts: string[] = [];
 
   // Header with title and ID
   parts.push(`### ${index + 1}. **${task.title}** (ID: ${task.id})`);
+  parts.push(...formatTaskDetailLines(task).map(line => `- ${line}`));
+
+  return parts.join('\n') + '\n';
+}
+
+/**
+ * Build the optional detail bullet lines (status/priority/due date/progress/
+ * project/labels/assignees/description) for a Task-shaped item. Shared by
+ * both the single-item heading renderer (formatTaskItem) and the list-item
+ * renderer (formatListItemLine) so the *content* of the details stays
+ * identical between the two layouts — only their surrounding structure
+ * (heading vs. indented sub-bullets) differs.
+ */
+function formatTaskDetailLines(task: Task): string[] {
+  const parts: string[] = [];
 
   // Status
   const status = task.done ? '✅ Done' : '❌ Not Done';
-  parts.push(`- **Status:** ${status}`);
+  parts.push(`**Status:** ${status}`);
 
   // Priority (if set)
   if (task.priority !== undefined && task.priority > 0) {
     const stars = '⭐'.repeat(Math.min(task.priority, 5));
-    parts.push(`- **Priority:** ${stars} (${task.priority}/5)`);
+    parts.push(`**Priority:** ${stars} (${task.priority}/5)`);
   }
 
   // Due date (if set)
   if (task.due_date) {
-    parts.push(`- **Due:** ${task.due_date}`);
+    parts.push(`**Due:** ${task.due_date}`);
   }
 
   // Progress (if set)
   if (task.percent_done !== undefined && task.percent_done > 0) {
-    parts.push(`- **Progress:** ${task.percent_done}%`);
+    parts.push(`**Progress:** ${task.percent_done}%`);
   }
 
   // Project ID (if set)
   if (task.project_id) {
-    parts.push(`- **Project:** ${task.project_id}`);
+    parts.push(`**Project:** ${task.project_id}`);
   }
 
   // Labels (if any)
   if (task.labels && task.labels.length > 0) {
     const labelTitles = task.labels.map(l => l.title).join(', ');
-    parts.push(`- **Labels:** ${labelTitles}`);
+    parts.push(`**Labels:** ${labelTitles}`);
   }
 
   // Assignees (if any)
@@ -249,37 +269,117 @@ function formatTaskItem(task: Task, index: number): string {
       const email = a.email ? ` (${a.email})` : '';
       return `${a.username}${email}`;
     }).join(', ');
-    parts.push(`- **Assignees:** ${assigneeNames}`);
+    parts.push(`**Assignees:** ${assigneeNames}`);
   }
 
   // Description (if exists)
   if (task.description) {
-    parts.push(`- **Description:** ${task.description}`);
+    parts.push(`**Description:** ${task.description}`);
   }
 
-  return parts.join('\n') + '\n';
+  return parts;
 }
 
 /**
- * Format array data items
+ * True when an item carries enough Task-shaped detail to justify rendering
+ * extra fields (status/priority/due date/labels/assignees/description)
+ * alongside its title/ID line.
  */
-function formatDataItems(items: DataItem[]): string {
-  return items.map((item, index) => {
-    if (typeof item === 'object' && item !== null) {
-      // Check if this is a Task object with rich data
-      const task = item as unknown as Task;
-      if (task.title && (task.description || task.priority !== undefined ||
-          task.due_date || task.labels || task.assignees || task.done !== undefined)) {
-        return formatTaskItem(task, index);
-      }
+function isRichTaskItem(item: DataItem): boolean {
+  const task = item as unknown as Task;
+  return Boolean(
+    task.title &&
+      (task.description ||
+        task.priority !== undefined ||
+        task.due_date ||
+        task.labels ||
+        task.assignees ||
+        task.done !== undefined)
+  );
+}
 
-      // Fallback to simple formatting for other object types
-      const id = item.id || index + 1;
-      const title = item.title || item.name || JSON.stringify(item);
-      return `${index + 1}. **${title}** (ID: ${id})`;
-    }
+/**
+ * Format a single item's list line, uniformly, regardless of how much
+ * optional detail it carries (issue #86 fix). Every item — rich or sparse —
+ * renders as the SAME plain numbered line:
+ *
+ *   N. **Title** (ID: id)
+ *
+ * with any available detail (status/priority/due date/labels/assignees/
+ * description) rendered as indented sub-bullets directly underneath, never
+ * as a `###` document heading. This keeps consecutive list items visually
+ * uniform instead of alternating between heading blocks and plain lines.
+ */
+function formatListItemLine(item: DataItem, index: number): string {
+  if (typeof item !== 'object' || item === null) {
     return `${index + 1}. ${JSON.stringify(item)}`;
-  }).join('\n') + '\n\n';
+  }
+
+  const id = item.id || index + 1;
+  const title = item.title || item.name || JSON.stringify(item);
+  const header = `${index + 1}. **${title}** (ID: ${id})`;
+
+  if (!isRichTaskItem(item)) {
+    return header;
+  }
+
+  // formatTaskDetailLines always emits at least a **Status:** line once
+  // isRichTaskItem() is true, so `details` is never empty here.
+  const details = formatTaskDetailLines(item as unknown as Task);
+  return [header, ...details.map(line => `   - ${line}`)].join('\n');
+}
+
+/**
+ * Format a single ("get"/"create"/"update") resource. This is NOT a list, so
+ * the richer `### ` heading layout (formatTaskItem) remains legitimate here
+ * — issue #86 only changes how *multiple* items are rendered together (see
+ * formatDataItemsList).
+ *
+ * Callers only reach this function via the `looksLikeSingleResource` gate in
+ * formatSuccessMessage, which already guarantees `item` is a non-null object
+ * with an `id` and a `title`/`name` — so no primitive/non-object fallback is
+ * needed (or reachable) here.
+ */
+function formatSingleDataItem(item: DataItem): string {
+  if (isRichTaskItem(item)) {
+    return formatTaskItem(item as unknown as Task, 0) + '\n\n';
+  }
+
+  const id = item.id || 1;
+  const title = item.title || item.name || JSON.stringify(item);
+  return `1. **${title}** (ID: ${id})\n\n`;
+}
+
+/**
+ * Maximum number of items to render individually in a list response. This
+ * keeps responses token-safe: a hard cap protects against unbounded output
+ * for very large collections while still being generous enough to cover the
+ * vast majority of real Vikunja projects/task lists without truncation.
+ * Anything beyond the cap gets an explicit truncation notice instead of
+ * being silently dropped (issue #85) — the caller can always page further
+ * with `page`/`perPage`.
+ */
+const LIST_ITEM_RENDER_CAP = 50;
+
+/**
+ * Format a list ("list"/bulk) response body. Renders every item up to
+ * LIST_ITEM_RENDER_CAP; for larger collections it renders the first
+ * LIST_ITEM_RENDER_CAP items followed by an explicit truncation notice, so a
+ * non-empty collection NEVER silently renders an empty body (issue #85).
+ */
+function formatDataItemsList(items: DataItem[], cap: number = LIST_ITEM_RENDER_CAP): string {
+  if (items.length === 0) {
+    return '';
+  }
+
+  const shown = items.slice(0, cap);
+  let content = shown.map((item, index) => formatListItemLine(item, index)).join('\n') + '\n\n';
+
+  if (items.length > cap) {
+    content += `_Showing ${cap} of ${items.length} — use page/perPage to see more._\n\n`;
+  }
+
+  return content;
 }
 
 /**
