@@ -7,6 +7,12 @@ import type { Task, Label, User } from 'node-vikunja';
 import type { TypedVikunjaClient } from '../types/node-vikunja-extended';
 import type { ImportedTask } from '../parsers/InputParserFactory';
 import type { EntityResolutionResult } from './EntityResolver';
+import type { AuthManager } from '../auth/AuthManager';
+import { vikunjaRestRequest } from '../utils/vikunja-rest';
+import type { components } from '../types/generated/vikunja-openapi';
+
+// Sourced from the vendored OpenAPI spec (docs/vikunja-openapi.json).
+type VikunjaTask = components['schemas']['models.Task'];
 
 /**
  * Converts TaskCreationData to a Task object compatible with node-vikunja API
@@ -81,6 +87,8 @@ export class TaskCreationService {
    * @param task - The task data to create
    * @param projectId - The project ID to create the task in
    * @param client - The Vikunja client instance
+   * @param authManager - Active auth manager, used for the direct-REST task
+   *   creation call (see `createBaseTask`)
    * @param entityMaps - Resolved entity mappings for labels and users
    * @param catchErrors - Whether to catch errors and return them in TaskCreationResult (default: true)
    * @returns Promise<TaskCreationResult> - Result of the task creation operation
@@ -89,6 +97,7 @@ export class TaskCreationService {
     task: ImportedTask,
     projectId: number,
     client: TypedVikunjaClient,
+    authManager: AuthManager,
     entityMaps: EntityResolutionResult,
     catchErrors: boolean = true
   ): Promise<TaskCreationResult> {
@@ -97,7 +106,7 @@ export class TaskCreationService {
     try {
       const taskData = this.prepareTaskData(task, projectId);
 
-      const createdTask = await this.createBaseTask(client, taskData, task.title);
+      const createdTask = await this.createBaseTask(authManager, taskData, task.title);
 
       const labelWarnings = await this.handleLabelAssignment(
         client,
@@ -193,32 +202,66 @@ export class TaskCreationService {
   }
 
   /**
-   * Creates the base task in Vikunja
+   * Creates the base task in Vikunja via `PUT /projects/{id}/tasks`
+   * (direct-REST; see docs/ENDPOINT-PLAYBOOK.md §3 — node-vikunja is
+   * end-of-life for this project).
    *
-   * @param client - The Vikunja client
+   * @param authManager - Active auth manager holding session credentials
    * @param taskData - Prepared task data
    * @param taskTitle - Task title for error reporting
    * @returns Created task
    * @throws MCPError if creation fails or authentication error occurs
    */
   private async createBaseTask(
-    client: TypedVikunjaClient,
+    authManager: AuthManager,
     taskData: TaskCreationData,
     taskTitle: string
   ): Promise<Task> {
     try {
-      // Safely convert TaskCreationData to Task interface expected by node-vikunja
+      // Safely convert TaskCreationData to the request body shape Vikunja expects
       const taskForApi = convertTaskCreationDataToTask(taskData);
-      return await client.tasks.createTask(taskData.project_id, taskForApi);
+      const created = await vikunjaRestRequest<VikunjaTask>(
+        authManager,
+        'PUT',
+        `/projects/${taskData.project_id}/tasks`,
+        taskForApi,
+      );
+      // The OpenAPI-generated response type marks every field optional (Go
+      // `omitempty` semantics), but a successful task creation always
+      // returns title/project_id — matching node-vikunja's typed `Task`,
+      // which the label/assignee/reminder helpers below (out of this
+      // migration's scope; see docs/ENDPOINT-PLAYBOOK.md) still consume.
+      return created as unknown as Task;
     } catch (error) {
-      // Check if it's an authentication error
-      if (isAuthenticationError(error)) {
+      // Check if it's an authentication error. Checked directly via
+      // `details.statusCode` (set by `vikunjaRestRequest` on every non-2xx
+      // response) alongside the shared message-pattern classifier:
+      // `isAuthenticationError`'s message patterns include some anchored to
+      // the start of the string (e.g. `/^401\b/`), which stop matching once
+      // `vikunjaRestRequestRaw` prefixes the message with its own "Vikunja
+      // REST request failed (...)" context — the statusCode check keeps a
+      // real 401/403 response reliably classified regardless of message
+      // shape.
+      const statusCode = error instanceof MCPError ? error.details?.statusCode : undefined;
+      if (statusCode === 401 || statusCode === 403 || isAuthenticationError(error)) {
         throw new MCPError(
           ErrorCode.API_ERROR,
           `Authentication error while creating task "${taskTitle}". The token works for other endpoints but may have issues with batch operations. Original error: ${error instanceof Error ? error.message : String(error)}`,
         );
       }
-      throw error;
+      // Re-throw as a plain Error, not the direct-REST helper's `MCPError`.
+      // `createTask`'s outer catch treats an `instanceof MCPError` as
+      // already-final and re-throws it unconditionally, bypassing the
+      // `catchErrors`-gated graceful-degradation path below — that
+      // short-circuit exists for OUR deliberately-thrown MCPErrors (like
+      // the auth one just above), not for generic transport failures.
+      // Pre-migration, node-vikunja's `createTask` threw plain `Error`s
+      // here (never `MCPError`), so `catchErrors` correctly gated whether a
+      // non-auth API failure aborted the whole batch or was reported as a
+      // per-task failure; unwrapping here restores that behavior instead of
+      // letting every transport failure silently start behaving like an
+      // auth failure now that `vikunjaRestRequest` always throws MCPError.
+      throw error instanceof Error ? new Error(error.message) : error;
     }
   }
 

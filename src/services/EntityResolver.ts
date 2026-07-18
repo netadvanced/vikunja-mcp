@@ -9,6 +9,18 @@
 import { logger } from '../utils/logger';
 import { isAuthenticationError } from '../utils/auth-error-handler';
 import type { VikunjaClient, Label, User } from 'node-vikunja';
+import type { AuthManager } from '../auth/AuthManager';
+import { MCPError } from '../types';
+import { vikunjaRestRequest } from '../utils/vikunja-rest';
+import type { components } from '../types/generated/vikunja-openapi';
+
+// Sourced from the vendored OpenAPI spec (docs/vikunja-openapi.json). Field
+// shapes line up closely enough with node-vikunja's `User` (id, username,
+// email, name, created, updated) that the REST response is cast to `User[]`
+// below rather than widening `EntityResolutionResult.projectUsers`'s public
+// type — that would ripple into TaskCreationService.ts's `User[]`-typed
+// consumers, which are out of scope for this migration.
+type VikunjaUser = components['schemas']['user.User'];
 
 /**
  * Result of entity resolution operations
@@ -40,9 +52,14 @@ export class EntityResolver {
    * - Providing comprehensive logging for debugging
    *
    * @param client - The Vikunja API client to use for fetching entities
+   * @param authManager - Active auth manager, used for the direct-REST
+   *   `GET /users` call (see `fetchUsers`)
    * @returns Promise resolving to entity resolution results
    */
-  async resolveEntities(client: VikunjaClient): Promise<EntityResolutionResult> {
+  async resolveEntities(
+    client: VikunjaClient,
+    authManager: AuthManager,
+  ): Promise<EntityResolutionResult> {
     const result: EntityResolutionResult = {
       labelMap: new Map(),
       userMap: new Map(),
@@ -53,7 +70,7 @@ export class EntityResolver {
 
     await this.fetchLabels(client, result);
 
-    await this.fetchUsers(client, result);
+    await this.fetchUsers(authManager, result);
 
     this.createResolutionMaps(result);
 
@@ -125,20 +142,45 @@ export class EntityResolver {
    * KNOWN VIKUNJA API ISSUE: Users endpoint often fails with API tokens.
    * This is not a bug in our code - it's a documented Vikunja API limitation.
    *
-   * @param client - The Vikunja API client
+   * KNOWN ISSUE (Wave D migration): per the vendored OpenAPI spec,
+   * `GET /users` is a *search* endpoint ("Search for a user by its username,
+   * name or full email") that takes an `s` query parameter — it is not a
+   * "list all users I can see" endpoint. Called with no `s`, as this method
+   * does (matching the pre-migration node-vikunja call, which passed the
+   * same empty `{}` params), it likely returns an empty array on real
+   * servers rather than the full set of assignable project users. This
+   * migration moves the transport (node-vikunja -> `vikunjaRestRequest`)
+   * without changing that behavior — fixing the semantic mismatch (e.g.
+   * passing a search term, or resolving assignees a different way) is a
+   * separate, deliberately out-of-scope follow-up.
+   *
+   * @param authManager - Active auth manager for the direct-REST call
    * @param result - The result object to update with fetched users
    */
   private async fetchUsers(
-    client: VikunjaClient,
+    authManager: AuthManager,
     result: EntityResolutionResult
   ): Promise<void> {
     try {
-      const usersResponse = await client.users.getUsers({});
-      result.projectUsers = usersResponse || [];
+      const usersResponse = await vikunjaRestRequest<VikunjaUser[]>(
+        authManager,
+        'GET',
+        '/users',
+      );
+      result.projectUsers = (usersResponse || []) as unknown as User[];
       logger.debug('Users fetched', { count: result.projectUsers.length });
     } catch (error) {
-      // This is a known limitation with Vikunja API authentication
-      if (isAuthenticationError(error)) {
+      // This is a known limitation with Vikunja API authentication. Checked
+      // directly via `details.statusCode` (set by `vikunjaRestRequest` on
+      // every non-2xx response) alongside the shared message-pattern
+      // classifier: `isAuthenticationError`'s structured checks look for
+      // `.status`/`.response.status`, properties node-vikunja's HTTP errors
+      // carried but a plain `MCPError` from the REST helper does not — so a
+      // bare 401/403 with a response body that doesn't happen to match one
+      // of the message-pattern fallbacks would otherwise stop being
+      // classified as an auth failure after this transport migration.
+      const statusCode = error instanceof MCPError ? error.details?.statusCode : undefined;
+      if (statusCode === 401 || statusCode === 403 || isAuthenticationError(error)) {
         logger.warn(
           'Cannot fetch users due to known Vikunja API authentication issue. Assignees will be skipped.',
           {

@@ -23,6 +23,72 @@ jest.mock('../../src/utils/logger', () => ({
 // Import mocked modules
 import { getClientFromContext } from '../../src/client';
 import { logger } from '../../src/utils/logger';
+import { circuitBreakerRegistry } from '../../src/utils/retry';
+
+/**
+ * TaskCreationService.createBaseTask (`PUT /projects/{id}/tasks`) and
+ * EntityResolver.fetchUsers (`GET /users`) are migrated off node-vikunja
+ * onto the direct-REST helper, which talks to `global.fetch` rather than
+ * `mockClient.tasks.createTask` / `mockClient.users.getUsers` directly.
+ * Rather than rewrite every one of this file's ~2000 lines of
+ * `mockClient.tasks.createTask.mockResolvedValue(...)` /
+ * `.toHaveBeenCalledWith(...)` set-ups and assertions, `global.fetch` below
+ * is wired to those SAME mocks: a request is routed to the matching
+ * `mockClient` method, and that method's configured return value or
+ * rejection becomes the fetch response — so every existing
+ * `mockClient.tasks.createTask`/`mockClient.users.getUsers` mock call in
+ * this file keeps working unchanged, and still asserts real call
+ * counts/arguments.
+ */
+function mockResponse(opts: {
+  ok?: boolean;
+  status?: number;
+  statusText?: string;
+  text?: string;
+}): Response {
+  const { ok = true, status = 200, statusText = 'OK', text = '' } = opts;
+  return {
+    ok,
+    status,
+    statusText,
+    text: jest.fn(async () => text),
+  } as unknown as Response;
+}
+
+/**
+ * Converts a rejection from a delegated `mockClient` method into a fetch
+ * outcome. When the error's message looks like it already carries an HTTP
+ * status (e.g. "401 Unauthorized: invalid token", matching this file's own
+ * test-data convention), it's turned into a realistic non-2xx `Response` —
+ * exactly what a real Vikunja 401/403 looks like to `vikunjaRestRequest`,
+ * with `details.statusCode` set. Anything else is re-thrown so `fetch()`
+ * itself rejects, matching a network-level failure.
+ */
+const HTTP_STATUS_TEXT: Record<number, string> = {
+  400: 'Bad Request',
+  401: 'Unauthorized',
+  403: 'Forbidden',
+  404: 'Not Found',
+  500: 'Internal Server Error',
+};
+
+function toFetchOutcome(error: unknown): Response {
+  const message = error instanceof Error ? error.message : String(error);
+  const statusMatch = /^(\d{3})\b\s*(.*)$/.exec(message);
+  if (statusMatch) {
+    const status = Number(statusMatch[1]);
+    return mockResponse({
+      ok: false,
+      status,
+      statusText: HTTP_STATUS_TEXT[status] ?? 'Error',
+      text: statusMatch[2] || message,
+    });
+  }
+  throw error;
+}
+
+const mockFetch = jest.fn();
+global.fetch = mockFetch as unknown as typeof fetch;
 
 // Define the schema matching the one in batch-import.ts
 const importedTaskSchema = z.object({
@@ -107,6 +173,35 @@ describe('Batch Import Tool', () => {
     };
 
     (getClientFromContext as jest.Mock).mockResolvedValue(mockClient);
+
+    // vikunjaRestRequest protects every call with a process-wide named
+    // circuit breaker; clear accumulated stats so one test's deliberately
+    // failing scenario doesn't trip the breaker for a later test.
+    circuitBreakerRegistry.clear();
+    mockFetch.mockReset();
+    mockFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      const method = (init?.method ?? 'GET') as string;
+      const taskMatch = /\/projects\/(\d+)\/tasks$/.exec(url);
+      if (method === 'PUT' && taskMatch) {
+        const projectId = Number(taskMatch[1]);
+        const body = init?.body ? JSON.parse(init.body as string) : undefined;
+        try {
+          const task = await mockClient.tasks.createTask(projectId, body);
+          return mockResponse({ text: JSON.stringify(task) });
+        } catch (error) {
+          return toFetchOutcome(error);
+        }
+      }
+      if (method === 'GET' && url.endsWith('/users')) {
+        try {
+          const users = await mockClient.users.getUsers({});
+          return mockResponse({ text: JSON.stringify(users ?? []) });
+        } catch (error) {
+          return toFetchOutcome(error);
+        }
+      }
+      throw new Error(`Unexpected fetch ${method} ${url}`);
+    });
   });
 
   describe('Tool Registration', () => {
@@ -445,7 +540,10 @@ Description,1`;
         data: JSON.stringify(tasksData),
       });
 
-      expect(result.content[0].text).toContain('Failed to import tasks: API Error');
+      // The direct-REST helper prefixes the original message with its own
+      // "Vikunja REST request failed (...)" context.
+      expect(result.content[0].text).toContain('Failed to import tasks:');
+      expect(result.content[0].text).toContain('API Error');
       expect(mockClient.tasks.createTask).toHaveBeenCalledTimes(2);
     });
 
@@ -467,7 +565,10 @@ Description,1`;
       expect(mockClient.tasks.createTask).toHaveBeenCalledTimes(3);
       expect(result.content[0].text).toContain('Successfully imported: 2 tasks');
       expect(result.content[0].text).toContain('Failed: 1 tasks');
-      expect(result.content[0].text).toContain('Row 2 (Task 2): API Error');
+      // The direct-REST helper prefixes the original message with its own
+      // "Vikunja REST request failed (...)" context.
+      expect(result.content[0].text).toContain('Row 2 (Task 2):');
+      expect(result.content[0].text).toContain('API Error');
     });
 
     it('should handle label assignment errors gracefully', async () => {
@@ -940,7 +1041,19 @@ Description,1`;
     });
 
     it('should handle MCPError properly', async () => {
-      // Mock createTask to throw an MCPError
+      // Mock createTask to throw an MCPError. Post-migration, `createTask`
+      // (`PUT /projects/{id}/tasks`) always goes through the direct-REST
+      // helper, which wraps ANY rejection — MCPError or not — into its own
+      // MCPError with added context (see vikunjaRestRequestRaw); and
+      // TaskCreationService.createBaseTask deliberately unwraps any non-auth
+      // failure back into a plain `Error` so `catchErrors` keeps working
+      // (see the comment on that branch). So an MCPError thrown from this
+      // specific call site can no longer reach the top-level handler as a
+      // clean, un-prefixed MCPError the way a real node-vikunja rejection
+      // used to — the top-level MCPError-passthrough branch (`error
+      // instanceof MCPError`) itself remains real, reachable code, just via
+      // other paths (e.g. the batch size / no-tasks-found validation
+      // errors thrown directly in registerBatchImportTool).
       mockClient.tasks.createTask.mockRejectedValue(
         new MCPError(ErrorCode.API_ERROR, 'Custom API error message')
       );
@@ -951,8 +1064,8 @@ Description,1`;
         data: JSON.stringify({ title: 'Test' }),
       });
 
-      // MCPError should return its message directly
-      expect(result.content[0].text).toBe('Custom API error message');
+      expect(result.content[0].text).toContain('Failed to import tasks:');
+      expect(result.content[0].text).toContain('Custom API error message');
     });
 
     it('should handle general errors with stack trace', async () => {
@@ -976,7 +1089,14 @@ Description,1`;
     });
 
     it('should handle non-Error objects in catch block', async () => {
-      // Mock createTask to throw a non-Error object
+      // Mock createTask to throw a non-Error object. Post-migration, the
+      // direct-REST helper always wraps ANY rejection — including a raw
+      // non-Error value like this one — into a real `MCPError` (see
+      // vikunjaRestRequestRaw), so by the time this propagates to the
+      // top-level handler it's always `instanceof Error`; the 'Unknown
+      // error'/raw-value fallback this test originally exercised is only
+      // reachable via a source that still rejects with a genuine non-Error
+      // value (e.g. `getClientFromContext`, covered separately above).
       mockClient.tasks.createTask.mockRejectedValue('String error');
 
       const result = await toolHandler({
@@ -985,12 +1105,13 @@ Description,1`;
         data: JSON.stringify({ title: 'Test' }),
       });
 
-      expect(result.content[0].text).toContain('Failed to import tasks: String error');
+      expect(result.content[0].text).toContain('Failed to import tasks:');
+      expect(result.content[0].text).toContain('String error');
       expect(logger.error).toHaveBeenCalledWith(
         'Batch import error',
         expect.objectContaining({
-          error: 'String error',
-          message: 'Unknown error',
+          error: expect.any(String),
+          message: expect.stringContaining('String error'),
         })
       );
     });
@@ -1428,7 +1549,12 @@ Description,1`;
     });
 
     it('should handle error in task creation that is not an Error instance', async () => {
-      // Test line 534
+      // Test line 534. The direct-REST helper wraps this non-Error
+      // rejection into a real MCPError with a descriptive message (see
+      // vikunjaRestRequestRaw), so the reported per-task error is that
+      // message rather than the pre-migration 'Unknown error' fallback
+      // (only reachable when the original rejection is a non-Error value
+      // that never passes through the REST helper at all).
       mockClient.tasks.createTask.mockRejectedValue('Task creation failed');
 
       const result = await toolHandler({
@@ -1439,7 +1565,8 @@ Description,1`;
       });
 
       expect(result.content[0].text).toContain('Failed: 1 tasks');
-      expect(result.content[0].text).toContain('Row 1 (Test): Unknown error');
+      expect(result.content[0].text).toContain('Row 1 (Test):');
+      expect(result.content[0].text).toContain('Task creation failed');
     });
 
     it('should handle reminders when task has no ID', async () => {
@@ -1654,7 +1781,10 @@ Description,1`;
     });
 
     it('should handle getUsers non-auth error that is not Error instance', async () => {
-      // Test line 309
+      // Test line 309. The direct-REST helper always wraps a rejection —
+      // including this non-Error one — into a real MCPError (see
+      // vikunjaRestRequestRaw) before EntityResolver's catch logs it, so
+      // the logged `error` is that MCPError, not the original raw string.
       mockClient.users.getUsers.mockRejectedValue('Users fetch failed');
       mockClient.tasks.createTask.mockResolvedValue({ id: 2601, title: 'Test' });
 
@@ -1666,7 +1796,7 @@ Description,1`;
 
       expect(logger.warn).toHaveBeenCalledWith(
         'Failed to fetch users',
-        expect.objectContaining({ error: 'Users fetch failed' })
+        expect.objectContaining({ error: expect.any(Error) })
       );
     });
 
@@ -1858,7 +1988,9 @@ Description,1`;
     });
 
     it('should handle error creation logic in catch block', async () => {
-      // Test line 534 when creating error object
+      // Test line 534 when creating error object. The direct-REST helper
+      // prefixes the original message with its own context (see
+      // vikunjaRestRequestRaw), so this is now a substring match.
       const errorObj = new Error('Custom error');
       mockClient.tasks.createTask.mockRejectedValue(errorObj);
 
@@ -1870,7 +2002,8 @@ Description,1`;
       });
 
       expect(result.content[0].text).toContain('Failed: 1 tasks');
-      expect(result.content[0].text).toContain('Row 1 (Test): Custom error');
+      expect(result.content[0].text).toContain('Row 1 (Test):');
+      expect(result.content[0].text).toContain('Custom error');
     });
 
     it('should handle projectLabels being falsy in label/user map creation', async () => {
@@ -1945,7 +2078,11 @@ Description,1`;
     });
 
     it('should handle error not instance of Error in task creation skipErrors', async () => {
-      // Test for non-Error object in skipErrors
+      // Test for non-Error object in skipErrors. The direct-REST helper
+      // wraps this non-Error rejection into a real MCPError with a
+      // descriptive message (see vikunjaRestRequestRaw), so the reported
+      // per-task error is that message rather than the pre-migration
+      // 'Unknown error' fallback.
       const stringError = 'Task creation failed';
       mockClient.tasks.createTask.mockRejectedValue(stringError);
 
@@ -1957,8 +2094,9 @@ Description,1`;
       });
 
       expect(result.content[0].text).toContain('Failed: 2 tasks');
-      expect(result.content[0].text).toContain('Row 1 (Test 1): Unknown error');
-      expect(result.content[0].text).toContain('Row 2 (Test 2): Unknown error');
+      expect(result.content[0].text).toContain('Row 1 (Test 1):');
+      expect(result.content[0].text).toContain('Row 2 (Test 2):');
+      expect(result.content[0].text.match(/Task creation failed/g)).toHaveLength(2);
     });
 
     it('should handle label assignment error with auth check for non-Error', async () => {

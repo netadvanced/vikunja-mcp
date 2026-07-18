@@ -84,7 +84,7 @@ export function registerBatchImportTool(server: McpServer, authManager: AuthMana
         const taskCreationService = new TaskCreationService();
 
         // Resolve entities (labels and users)
-        const entityResult = await entityResolver.resolveEntities(client);
+        const entityResult = await entityResolver.resolveEntities(client, authManager);
         const { userFetchFailedDueToAuth } = entityResult;
 
         // Process tasks
@@ -104,6 +104,7 @@ export function registerBatchImportTool(server: McpServer, authManager: AuthMana
               task,
               args.projectId,
               client,
+              authManager,
               entityResult,
               args.skipErrors === true
             );

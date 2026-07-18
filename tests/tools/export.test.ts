@@ -28,24 +28,29 @@ const mockAuthManager = {
   }),
 } as unknown as MockAuthManager;
 
-// Mock the client module
+// Mock the client module. `labels.getLabel` remains the only node-vikunja
+// call site exportProjectRecursive still uses — getProject/getProjectTasks/
+// getProjects are migrated to the direct-REST helper (mocked via
+// `global.fetch` below).
 jest.mock('../../src/client', () => ({
   getClientFromContext: jest.fn().mockResolvedValue({
-    projects: {
-      getProject: jest.fn(),
-      getProjects: jest.fn(),
-    },
-    tasks: {
-      getProjectTasks: jest.fn(),
-    },
     labels: {
       getLabel: jest.fn(),
     },
   }),
 }));
 
-// Mock fetch for user export endpoints
+// Mock fetch for the direct-REST project/task calls and the user export endpoints
 global.fetch = jest.fn() as jest.MockedFunction<typeof fetch>;
+
+/** Queues one successful JSON response for the next `fetch` call. */
+function fetchOkOnce(body: unknown): void {
+  (global.fetch as jest.Mock).mockResolvedValueOnce({
+    ok: true,
+    statusText: 'OK',
+    text: async () => JSON.stringify(body),
+  } as Response);
+}
 
 describe('Export Tool', () => {
   beforeEach(() => {
@@ -54,7 +59,7 @@ describe('Export Tool', () => {
     // circuit breaker; clear accumulated stats so one test's deliberately
     // failing scenario doesn't trip the breaker for a later test that
     // shares the same auto-derived breaker name (e.g. all `/user/export/*`
-    // calls below).
+    // calls below, and all `/projects*` calls share `vikunja-rest-projects`).
     circuitBreakerRegistry.clear();
     registerExportTool(mockServer, mockAuthManager);
   });
@@ -132,9 +137,8 @@ describe('Export Tool', () => {
         mockServer.tool.mockClear();
         registerExportTool(mockServer, mockAuthManagerJWT);
 
-        const mockClient = await getClientFromContext();
-        jest.mocked(mockClient.projects.getProject).mockResolvedValue(mockProject);
-        jest.mocked(mockClient.tasks.getProjectTasks).mockResolvedValue([]);
+        fetchOkOnce(mockProject);
+        fetchOkOnce([]);
 
         const handler = mockServer.tool.mock.calls.find(
           (call) => call[0] === 'vikunja_export_project',
@@ -197,8 +201,8 @@ describe('Export Tool', () => {
 
       const mockClient = await getClientFromContext();
 
-      jest.mocked(mockClient.projects.getProject).mockResolvedValue(mockProject);
-      jest.mocked(mockClient.tasks.getProjectTasks).mockResolvedValue(mockTasks);
+      fetchOkOnce(mockProject);
+      fetchOkOnce(mockTasks);
       jest
         .mocked(mockClient.labels.getLabel)
         .mockResolvedValueOnce(mockLabels[0])
@@ -252,14 +256,18 @@ describe('Export Tool', () => {
 
       const mockAllProjects: Project[] = [mockParentProject, mockChildProject];
 
-      const mockClient = await getClientFromContext();
-
-      jest
-        .mocked(mockClient.projects.getProject)
-        .mockResolvedValueOnce(mockParentProject)
-        .mockResolvedValueOnce(mockChildProject);
-      jest.mocked(mockClient.projects.getProjects).mockResolvedValue(mockAllProjects);
-      jest.mocked(mockClient.tasks.getProjectTasks).mockResolvedValue([]);
+      // exportProjectRecursive's calls are sequential (awaited), so mocking
+      // by call order is reliable. Parent: GET project, GET tasks, GET all
+      // projects (to find children). Child (id 2, no children of its own,
+      // but includeChildren still fetches all projects again to check —
+      // this is the documented O(depth) refetch shape, unchanged by this
+      // migration): GET project, GET tasks, GET all projects.
+      fetchOkOnce(mockParentProject);
+      fetchOkOnce([]);
+      fetchOkOnce(mockAllProjects);
+      fetchOkOnce(mockChildProject);
+      fetchOkOnce([]);
+      fetchOkOnce(mockAllProjects);
 
       const handler = mockServer.tool.mock.calls.find(
         (call) => call[0] === 'vikunja_export_project',
@@ -296,11 +304,12 @@ describe('Export Tool', () => {
         updated: '2024-01-01T00:00:00Z',
       };
 
-      const mockClient = await getClientFromContext();
-
-      jest.mocked(mockClient.projects.getProject).mockResolvedValue(mockProject);
-      jest.mocked(mockClient.projects.getProjects).mockResolvedValue([mockProject]);
-      jest.mocked(mockClient.tasks.getProjectTasks).mockResolvedValue([]);
+      // The circular-reference check fires before any fetch in the
+      // recursive call for the "child" (which is really project 1 again),
+      // so only the parent invocation's 3 calls actually happen.
+      fetchOkOnce(mockProject);
+      fetchOkOnce([]);
+      fetchOkOnce([mockProject]);
 
       const handler = mockServer.tool.mock.calls.find(
         (call) => call[0] === 'vikunja_export_project',
@@ -330,9 +339,10 @@ describe('Export Tool', () => {
     });
 
     it('should handle non-existent project', async () => {
-      const mockClient = await getClientFromContext();
-
-      jest.mocked(mockClient.projects.getProject).mockResolvedValue(null);
+      // An empty response body deserializes to `null` (see
+      // vikunjaRestRequestRaw), matching the pre-migration
+      // `getProject.mockResolvedValue(null)` scenario.
+      fetchOkOnce(null);
 
       const handler = mockServer.tool.mock.calls.find(
         (call) => call[0] === 'vikunja_export_project',
@@ -367,8 +377,8 @@ describe('Export Tool', () => {
 
       const mockClient = await getClientFromContext();
 
-      jest.mocked(mockClient.projects.getProject).mockResolvedValue(mockProject);
-      jest.mocked(mockClient.tasks.getProjectTasks).mockResolvedValue(mockTasks);
+      fetchOkOnce(mockProject);
+      fetchOkOnce(mockTasks);
       jest.mocked(mockClient.labels.getLabel).mockRejectedValue(new Error('Label not found'));
 
       const handler = mockServer.tool.mock.calls.find(

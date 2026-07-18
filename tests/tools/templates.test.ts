@@ -7,6 +7,7 @@ import type { Project, Task, User } from 'node-vikunja';
 import { MCPError, ErrorCode } from '../../src/types';
 import { AuthManager } from '../../src/auth/AuthManager';
 import { parseMarkdown } from '../utils/markdown';
+import { circuitBreakerRegistry } from '../../src/utils/retry';
 
 // Mock modules
 jest.mock('../../src/client', () => ({
@@ -24,6 +25,52 @@ jest.mock('../../src/storage', () => ({
 // Import mocked functions
 import { getClientFromContext } from '../../src/client';
 import { storageManager } from '../../src/storage';
+
+// Mock fetch: `create` (getProject, getProjectTasks) and `instantiate`
+// (createProject, createTask) are all migrated off node-vikunja onto the
+// direct-REST helper (see src/tools/templates.ts); `updateTaskLabels`
+// (via setTaskLabels) stays on the node-vikunja client and is still mocked
+// through `mockClient` below.
+const mockFetch = jest.fn();
+global.fetch = mockFetch as unknown as typeof fetch;
+
+/** Minimal Response-like object for the REST helper. */
+function mockResponse(opts: {
+  ok?: boolean;
+  status?: number;
+  statusText?: string;
+  text?: string;
+}): Response {
+  const { ok = true, status = 200, statusText = 'OK', text = '' } = opts;
+  return {
+    ok,
+    status,
+    statusText,
+    text: jest.fn(async () => text),
+  } as unknown as Response;
+}
+
+/** Queues one successful JSON response for the next `fetch` call. */
+function fetchOkOnce(body: unknown): void {
+  mockFetch.mockResolvedValueOnce(mockResponse({ text: JSON.stringify(body) }));
+}
+
+/** Queues one failing response for the next `fetch` call. */
+function fetchErrOnce(status: number, text = ''): void {
+  mockFetch.mockResolvedValueOnce(mockResponse({ ok: false, status, text }));
+}
+
+/** Parses the JSON body sent on the Nth `fetch` call. */
+function fetchBody(callIndex: number): any {
+  const call = mockFetch.mock.calls[callIndex] as [string, RequestInit];
+  return JSON.parse(call[1].body as string);
+}
+
+/** Returns the URL and method used on the Nth `fetch` call. */
+function fetchCall(callIndex: number): { url: string; method: string } {
+  const call = mockFetch.mock.calls[callIndex] as [string, RequestInit];
+  return { url: call[0], method: call[1].method as string };
+}
 
 // Mock data
 const mockUser: User = {
@@ -70,6 +117,13 @@ describe('Templates Tool', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockFetch.mockReset();
+    // vikunjaRestRequest protects every call with a process-wide named
+    // circuit breaker; clear accumulated stats so one test's deliberately
+    // failing scenario doesn't trip the breaker for a later test that
+    // shares the same auto-derived breaker name (e.g. `/projects` and
+    // `/projects/{id}` share the `vikunja-rest-projects` breaker).
+    circuitBreakerRegistry.clear();
 
     // Setup mock storage instance
     mockFilterStorage = {
@@ -88,15 +142,12 @@ describe('Templates Tool', () => {
     // Mock storageManager.getStorage to return our mock storage
     (storageManager.getStorage as jest.Mock).mockResolvedValue(mockFilterStorage);
 
-    // Setup mock client
+    // Setup mock client. Only `tasks.updateTaskLabels` remains: templates.ts
+    // still calls `setTaskLabels(client, ...)` for label assignment on
+    // instantiated tasks (that domain's node-vikunja retirement is a
+    // separate item's scope). Project/task get/create all go through fetch.
     mockClient = {
-      projects: {
-        getProject: jest.fn(),
-        createProject: jest.fn(),
-      },
       tasks: {
-        getProjectTasks: jest.fn(),
-        createTask: jest.fn(),
         updateTaskLabels: jest.fn(),
       },
     } as any;
@@ -129,8 +180,8 @@ describe('Templates Tool', () => {
 
   describe('create subcommand', () => {
     it('should create a template from an existing project', async () => {
-      mockClient.projects.getProject.mockResolvedValue(mockProject);
-      mockClient.tasks.getProjectTasks.mockResolvedValue([mockTask]);
+      fetchOkOnce(mockProject);
+      fetchOkOnce([mockTask]);
       (mockFilterStorage.create as jest.Mock).mockResolvedValue({
         id: 'filter-123',
         name: 'template_123',
@@ -148,8 +199,14 @@ describe('Templates Tool', () => {
         tags: ['agile', 'sprint'],
       });
 
-      expect(mockClient.projects.getProject).toHaveBeenCalledWith(1);
-      expect(mockClient.tasks.getProjectTasks).toHaveBeenCalledWith(1);
+      expect(fetchCall(0)).toEqual({
+        url: 'https://test.vikunja.io/api/v1/projects/1',
+        method: 'GET',
+      });
+      expect(fetchCall(1)).toEqual({
+        url: 'https://test.vikunja.io/api/v1/projects/1/tasks',
+        method: 'GET',
+      });
       expect(mockFilterStorage.create).toHaveBeenCalledWith({
         name: expect.stringMatching(/^template_\d+$/),
         filter: expect.any(String),
@@ -173,7 +230,7 @@ describe('Templates Tool', () => {
     });
 
     it('should handle API errors', async () => {
-      mockClient.projects.getProject.mockRejectedValue(new Error('API Error'));
+      mockFetch.mockRejectedValue(new Error('API Error'));
 
       await expect(
         toolHandler({
@@ -191,8 +248,8 @@ describe('Templates Tool', () => {
         { id: 2, title: 'Task 2', labels: [], assignees: [] }, // Empty arrays
       ];
 
-      mockClient.projects.getProject.mockResolvedValue(minimalProject);
-      mockClient.tasks.getProjectTasks.mockResolvedValue(minimalTasks);
+      fetchOkOnce(minimalProject);
+      fetchOkOnce(minimalTasks);
       (mockFilterStorage.create as jest.Mock).mockResolvedValue({
         id: 'filter-123',
         name: 'template_123',
@@ -230,8 +287,8 @@ describe('Templates Tool', () => {
         { id: 2, title: 'Task 2', assignees: [{ id: 1 }, { id: undefined }] }, // Assignee with undefined id
       ];
 
-      mockClient.projects.getProject.mockResolvedValue(projectWithLabels);
-      mockClient.tasks.getProjectTasks.mockResolvedValue(tasksWithUndefinedIds);
+      fetchOkOnce(projectWithLabels);
+      fetchOkOnce(tasksWithUndefinedIds);
       (mockFilterStorage.create as jest.Mock).mockResolvedValue({
         id: 'filter-123',
         name: 'template_123',
@@ -285,8 +342,8 @@ describe('Templates Tool', () => {
         },
       ];
 
-      mockClient.projects.getProject.mockResolvedValue(project);
-      mockClient.tasks.getProjectTasks.mockResolvedValue(tasks);
+      fetchOkOnce(project);
+      fetchOkOnce(tasks);
       (mockFilterStorage.create as jest.Mock).mockResolvedValue({
         id: 'filter-123',
         name: 'template_123',
@@ -334,8 +391,8 @@ describe('Templates Tool', () => {
       };
       const tasks = [{ id: 1, title: 'Task 1' }];
 
-      mockClient.projects.getProject.mockResolvedValue(projectWithInvalidColor);
-      mockClient.tasks.getProjectTasks.mockResolvedValue(tasks);
+      fetchOkOnce(projectWithInvalidColor);
+      fetchOkOnce(tasks);
       (mockFilterStorage.create as jest.Mock).mockResolvedValue({
         id: 'filter-123',
         name: 'template_123',
@@ -364,7 +421,15 @@ describe('Templates Tool', () => {
     });
 
     it('should handle create errors with non-Error objects', async () => {
-      mockClient.projects.getProject.mockRejectedValue('String error');
+      // The direct-REST helper always wraps a failed fetch into a real
+      // `Error` (see vikunjaRestRequestRaw), so a raw non-Error rejection can
+      // no longer come from the project/task fetches themselves post
+      // migration — trigger the same fallback branch in templates.ts's
+      // 'create' catch (`error instanceof Error ? ... : 'Unknown error'`)
+      // via a non-Error rejection from `storage.create` instead.
+      fetchOkOnce(mockProject);
+      fetchOkOnce([mockTask]);
+      (mockFilterStorage.create as jest.Mock).mockRejectedValue('String error');
 
       await expect(
         toolHandler({
@@ -807,8 +872,8 @@ describe('Templates Tool', () => {
         updated: new Date(),
         isGlobal: true,
       });
-      mockClient.projects.createProject.mockResolvedValue(newProject);
-      mockClient.tasks.createTask.mockResolvedValue(newTask);
+      fetchOkOnce(newProject);
+      fetchOkOnce(newTask);
       mockClient.tasks.updateTaskLabels.mockResolvedValue(undefined);
 
       const result = await toolHandler({
@@ -823,7 +888,11 @@ describe('Templates Tool', () => {
         },
       });
 
-      expect(mockClient.projects.createProject).toHaveBeenCalledWith(
+      expect(fetchCall(0)).toEqual({
+        url: 'https://test.vikunja.io/api/v1/projects',
+        method: 'PUT',
+      });
+      expect(fetchBody(0)).toEqual(
         expect.objectContaining({
           title: 'Sprint 24',
           description: 'Sprint starting 2025-06-01',
@@ -831,8 +900,11 @@ describe('Templates Tool', () => {
         }),
       );
 
-      expect(mockClient.tasks.createTask).toHaveBeenCalledWith(
-        100,
+      expect(fetchCall(1)).toEqual({
+        url: 'https://test.vikunja.io/api/v1/projects/100/tasks',
+        method: 'PUT',
+      });
+      expect(fetchBody(1)).toEqual(
         expect.objectContaining({
           title: 'Planning for Sprint 24',
           description: 'Plan sprint 24',
@@ -862,8 +934,8 @@ describe('Templates Tool', () => {
         updated: new Date(),
         isGlobal: true,
       });
-      mockClient.projects.createProject.mockResolvedValue({ ...mockProject, id: 100 });
-      mockClient.tasks.createTask.mockResolvedValue({ ...mockTask, id: 200 });
+      fetchOkOnce({ ...mockProject, id: 100 });
+      fetchOkOnce({ ...mockTask, id: 200 });
       mockClient.tasks.updateTaskLabels.mockRejectedValue(new Error('Label not found'));
 
       const result = await toolHandler({
@@ -924,15 +996,20 @@ describe('Templates Tool', () => {
         updated: new Date(),
         isGlobal: true,
       });
-      mockClient.projects.createProject.mockRejectedValue(new Error('Project creation failed'));
+      mockFetch.mockRejectedValue(new Error('Project creation failed'));
 
+      // vikunjaRestRequest already throws a well-formed MCPError, and the
+      // 'instantiate' catch deliberately passes an already-MCPError through
+      // unwrapped (same convention as duplicateProject) rather than
+      // re-wrapping it with a generic "Failed to instantiate template:"
+      // prefix — that prefix is reserved for genuinely unexpected errors.
       await expect(
         toolHandler({
           subcommand: 'instantiate',
           id: 'template_123',
           projectName: 'New Project',
         }),
-      ).rejects.toThrow('Failed to instantiate template');
+      ).rejects.toThrow('Project creation failed');
     });
 
     it('should handle task creation failures gracefully', async () => {
@@ -951,12 +1028,11 @@ describe('Templates Tool', () => {
         updated: new Date(),
         isGlobal: true,
       });
-      mockClient.projects.createProject.mockResolvedValue({ ...mockProject, id: 100 });
+      fetchOkOnce({ ...mockProject, id: 100 });
 
       // First task succeeds, second fails
-      mockClient.tasks.createTask
-        .mockResolvedValueOnce({ ...mockTask, id: 200 })
-        .mockRejectedValueOnce(new Error('Task creation failed'));
+      fetchOkOnce({ ...mockTask, id: 200 });
+      mockFetch.mockRejectedValueOnce(new Error('Task creation failed'));
 
       const result = await toolHandler({
         subcommand: 'instantiate',
@@ -988,22 +1064,13 @@ describe('Templates Tool', () => {
     });
 
     it('should handle instantiate errors with non-Error objects', async () => {
-      const mockTemplate = {
-        id: 'template_123',
-        name: 'Template',
-        projectData: { title: 'Project' },
-        tasks: [],
-      };
-
-      (mockFilterStorage.findByName as jest.Mock).mockResolvedValue({
-        id: 'filter_123',
-        name: 'template_123',
-        filter: JSON.stringify(mockTemplate),
-        created: new Date(),
-        updated: new Date(),
-        isGlobal: true,
-      });
-      mockClient.projects.createProject.mockRejectedValue('String error');
+      // The direct-REST helper always wraps a failed fetch into a real
+      // `Error` (see vikunjaRestRequestRaw), so a raw non-Error rejection can
+      // no longer come from `createProject` itself post migration — trigger
+      // the same fallback branch in templates.ts's 'instantiate' catch
+      // (`error instanceof Error ? ... : 'Unknown error'`) via a non-Error
+      // rejection from `storage.findByName` instead.
+      (mockFilterStorage.findByName as jest.Mock).mockRejectedValue('String error');
 
       await expect(
         toolHandler({
@@ -1038,8 +1105,8 @@ describe('Templates Tool', () => {
         updated: new Date(),
         isGlobal: true,
       });
-      mockClient.projects.createProject.mockResolvedValue({ ...mockProject, id: 100 });
-      mockClient.tasks.createTask.mockResolvedValue({ ...mockTask, id: 200 });
+      fetchOkOnce({ ...mockProject, id: 100 });
+      fetchOkOnce({ ...mockTask, id: 200 });
 
       const result = await toolHandler({
         subcommand: 'instantiate',
@@ -1049,8 +1116,7 @@ describe('Templates Tool', () => {
       });
 
       // Check that built-in variables are still applied
-      expect(mockClient.tasks.createTask).toHaveBeenCalledWith(
-        100,
+      expect(fetchBody(1)).toEqual(
         expect.objectContaining({
           title: expect.stringMatching(/Task on \d{4}-\d{2}-\d{2} at \d{4}-\d{2}-\d{2}T/),
           description: 'Task desc value',
@@ -1084,8 +1150,8 @@ describe('Templates Tool', () => {
         updated: new Date(),
         isGlobal: true,
       });
-      mockClient.projects.createProject.mockResolvedValue({ ...mockProject, id: 100 });
-      mockClient.tasks.createTask.mockResolvedValue({ ...mockTask, id: 200 });
+      fetchOkOnce({ ...mockProject, id: 100 });
+      fetchOkOnce({ ...mockTask, id: 200 });
 
       const result = await toolHandler({
         subcommand: 'instantiate',
@@ -1093,8 +1159,7 @@ describe('Templates Tool', () => {
         projectName: 'Test Project',
       });
 
-      expect(mockClient.tasks.createTask).toHaveBeenCalledWith(
-        100,
+      expect(fetchBody(1)).toEqual(
         expect.objectContaining({
           title: 'Task with position',
           position: 10,
@@ -1120,8 +1185,8 @@ describe('Templates Tool', () => {
       });
 
       // Project created with null ID
-      mockClient.projects.createProject.mockResolvedValue({ ...mockProject, id: null });
-      mockClient.tasks.createTask.mockResolvedValue({ ...mockTask, id: 200 });
+      fetchOkOnce({ ...mockProject, id: null });
+      fetchOkOnce({ ...mockTask, id: 200 });
 
       const result = await toolHandler({
         subcommand: 'instantiate',
@@ -1130,8 +1195,11 @@ describe('Templates Tool', () => {
       });
 
       // Should use 0 as fallback for null project ID
-      expect(mockClient.tasks.createTask).toHaveBeenCalledWith(
-        0,
+      expect(fetchCall(1)).toEqual({
+        url: 'https://test.vikunja.io/api/v1/projects/0/tasks',
+        method: 'PUT',
+      });
+      expect(fetchBody(1)).toEqual(
         expect.objectContaining({
           project_id: 0,
         }),
@@ -1159,10 +1227,10 @@ describe('Templates Tool', () => {
         updated: new Date(),
         isGlobal: true,
       });
-      mockClient.projects.createProject.mockResolvedValue({ ...mockProject, id: 100 });
+      fetchOkOnce({ ...mockProject, id: 100 });
 
       // Task created with null ID
-      mockClient.tasks.createTask.mockResolvedValue({ ...mockTask, id: null });
+      fetchOkOnce({ ...mockTask, id: null });
       mockClient.tasks.updateTaskLabels.mockResolvedValue(undefined);
 
       const result = await toolHandler({
@@ -1198,8 +1266,8 @@ describe('Templates Tool', () => {
         updated: new Date(),
         isGlobal: true,
       });
-      mockClient.projects.createProject.mockResolvedValue({ ...mockProject, id: 100 });
-      mockClient.tasks.createTask.mockResolvedValue({ ...mockTask, id: 200 });
+      fetchOkOnce({ ...mockProject, id: 100 });
+      fetchOkOnce({ ...mockTask, id: 200 });
 
       const result = await toolHandler({
         subcommand: 'instantiate',
@@ -1215,7 +1283,7 @@ describe('Templates Tool', () => {
       });
 
       // Check that project was created with properly substituted variables
-      expect(mockClient.projects.createProject).toHaveBeenCalledWith(
+      expect(fetchBody(0)).toEqual(
         expect.objectContaining({
           title: 'Test Project', // Uses projectName, not template title
           description: 'Uses TestVar and StarName',
@@ -1223,8 +1291,7 @@ describe('Templates Tool', () => {
       );
 
       // Check that task was created with properly substituted variables
-      expect(mockClient.tasks.createTask).toHaveBeenCalledWith(
-        100,
+      expect(fetchBody(1)).toEqual(
         expect.objectContaining({
           title: 'Task with Beginning and Finish',
         }),
@@ -1252,8 +1319,8 @@ describe('Templates Tool', () => {
         updated: new Date(),
         isGlobal: true,
       });
-      mockClient.projects.createProject.mockResolvedValue({ ...mockProject, id: 100 });
-      mockClient.tasks.createTask.mockResolvedValue({ ...mockTask, id: 200 });
+      fetchOkOnce({ ...mockProject, id: 100 });
+      fetchOkOnce({ ...mockTask, id: 200 });
 
       const result = await toolHandler({
         subcommand: 'instantiate',
@@ -1263,8 +1330,7 @@ describe('Templates Tool', () => {
       });
 
       // Description with variables should be transformed
-      expect(mockClient.tasks.createTask).toHaveBeenCalledWith(
-        100,
+      expect(fetchBody(1)).toEqual(
         expect.objectContaining({
           description: 'Test Value',
         }),
@@ -1275,7 +1341,7 @@ describe('Templates Tool', () => {
       const mockTemplate = {
         id: 'template_123',
         name: 'Template',
-        projectData: { 
+        projectData: {
           title: 'Project',
           description: 'Test {{TODAY}} and {{NOW}}', // Built-in variables
         },
@@ -1290,7 +1356,7 @@ describe('Templates Tool', () => {
         updated: new Date(),
         isGlobal: true,
       });
-      mockClient.projects.createProject.mockResolvedValue({ ...mockProject, id: 100 });
+      fetchOkOnce({ ...mockProject, id: 100 });
 
       const result = await toolHandler({
         subcommand: 'instantiate',
@@ -1299,7 +1365,7 @@ describe('Templates Tool', () => {
       });
 
       // Built-in variables should be replaced
-      const projectCall = mockClient.projects.createProject.mock.calls[0][0];
+      const projectCall = fetchBody(0);
       expect(projectCall.description).toMatch(/Test \d{4}-\d{2}-\d{2} and \d{4}-\d{2}-\d{2}T/);
     });
 
@@ -1307,7 +1373,7 @@ describe('Templates Tool', () => {
       const mockTemplate = {
         id: 'template_123',
         name: 'Template',
-        projectData: { 
+        projectData: {
           title: 'Project',
           hex_color: '#FF0000', // Hex color to test line 338
         },
@@ -1322,7 +1388,7 @@ describe('Templates Tool', () => {
         updated: new Date(),
         isGlobal: true,
       });
-      mockClient.projects.createProject.mockResolvedValue({ ...mockProject, id: 100 });
+      fetchOkOnce({ ...mockProject, id: 100 });
 
       const result = await toolHandler({
         subcommand: 'instantiate',
@@ -1331,7 +1397,7 @@ describe('Templates Tool', () => {
       });
 
       // Hex color should be included
-      expect(mockClient.projects.createProject).toHaveBeenCalledWith(
+      expect(fetchBody(0)).toEqual(
         expect.objectContaining({
           hex_color: '#FF0000',
         }),
@@ -1342,7 +1408,7 @@ describe('Templates Tool', () => {
       const mockTemplate = {
         id: 'template_123',
         name: 'Template',
-        projectData: { 
+        projectData: {
           title: 'Project',
           description: 'Test {{VAR1}} and {{VAR2}}',
         },
@@ -1357,20 +1423,20 @@ describe('Templates Tool', () => {
         updated: new Date(),
         isGlobal: true,
       });
-      mockClient.projects.createProject.mockResolvedValue({ ...mockProject, id: 100 });
+      fetchOkOnce({ ...mockProject, id: 100 });
 
       const result = await toolHandler({
         subcommand: 'instantiate',
         id: 'template_123',
         projectName: 'Test',
-        variables: { 
+        variables: {
           VAR1: '', // Empty value
           VAR2: 'value2',
         },
       });
 
       // Empty variable value should be replaced with empty string
-      expect(mockClient.projects.createProject).toHaveBeenCalledWith(
+      expect(fetchBody(0)).toEqual(
         expect.objectContaining({
           description: 'Test  and value2',
         }),
@@ -1381,7 +1447,7 @@ describe('Templates Tool', () => {
       const mockTemplate = {
         id: 'template_123',
         name: 'Template',
-        projectData: { 
+        projectData: {
           title: 'Project',
           // No description field at all
         },
@@ -1399,8 +1465,8 @@ describe('Templates Tool', () => {
         updated: new Date(),
         isGlobal: true,
       });
-      mockClient.projects.createProject.mockResolvedValue({ ...mockProject, id: 100 });
-      mockClient.tasks.createTask.mockResolvedValue({ ...mockTask, id: 200 });
+      fetchOkOnce({ ...mockProject, id: 100 });
+      fetchOkOnce({ ...mockTask, id: 200 });
 
       const result = await toolHandler({
         subcommand: 'instantiate',
@@ -1410,11 +1476,11 @@ describe('Templates Tool', () => {
       });
 
       // Project should be created without description field
-      const projectCall = mockClient.projects.createProject.mock.calls[0][0];
+      const projectCall = fetchBody(0);
       expect(projectCall).not.toHaveProperty('description');
-      
+
       // Task should be created without description field
-      const taskCall = mockClient.tasks.createTask.mock.calls[0][1];
+      const taskCall = fetchBody(1);
       expect(taskCall).not.toHaveProperty('description');
     });
 
@@ -1422,7 +1488,7 @@ describe('Templates Tool', () => {
       const mockTemplate = {
         id: 'template_123',
         name: 'Template',
-        projectData: { 
+        projectData: {
           title: 'Project {{TODAY}}',
           description: 'Desc {{NOW}}',
         },
@@ -1441,8 +1507,8 @@ describe('Templates Tool', () => {
         updated: new Date(),
         isGlobal: true,
       });
-      mockClient.projects.createProject.mockResolvedValue({ ...mockProject, id: 100 });
-      mockClient.tasks.createTask.mockResolvedValue({ ...mockTask, id: 200 });
+      fetchOkOnce({ ...mockProject, id: 100 });
+      fetchOkOnce({ ...mockTask, id: 200 });
 
       const result = await toolHandler({
         subcommand: 'instantiate',
@@ -1452,10 +1518,10 @@ describe('Templates Tool', () => {
       });
 
       // Built-in variables should still be applied even without custom variables
-      const projectCall = mockClient.projects.createProject.mock.calls[0][0];
+      const projectCall = fetchBody(0);
       expect(projectCall.description).toMatch(/Desc \d{4}-\d{2}-\d{2}T/);
-      
-      const taskCall = mockClient.tasks.createTask.mock.calls[0][1];
+
+      const taskCall = fetchBody(1);
       expect(taskCall.description).toMatch(/Task desc \d{4}-\d{2}-\d{2}T/);
       expect(taskCall.due_date).toBe('2025-12-31T00:00:00Z');
     });
@@ -1481,8 +1547,8 @@ describe('Templates Tool', () => {
         updated: new Date(),
         isGlobal: true,
       });
-      mockClient.projects.createProject.mockResolvedValue({ ...mockProject, id: 100 });
-      mockClient.tasks.createTask.mockResolvedValue({ ...mockTask, id: 200 });
+      fetchOkOnce({ ...mockProject, id: 100 });
+      fetchOkOnce({ ...mockTask, id: 200 });
 
       const result = await toolHandler({
         subcommand: 'instantiate',
@@ -1492,15 +1558,14 @@ describe('Templates Tool', () => {
       });
 
       // Check that applyVariables returns empty string for undefined text
-      expect(mockClient.projects.createProject).toHaveBeenCalledWith(
+      expect(fetchBody(0)).toEqual(
         expect.objectContaining({
           title: 'Test Project', // Uses projectName directly
           description: 'Description',
         }),
       );
 
-      expect(mockClient.tasks.createTask).toHaveBeenCalledWith(
-        100,
+      expect(fetchBody(1)).toEqual(
         expect.objectContaining({
           title: '', // applyVariables returns empty string for undefined
           project_id: 100,
@@ -1511,7 +1576,7 @@ describe('Templates Tool', () => {
     it('should handle broken Date.toISOString that returns malformed date', async () => {
       // Save original Date
       const RealDate = global.Date;
-      
+
       // Mock Date to return a broken ISO string that starts with T (edge case from bad API)
       const mockDate = {
         toISOString: jest.fn().mockReturnValue('T12:34:56.789Z'), // Starts with 'T' - missing date part!
@@ -1539,8 +1604,8 @@ describe('Templates Tool', () => {
         updated: new Date(),
         isGlobal: true,
       });
-      mockClient.projects.createProject.mockResolvedValue({ ...mockProject, id: 100 });
-      mockClient.tasks.createTask.mockResolvedValue({ ...mockTask, id: 200 });
+      fetchOkOnce({ ...mockProject, id: 100 });
+      fetchOkOnce({ ...mockTask, id: 200 });
 
       try {
         const result = await toolHandler({
@@ -1550,15 +1615,14 @@ describe('Templates Tool', () => {
         });
 
         // Should handle the broken date format gracefully - TODAY becomes empty string due to || ''
-        expect(mockClient.projects.createProject).toHaveBeenCalledWith(
+        expect(fetchBody(0)).toEqual(
           expect.objectContaining({
             title: 'Test Project',
             description: 'Starting T12:34:56.789Z', // {{NOW}} replaced with full broken string
           }),
         );
 
-        expect(mockClient.tasks.createTask).toHaveBeenCalledWith(
-          100,
+        expect(fetchBody(1)).toEqual(
           expect.objectContaining({
             title: 'Task for ', // {{TODAY}} replaced with empty string because split('T')[0] is ''
           }),

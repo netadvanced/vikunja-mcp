@@ -15,11 +15,18 @@ import type { VikunjaClientFactory } from '../client/VikunjaClientFactory';
 import { MCPError, ErrorCode, createStandardResponse } from '../types';
 import { formatAorpAsMarkdown } from '../utils/response-factory';
 import { getClientFromContext } from '../client';
-import type { Project, Task, Label, User, VikunjaClient } from 'node-vikunja';
+import type { Label, User, VikunjaClient } from 'node-vikunja';
 import type { TypedVikunjaClient } from '../types/node-vikunja-extended';
 import { logger } from '../utils/logger';
 import { validateId as validateSharedId } from '../utils/validation';
 import { vikunjaRestRequest } from '../utils/vikunja-rest';
+import type { components } from '../types/generated/vikunja-openapi';
+
+// Sourced from the vendored OpenAPI spec (docs/vikunja-openapi.json). Label
+// fetching (`client.labels.getLabel`, below) stays on the node-vikunja client
+// — that domain's node-vikunja retirement is a separate item's scope.
+type VikunjaProject = components['schemas']['models.Project'];
+type VikunjaTask = components['schemas']['models.Task'];
 
 /**
  * Shape of the JSON body Vikunja returns from both `POST /user/export/request`
@@ -37,8 +44,8 @@ interface VikunjaMessageResponse {
  * Export format for project data
  */
 interface ProjectExportData {
-  project: Project;
-  tasks: Task[];
+  project: VikunjaProject;
+  tasks: VikunjaTask[];
   labels: Label[];
   team_members?: User[];
   child_projects?: ProjectExportData[];
@@ -48,9 +55,19 @@ interface ProjectExportData {
 
 /**
  * Recursively exports a project and its children
+ *
+ * `getProject`/`getProjectTasks`/`getProjects` are migrated to the direct-REST
+ * helper (`vikunjaRestRequest`); `client` is retained only for
+ * `labels.getLabel` below, which stays on node-vikunja — the labels domain's
+ * node-vikunja retirement is a separate item's scope. This function
+ * deliberately keeps the documented O(depth) refetch shape (one
+ * `GET /projects` per recursion level to re-derive that level's children) —
+ * that inefficiency is a pre-existing, documented tradeoff, not something
+ * this transport migration is meant to fix.
  */
 async function exportProjectRecursive(
   client: VikunjaClient,
+  authManager: AuthManager,
   projectId: number,
   includeChildren: boolean = false,
   visitedIds: Set<number> = new Set(),
@@ -66,19 +83,31 @@ async function exportProjectRecursive(
   visitedIds.add(projectId);
 
   // Get project details
-  const project = await vikunjaClient.projects.getProject(projectId);
+  const project = await vikunjaRestRequest<VikunjaProject>(
+    authManager,
+    'GET',
+    `/projects/${projectId}`,
+  );
   if (!project) {
     throw new MCPError(ErrorCode.NOT_FOUND, `Project with ID ${projectId} not found`);
   }
 
-  // Get all tasks for the project
-  const tasks = await vikunjaClient.tasks.getProjectTasks(projectId);
+  // Get all tasks for the project. NOTE: `GET /projects/{id}/tasks` is not
+  // present in the vendored OpenAPI spec (only `PUT` is documented there) —
+  // this mirrors node-vikunja's own `getProjectTasks`, which calls this same
+  // undocumented-but-functional path. Preserved as-is per this migration's
+  // "transport only, same behavior" scope.
+  const tasks = await vikunjaRestRequest<VikunjaTask[]>(
+    authManager,
+    'GET',
+    `/projects/${projectId}/tasks`,
+  );
 
   // Get all labels used in the project
   const labelIds = new Set<number>();
-  tasks.forEach((task: Task) => {
+  tasks.forEach((task: VikunjaTask) => {
     if (task.labels && Array.isArray(task.labels)) {
-      task.labels.forEach((label: Label) => {
+      task.labels.forEach((label) => {
         if (label.id) {
           labelIds.add(label.id);
         }
@@ -111,8 +140,10 @@ async function exportProjectRecursive(
 
   // Export child projects if requested
   if (includeChildren && project.id) {
-    const allProjects = await vikunjaClient.projects.getProjects({});
-    const childProjects = allProjects.filter((p: Project) => p.parent_project_id === project.id);
+    const allProjects = await vikunjaRestRequest<VikunjaProject[]>(authManager, 'GET', '/projects');
+    const childProjects = allProjects.filter(
+      (p: VikunjaProject) => p.parent_project_id === project.id,
+    );
 
     if (childProjects.length > 0) {
       exportData.child_projects = [];
@@ -120,6 +151,7 @@ async function exportProjectRecursive(
         if (child.id) {
           const childExport = await exportProjectRecursive(
             client,
+            authManager,
             child.id,
             true,
             new Set(visitedIds),
@@ -168,7 +200,12 @@ export function registerExportTool(server: McpServer, authManager: AuthManager, 
         const client = await getClientFromContext();
 
         // Export the project data
-        const exportData = await exportProjectRecursive(client, projectId, includeChildren);
+        const exportData = await exportProjectRecursive(
+          client,
+          authManager,
+          projectId,
+          includeChildren,
+        );
 
         // Format the output as JSON
         const formattedData = JSON.stringify(exportData, null, 2);

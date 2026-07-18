@@ -9,11 +9,16 @@ import type { AuthManager } from '../auth/AuthManager';
 import type { VikunjaClientFactory } from '../client/VikunjaClientFactory';
 import { MCPError, ErrorCode, createStandardResponse } from '../types';
 import { getClientFromContext } from '../client';
-import type { Project, Task } from 'node-vikunja';
 import { storageManager } from '../storage';
 import { logger } from '../utils/logger';
 import { setTaskLabels } from '../utils/label-bulk';
 import { formatAorpAsMarkdown } from '../utils/response-factory';
+import { vikunjaRestRequest } from '../utils/vikunja-rest';
+import type { components } from '../types/generated/vikunja-openapi';
+
+// Sourced from the vendored OpenAPI spec (docs/vikunja-openapi.json).
+type VikunjaProject = components['schemas']['models.Project'];
+type VikunjaTask = components['schemas']['models.Task'];
 
 /**
  * Get session-scoped storage instance
@@ -91,10 +96,24 @@ export function registerTemplatesTool(server: McpServer, authManager: AuthManage
 
             try {
               // Get the source project
-              const project = await client.projects.getProject(args.projectId);
+              const project = await vikunjaRestRequest<VikunjaProject>(
+                authManager,
+                'GET',
+                `/projects/${args.projectId}`,
+              );
 
-              // Get all tasks in the project
-              const tasks = await client.tasks.getProjectTasks(args.projectId);
+              // Get all tasks in the project. NOTE: `GET /projects/{id}/tasks` is
+              // not present in the vendored OpenAPI spec (only `PUT` is documented
+              // there) — this mirrors node-vikunja's own `getProjectTasks`, which
+              // calls this same undocumented-but-functional path. Preserved as-is
+              // per this migration's "transport only, same behavior" scope; see
+              // docs/API-COVERAGE.md's note on `GET /projects/{id}/tasks` for the
+              // broader spec-drift context.
+              const tasks = await vikunjaRestRequest<VikunjaTask[]>(
+                authManager,
+                'GET',
+                `/projects/${args.projectId}/tasks`,
+              );
 
               // Validate hex color if present
               if (project.hex_color && !/^#[0-9A-Fa-f]{6}$/.test(project.hex_color)) {
@@ -113,7 +132,7 @@ export function registerTemplatesTool(server: McpServer, authManager: AuthManage
                 created: new Date().toISOString(),
                 tags: args.tags || [],
                 projectData: {
-                  title: project.title,
+                  title: project.title ?? '',
                   ...(project.description && { description: project.description }),
                   ...(project.hex_color &&
                     /^#[0-9A-Fa-f]{6}$/.test(project.hex_color) && {
@@ -121,7 +140,7 @@ export function registerTemplatesTool(server: McpServer, authManager: AuthManage
                     }),
                 },
                 tasks: tasks.map((task) => ({
-                  title: task.title,
+                  title: task.title ?? '',
                   ...(task.description && { description: task.description }),
                   ...(task.labels &&
                     task.labels.length > 0 && {
@@ -340,7 +359,7 @@ export function registerTemplatesTool(server: McpServer, authManager: AuthManage
               const template = JSON.parse(savedFilter.filter) as TemplateData;
 
               // Create new project from template
-              const projectData: Partial<Project> = {
+              const projectData: VikunjaProject = {
                 title: applyVariables(args.projectName, args.variables || {}),
                 ...(template.projectData.description && {
                   description: applyVariables(
@@ -355,17 +374,22 @@ export function registerTemplatesTool(server: McpServer, authManager: AuthManage
                 projectData.hex_color = template.projectData.hex_color;
               }
 
-              const newProject = await client.projects.createProject(projectData as Project);
+              const newProject = await vikunjaRestRequest<VikunjaProject>(
+                authManager,
+                'PUT',
+                '/projects',
+                projectData,
+              );
               logger.info('Created project from template', {
                 projectId: newProject.id,
                 templateId: args.id,
               });
 
               // Create tasks from template
-              const createdTasks: Task[] = [];
+              const createdTasks: VikunjaTask[] = [];
               for (const taskTemplate of template.tasks) {
                 try {
-                  const taskData: Partial<Task> = {
+                  const taskData: VikunjaTask = {
                     title: applyVariables(taskTemplate.title, args.variables || {}),
                     project_id: newProject.id ?? 0,
                     ...(taskTemplate.description && {
@@ -376,9 +400,11 @@ export function registerTemplatesTool(server: McpServer, authManager: AuthManage
                     ...(taskTemplate.position !== undefined && { position: taskTemplate.position }),
                   };
 
-                  const createdTask = await client.tasks.createTask(
-                    newProject.id ?? 0,
-                    taskData as Task,
+                  const createdTask = await vikunjaRestRequest<VikunjaTask>(
+                    authManager,
+                    'PUT',
+                    `/projects/${newProject.id ?? 0}/tasks`,
+                    taskData,
                   );
                   createdTasks.push(createdTask);
 

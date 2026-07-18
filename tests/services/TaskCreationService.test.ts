@@ -4,6 +4,8 @@ import type { TypedVikunjaClient } from '../../src/types/node-vikunja-extended';
 import type { ImportedTask } from '../../src/parsers/InputParserFactory';
 import type { Task, Label, User } from 'node-vikunja';
 import { isAuthenticationError } from '../../src/utils/auth-error-handler';
+import { AuthManager } from '../../src/auth/AuthManager';
+import { circuitBreakerRegistry } from '../../src/utils/retry';
 
 // Mock dependencies
 jest.mock('../../src/utils/logger');
@@ -12,26 +14,75 @@ jest.mock('../../src/utils/auth-error-handler');
 // Import mocked logger for assertions
 import { logger } from '../../src/utils/logger';
 
+// `createBaseTask` is migrated off node-vikunja onto the direct-REST helper
+// (`PUT /projects/{id}/tasks`); label/assignee/reminder handling stays on
+// the node-vikunja client (`mockClient`) — those domains' node-vikunja
+// retirement is a separate item's scope.
+const mockFetch = jest.fn();
+global.fetch = mockFetch as unknown as typeof fetch;
+
+/** Minimal Response-like object for the REST helper. */
+function mockResponse(opts: {
+  ok?: boolean;
+  status?: number;
+  statusText?: string;
+  text?: string;
+}): Response {
+  const { ok = true, status = 200, statusText = 'OK', text = '' } = opts;
+  return {
+    ok,
+    status,
+    statusText,
+    text: jest.fn(async () => text),
+  } as unknown as Response;
+}
+
+/** Queues one successful JSON response for the next `fetch` call. */
+function fetchOkOnce(body: unknown): void {
+  mockFetch.mockResolvedValueOnce(mockResponse({ text: JSON.stringify(body) }));
+}
+
+/** URL and method used on the Nth `fetch` call. */
+function fetchCall(callIndex: number): { url: string; method: string } {
+  const call = mockFetch.mock.calls[callIndex] as [string, RequestInit];
+  return { url: call[0], method: call[1].method as string };
+}
+
+/** Parses the JSON body sent on the Nth `fetch` call. */
+function fetchBody(callIndex: number): any {
+  const call = mockFetch.mock.calls[callIndex] as [string, RequestInit];
+  return JSON.parse(call[1].body as string);
+}
+
 describe('TaskCreationService', () => {
   let taskCreationService: TaskCreationService;
   let mockClient: jest.Mocked<TypedVikunjaClient>;
+  let authManager: AuthManager;
   let mockEntityMaps: any;
   let mockTask: ImportedTask;
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockFetch.mockReset();
+    // vikunjaRestRequest protects every call with a process-wide named
+    // circuit breaker; clear accumulated stats so one test's deliberately
+    // failing scenario doesn't trip the breaker for a later test.
+    circuitBreakerRegistry.clear();
+
     taskCreationService = new TaskCreationService();
 
     // Setup mock client
     mockClient = {
       tasks: {
-        createTask: jest.fn(),
         getTask: jest.fn(),
         updateTaskLabels: jest.fn(),
         bulkAssignUsersToTask: jest.fn(),
         assignUserToTask: jest.fn(),
       },
     } as jest.Mocked<TypedVikunjaClient>;
+
+    authManager = new AuthManager();
+    authManager.connect('https://vikunja.test', 'tk_test-token');
 
     // Setup mock entity maps
     mockEntityMaps = {
@@ -79,7 +130,7 @@ describe('TaskCreationService', () => {
         percent_done: 50,
       } as Task;
 
-      mockClient.tasks.createTask.mockResolvedValue(createdTask);
+      fetchOkOnce(createdTask);
       mockClient.tasks.updateTaskLabels.mockResolvedValue({});
       mockClient.tasks.getTask.mockResolvedValue({
         ...createdTask,
@@ -95,6 +146,7 @@ describe('TaskCreationService', () => {
         mockTask,
         456,
         mockClient,
+        authManager,
         mockEntityMaps
       );
 
@@ -104,7 +156,11 @@ describe('TaskCreationService', () => {
       expect(result.title).toBe('Test Task');
       expect(result.warnings).toBeUndefined();
 
-      expect(mockClient.tasks.createTask).toHaveBeenCalledWith(456, {
+      expect(fetchCall(0)).toEqual({
+        url: 'https://vikunja.test/api/v1/projects/456/tasks',
+        method: 'PUT',
+      });
+      expect(fetchBody(0)).toEqual({
         project_id: 456,
         title: 'Test Task',
         done: false,
@@ -133,20 +189,21 @@ describe('TaskCreationService', () => {
         percent_done: 0,
       } as Task;
 
-      mockClient.tasks.createTask.mockResolvedValue(createdTask);
+      fetchOkOnce(createdTask);
 
       // Act
       const result = await taskCreationService.createTask(
         minimalTask,
         456,
         mockClient,
+        authManager,
         mockEntityMaps
       );
 
       // Assert
       expect(result.success).toBe(true);
       expect(result.taskId).toBe(124);
-      expect(mockClient.tasks.createTask).toHaveBeenCalledWith(456, {
+      expect(fetchBody(0)).toEqual({
         project_id: 456,
         title: 'Minimal Task',
         done: false,
@@ -160,42 +217,49 @@ describe('TaskCreationService', () => {
       const authError = new Error('Authentication failed');
       (isAuthenticationError as jest.Mock).mockReturnValue(true);
 
-      mockClient.tasks.createTask.mockRejectedValue(authError);
+      mockFetch.mockRejectedValue(authError);
 
       // Act & Assert
       await expect(
-        taskCreationService.createTask(mockTask, 456, mockClient, mockEntityMaps)
+        taskCreationService.createTask(mockTask, 456, mockClient, authManager, mockEntityMaps)
       ).rejects.toThrow(MCPError);
 
+      // isAuthenticationError is called with the original network-level
+      // error during vikunjaRestRequest's own transient-failure
+      // classification, before createBaseTask's catch runs.
       expect(isAuthenticationError).toHaveBeenCalledWith(authError);
     });
 
     it('should bubble up MCPError exceptions regardless of catchErrors parameter', async () => {
-      // Arrange
-      const mcpError = new MCPError(ErrorCode.API_ERROR, 'Custom MCP error');
-
-      mockClient.tasks.createTask.mockRejectedValue(mcpError);
+      // Post-migration, createBaseTask can only ever throw a real MCPError
+      // via its deliberate authentication-error branch — any other
+      // transport failure is unwrapped back to a plain Error so it respects
+      // `catchErrors` (see the comment on that branch). Exercise the
+      // MCPError-bypasses-catchErrors mechanism through that branch.
+      (isAuthenticationError as jest.Mock).mockReturnValue(true);
+      mockFetch.mockRejectedValue(new Error('Authentication failed'));
 
       // Act & Assert - Should bubble up even with catchErrors=true
       await expect(
-        taskCreationService.createTask(mockTask, 456, mockClient, mockEntityMaps, true)
-      ).rejects.toThrow('Custom MCP error');
+        taskCreationService.createTask(mockTask, 456, mockClient, authManager, mockEntityMaps, true)
+      ).rejects.toThrow(MCPError);
 
       // Act & Assert - Should also bubble up with catchErrors=false
       await expect(
-        taskCreationService.createTask(mockTask, 456, mockClient, mockEntityMaps, false)
-      ).rejects.toThrow('Custom MCP error');
+        taskCreationService.createTask(mockTask, 456, mockClient, authManager, mockEntityMaps, false)
+      ).rejects.toThrow(MCPError);
     });
 
     it('should let errors bubble up when catchErrors is false', async () => {
       // Arrange
       const apiError = new Error('API rate limit exceeded');
+      (isAuthenticationError as jest.Mock).mockReturnValue(false);
 
-      mockClient.tasks.createTask.mockRejectedValue(apiError);
+      mockFetch.mockRejectedValue(apiError);
 
       // Act & Assert
       await expect(
-        taskCreationService.createTask(mockTask, 456, mockClient, mockEntityMaps, false)
+        taskCreationService.createTask(mockTask, 456, mockClient, authManager, mockEntityMaps, false)
       ).rejects.toThrow('API rate limit exceeded');
     });
 
@@ -204,19 +268,23 @@ describe('TaskCreationService', () => {
       const apiError = new Error('API rate limit exceeded');
       (isAuthenticationError as jest.Mock).mockReturnValue(false);
 
-      mockClient.tasks.createTask.mockRejectedValue(apiError);
+      mockFetch.mockRejectedValue(apiError);
 
       // Act
       const result = await taskCreationService.createTask(
         mockTask,
         456,
         mockClient,
+        authManager,
         mockEntityMaps
       );
 
       // Assert
       expect(result.success).toBe(false);
-      expect(result.error).toBe('API rate limit exceeded');
+      // The direct-REST helper prefixes the original message with its own
+      // "Vikunja REST request failed (...)" context, so this is now a
+      // substring match rather than an exact one.
+      expect(result.error).toContain('API rate limit exceeded');
     });
   });
 
@@ -230,7 +298,7 @@ describe('TaskCreationService', () => {
         priority: 3,
       } as Task;
 
-      mockClient.tasks.createTask.mockResolvedValue(createdTask);
+      fetchOkOnce(createdTask);
       mockClient.tasks.updateTaskLabels.mockResolvedValue({});
       mockClient.tasks.getTask.mockResolvedValue({
         ...createdTask,
@@ -245,6 +313,7 @@ describe('TaskCreationService', () => {
         mockTask,
         456,
         mockClient,
+        authManager,
         mockEntityMaps
       );
 
@@ -266,7 +335,7 @@ describe('TaskCreationService', () => {
         priority: 3,
       } as Task;
 
-      mockClient.tasks.createTask.mockResolvedValue(createdTask);
+      fetchOkOnce(createdTask);
       mockClient.tasks.updateTaskLabels.mockResolvedValue({});
       mockClient.tasks.getTask.mockResolvedValue({
         ...createdTask,
@@ -278,6 +347,7 @@ describe('TaskCreationService', () => {
         mockTask,
         456,
         mockClient,
+        authManager,
         mockEntityMaps
       );
 
@@ -298,7 +368,7 @@ describe('TaskCreationService', () => {
       const labelError = new Error('Insufficient permissions');
       (isAuthenticationError as jest.Mock).mockReturnValue(true);
 
-      mockClient.tasks.createTask.mockResolvedValue(createdTask);
+      fetchOkOnce(createdTask);
       mockClient.tasks.updateTaskLabels.mockRejectedValue(labelError);
 
       // Act
@@ -306,6 +376,7 @@ describe('TaskCreationService', () => {
         mockTask,
         456,
         mockClient,
+        authManager,
         mockEntityMaps
       );
 
@@ -326,7 +397,7 @@ describe('TaskCreationService', () => {
       const labelError = new Error('Network error');
       (isAuthenticationError as jest.Mock).mockReturnValue(false);
 
-      mockClient.tasks.createTask.mockResolvedValue(createdTask);
+      fetchOkOnce(createdTask);
       mockClient.tasks.updateTaskLabels.mockRejectedValue(labelError);
 
       // Act
@@ -334,6 +405,7 @@ describe('TaskCreationService', () => {
         mockTask,
         456,
         mockClient,
+        authManager,
         mockEntityMaps
       );
 
@@ -356,7 +428,7 @@ describe('TaskCreationService', () => {
         priority: 3,
       } as Task;
 
-      mockClient.tasks.createTask.mockResolvedValue(createdTask);
+      fetchOkOnce(createdTask);
       mockClient.tasks.updateTaskLabels.mockResolvedValue({});
       mockClient.tasks.getTask.mockResolvedValue({
         ...createdTask,
@@ -371,6 +443,7 @@ describe('TaskCreationService', () => {
         taskWithUnknownLabels,
         456,
         mockClient,
+        authManager,
         mockEntityMaps
       );
 
@@ -389,7 +462,7 @@ describe('TaskCreationService', () => {
         priority: 3,
       } as Task;
 
-      mockClient.tasks.createTask.mockResolvedValue(createdTask);
+      fetchOkOnce(createdTask);
       mockClient.tasks.updateTaskLabels.mockResolvedValue({});
       mockClient.tasks.getTask.mockRejectedValue(new Error('Verification failed'));
 
@@ -398,6 +471,7 @@ describe('TaskCreationService', () => {
         mockTask,
         456,
         mockClient,
+        authManager,
         mockEntityMaps
       );
 
@@ -422,13 +496,14 @@ describe('TaskCreationService', () => {
         priority: 3,
       } as Task;
 
-      mockClient.tasks.createTask.mockResolvedValue(createdTask);
+      fetchOkOnce(createdTask);
 
       // Act
       const result = await taskCreationService.createTask(
         taskWithoutLabels,
         456,
         mockClient,
+        authManager,
         mockEntityMaps
       );
 
@@ -457,13 +532,14 @@ describe('TaskCreationService', () => {
         projectUsers: [],
       };
 
-      mockClient.tasks.createTask.mockResolvedValue(createdTask);
+      fetchOkOnce(createdTask);
 
       // Act
       const result = await taskCreationService.createTask(
         taskWithoutLabels,
         456,
         mockClient,
+        authManager,
         entityMapsWithNoUsers
       );
 
@@ -488,7 +564,7 @@ describe('TaskCreationService', () => {
         priority: 3,
       } as Task;
 
-      mockClient.tasks.createTask.mockResolvedValue(createdTask);
+      fetchOkOnce(createdTask);
       mockClient.tasks.assignUserToTask.mockRejectedValue(new Error('User assignment failed'));
 
       // Act
@@ -496,6 +572,7 @@ describe('TaskCreationService', () => {
         taskWithoutLabels,
         456,
         mockClient,
+        authManager,
         mockEntityMaps
       );
 
@@ -519,7 +596,7 @@ describe('TaskCreationService', () => {
         priority: 3,
       } as Task;
 
-      mockClient.tasks.createTask.mockResolvedValue(createdTask);
+      fetchOkOnce(createdTask);
       mockClient.tasks.assignUserToTask.mockResolvedValue({});
 
       // Act
@@ -527,6 +604,7 @@ describe('TaskCreationService', () => {
         taskWithUnknownUsers,
         456,
         mockClient,
+        authManager,
         mockEntityMaps
       );
 
@@ -560,13 +638,14 @@ describe('TaskCreationService', () => {
         priority: 0,
       } as Task;
 
-      mockClient.tasks.createTask.mockResolvedValue(createdTask);
+      fetchOkOnce(createdTask);
 
       // Act
       const result = await taskCreationService.createTask(
         taskWithReminders,
         456,
         mockClient,
+        authManager,
         mockEntityMaps
       );
 
@@ -600,13 +679,14 @@ describe('TaskCreationService', () => {
         priority: 0,
       } as Task;
 
-      mockClient.tasks.createTask.mockResolvedValue(createdTask);
+      fetchOkOnce(createdTask);
 
       // Act
       const result = await taskCreationService.createTask(
         taskWithEmptyArrays,
         456,
         mockClient,
+        authManager,
         mockEntityMaps
       );
 
@@ -634,20 +714,21 @@ describe('TaskCreationService', () => {
         priority: 0,
       } as Task;
 
-      mockClient.tasks.createTask.mockResolvedValue(createdTask);
+      fetchOkOnce(createdTask);
 
       // Act
       const result = await taskCreationService.createTask(
         taskWithUndefined,
         456,
         mockClient,
+        authManager,
         mockEntityMaps
       );
 
       // Assert
       expect(result.success).toBe(true);
       expect(result.warnings).toBeUndefined();
-      expect(mockClient.tasks.createTask).toHaveBeenCalledWith(456, {
+      expect(fetchBody(0)).toEqual({
         project_id: 456,
         title: 'Task with undefined properties',
         done: false,
@@ -669,21 +750,21 @@ describe('TaskCreationService', () => {
         priority: 3,
       } as Task;
 
-      mockClient.tasks.createTask.mockResolvedValue(createdTask);
+      fetchOkOnce(createdTask);
 
       // Act
       const result = await taskCreationService.createTask(
         taskWithInvalidRepeatMode,
         456,
         mockClient,
+        authManager,
         mockEntityMaps
       );
 
       // Assert
       expect(result.success).toBe(true);
       // repeat_mode should not be included in the call
-      const taskDataCall = mockClient.tasks.createTask.mock.calls[0][1];
-      expect(taskDataCall).not.toHaveProperty('repeat_mode');
+      expect(fetchBody(0)).not.toHaveProperty('repeat_mode');
     });
   });
 
@@ -703,7 +784,7 @@ describe('TaskCreationService', () => {
         priority: 3,
       } as Task;
 
-      mockClient.tasks.createTask.mockResolvedValue(createdTask);
+      fetchOkOnce(createdTask);
       mockClient.tasks.updateTaskLabels.mockResolvedValue({});
       mockClient.tasks.getTask.mockResolvedValue(createdTask); // Simulate label verification failure
       mockClient.tasks.assignUserToTask.mockResolvedValue({});
@@ -713,6 +794,7 @@ describe('TaskCreationService', () => {
         taskWithMultipleIssues,
         456,
         mockClient,
+        authManager,
         mockEntityMaps
       );
 
