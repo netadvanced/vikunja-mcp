@@ -1256,14 +1256,18 @@ describe('Tasks Tool', () => {
       mockClient.tasks.removeUserFromTask.mockRejectedValue(new Error('Failed to remove user'));
 
       // The assignee removal now flows through vikunjaRestRequest (DELETE
-      // /tasks/1/assignees/1); its failure is wrapped as an MCPError and
-      // propagated as-is by updateTask.
+      // /tasks/1/assignees/1); its failure is wrapped as an MCPError, which
+      // updateTask's catch restores the conventional "Failed to update
+      // task: ..." wrapping around (wrapIfRestOrigin) rather than
+      // propagating the raw REST message.
       await expect(
         callTool('update', {
           id: 1,
           assignees: [2], // Remove user 1, keep user 2
         }),
-      ).rejects.toThrow('Vikunja REST request failed (DELETE /tasks/1/assignees/1): Failed to remove user');
+      ).rejects.toThrow(
+        'Failed to update task: Vikunja REST request failed (DELETE /tasks/1/assignees/1): Failed to remove user',
+      );
 
       expect(mockClient.tasks.removeUserFromTask).toHaveBeenCalledWith(1, 1);
     });
@@ -1301,14 +1305,15 @@ describe('Tasks Tool', () => {
       mockClient.tasks.updateTask.mockRejectedValue('Update failed');
 
       // POST /tasks/{id} now goes through vikunjaRestRequest, which wraps
-      // the underlying failure into an MCPError (propagated as-is by
-      // updateTask rather than re-wrapped generically).
+      // the underlying failure into an MCPError; updateTask's catch restores
+      // the conventional "Failed to update task: ..." wrapping around it
+      // (wrapIfRestOrigin) rather than propagating the raw REST message.
       await expect(
         callTool('update', {
           id: 1,
           title: 'Test',
         }),
-      ).rejects.toThrow('Vikunja REST request failed (POST /tasks/1): Update failed');
+      ).rejects.toThrow('Failed to update task: Vikunja REST request failed (POST /tasks/1): Update failed');
     });
 
     it('should update recurring task settings', async () => {

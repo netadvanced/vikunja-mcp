@@ -2,6 +2,22 @@
 
 This document describes the persistent storage implementation for the Vikunja MCP Server's filter storage system.
 
+> **Current state (post v0.2.0 simplification):** the SQLite/PostgreSQL/Redis backend
+> and adapter machinery described below was the pre-refactoring design and is **not**
+> what ships today. Saved filters are backed by `SimpleFilterStorage`
+> (`src/storage/SimpleFilterStorage.ts`) — in-memory, session-scoped, no persistent
+> backend — see root `CLAUDE.md`'s "Simplified Storage Architecture" section. The one
+> exception is **templates** (`vikunja_templates`): as of the N3-templates-persistence
+> work item, templates support opt-in file-backed JSON persistence layered on top of
+> that same in-memory storage — write-through on every mutation, reload at startup. See
+> `docs/CONFIGURATION.md`'s "Templates Persistence" section for the actual, current
+> mechanism (config key, env var, Docker volume story) and
+> `src/storage/templateFileStore.ts` for the implementation. SQLite itself was
+> evaluated for this work item and parked (native-dependency cost outweighs the need for
+> a single opt-in JSON file) — see `docs/ROADMAP.md`. The rest of this document
+> describes the older, more ambitious multi-backend design that predates the
+> simplification and is retained here for historical/design-reference context only.
+
 ## Overview
 
 The storage system has been enhanced from in-memory only to support multiple persistent backends while maintaining full API compatibility and providing graceful fallback mechanisms.

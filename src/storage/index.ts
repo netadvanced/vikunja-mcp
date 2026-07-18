@@ -8,15 +8,25 @@
  */
 
 import { logger } from '../utils/logger';
-import { SimpleFilterStorage, storageManager } from './SimpleFilterStorage';
+import { SimpleFilterStorage, storageManager, FilterStorageManager } from './SimpleFilterStorage';
 import type { FilterStorage, SavedFilter } from '../types/filters';
 import { StorageDataError } from '../utils/storage-errors';
 
 // Export the main storage implementation
-export { SimpleFilterStorage, storageManager };
+export { SimpleFilterStorage, storageManager, FilterStorageManager };
 
 // Export storage interface and types
 export type { FilterStorage, SavedFilter };
+
+// Opt-in file-backed persistence for templates (templates.ts is the only
+// consumer — see templateFileStore.ts's header for why this isn't a general
+// SimpleFilterStorage adapter).
+export {
+  resolveTemplatesPersistPath,
+  loadTemplatesFile,
+  writeTemplatesFileAtomic,
+} from './templateFileStore';
+export type { PersistedTemplateRecord } from './templateFileStore';
 
 // Re-export error classes from canonical location
 export { StorageDataError };
