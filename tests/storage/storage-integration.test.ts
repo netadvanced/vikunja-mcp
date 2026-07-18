@@ -14,8 +14,41 @@ import {
   healthCheckAllStorage,
   migrateMemoryToPersistent,
   storageManager,
+  FilterStorageManager,
 } from '../../src/storage';
 import type { FilterStorage } from '../../src/types/filters';
+
+// Declared before `Storage Integration` (whose `afterAll` stops the shared
+// singleton's cleanup timer) so the singleton assertion below observes it
+// still running, as it would at server startup.
+describe('Timer Hygiene (N3-templates-persistence)', () => {
+  it('unrefs the module-level cleanup interval so it never keeps the process alive on its own', () => {
+    // Node's Timeout#hasRef() reports whether the timer is currently
+    // ref'd (i.e. would keep the event loop, and a Jest worker, alive).
+    const interval = (storageManager as unknown as { cleanupInterval: NodeJS.Timeout | null })
+      .cleanupInterval;
+    expect(interval).not.toBeNull();
+    expect(interval?.hasRef?.()).toBe(false);
+  });
+
+  it('unrefs the interval on any FilterStorageManager instance, not just the shared singleton', () => {
+    const manager = new FilterStorageManager();
+    try {
+      const interval = (manager as unknown as { cleanupInterval: NodeJS.Timeout | null }).cleanupInterval;
+      expect(interval).not.toBeNull();
+      expect(interval?.hasRef?.()).toBe(false);
+    } finally {
+      manager.stopCleanupTimer();
+    }
+  });
+
+  it('stopCleanupTimer() (the dispose hook) clears the interval', () => {
+    const manager = new FilterStorageManager();
+    manager.stopCleanupTimer();
+    const interval = (manager as unknown as { cleanupInterval: NodeJS.Timeout | null }).cleanupInterval;
+    expect(interval).toBeNull();
+  });
+});
 
 describe('Storage Integration', () => {
   let testDir: string;
@@ -50,8 +83,12 @@ describe('Storage Integration', () => {
       console.warn('Failed to clean up test directory:', error);
     }
 
-    // Clean up storage managers
+    // Clean up storage managers. Also stop the module-level cleanup timer
+    // (dispose hook, N3-templates-persistence timer-hygiene fix) so this
+    // suite doesn't leave a handle around for Jest to force-exit on —
+    // belt-and-suspenders alongside the timer's own `.unref()` call.
     await storageManager.clearAll();
+    storageManager.stopCleanupTimer();
   });
 
   beforeEach(async () => {

@@ -14,6 +14,7 @@ import type {
   RateLimitConfig,
   FeatureFlagsConfig,
   ModulesConfig,
+  TemplatesConfig,
 } from './types';
 import {
   Environment,
@@ -210,6 +211,11 @@ export class ConfigurationManager {
   public async getModulesConfig(): Promise<ModulesConfig> {
     const config = await this.getConfiguration();
     return config.modules;
+  }
+
+  public async getTemplatesConfig(): Promise<TemplatesConfig> {
+    const config = await this.getConfiguration();
+    return config.templates;
   }
 
   /**
@@ -420,6 +426,16 @@ export class ConfigurationManager {
       result.modules = modules;
     }
 
+    // Templates persistence path. Env var wins over the config file — see
+    // docs/CONFIGURATION.md — which falls out naturally here because this
+    // env-derived layer is merged after the config-file layer in
+    // loadConfiguration()'s deepMerge call.
+    const templates: Record<string, unknown> = {};
+    this.assignEnvValue(templates, 'persistPath', process.env.VIKUNJA_MCP_TEMPLATES_FILE, false);
+    if (Object.keys(templates).length > 0) {
+      result.templates = templates;
+    }
+
     return result as Partial<ApplicationConfig>;
   }
 
@@ -543,6 +559,9 @@ export class ConfigurationManager {
       },
       featureFlags: this.config.featureFlags,
       modules: this.config.modules,
+      templates: {
+        persistenceEnabled: !!this.config.templates.persistPath,
+      },
     };
 
     logger.info('Configuration loaded successfully', summary);
@@ -557,3 +576,4 @@ export const getRateLimitConfig = (): Promise<RateLimitConfig> => ConfigurationM
 export const getFeatureFlagsConfig = (): Promise<FeatureFlagsConfig> => ConfigurationManager.getInstance().getFeatureFlagsConfig();
 export const isFeatureEnabled = (featureName: string): Promise<boolean> => ConfigurationManager.getInstance().isFeatureEnabled(featureName);
 export const getModulesConfig = (): Promise<ModulesConfig> => ConfigurationManager.getInstance().getModulesConfig();
+export const getTemplatesConfig = (): Promise<TemplatesConfig> => ConfigurationManager.getInstance().getTemplatesConfig();

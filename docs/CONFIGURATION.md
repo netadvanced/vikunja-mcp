@@ -87,6 +87,13 @@ interface FeatureFlagsConfig {
 }
 ```
 
+#### 5. Templates (`TemplatesConfig`)
+```typescript
+interface TemplatesConfig {
+  persistPath?: string;   // File-backed persistence — see Templates Persistence below
+}
+```
+
 ### Environment Profiles
 
 The system automatically applies environment-specific defaults:
@@ -132,8 +139,8 @@ commit, safe to mount read-only into a container (e.g. as a Docker `config`), an
   always a hard startup error with a message naming the file path and the parse problem —
   regardless of whether the path was explicit or the default.
 - **Shape**: the file mirrors `ApplicationConfig` — any of `auth` (non-secret fields
-  only), `logging`, `rateLimiting`, `featureFlags`, `modules` may be present; anything
-  omitted falls back to the environment profile / schema default.
+  only), `logging`, `rateLimiting`, `featureFlags`, `modules`, `templates` may be
+  present; anything omitted falls back to the environment profile / schema default.
 
 Example `vikunja-mcp.config.json`:
 
@@ -257,6 +264,71 @@ JWT-only gate — `vikunja_tokens` registers for either session type once its mo
 is enabled, since the underlying endpoints' auth requirement is a runtime server
 behavior rather than something this server enforces at registration time.
 
+## Templates Persistence
+
+`vikunja_templates` templates are **session-only by default**: they live in the same
+in-memory `SimpleFilterStorage` as saved filters, scoped to the connected session, and
+are lost when the server process restarts. Set a persist path to make them durable
+across restarts.
+
+- **Config key**: `templates.persistPath` in `vikunja-mcp.config.json`.
+- **Env var**: `VIKUNJA_MCP_TEMPLATES_FILE=/path/to/templates.json` — **wins over the
+  config file**, same precedence as every other setting (see
+  [Configuration Priority](#configuration-priority)).
+- **Unset (default)**: templates stay in-memory only — behavior is byte-identical to
+  before this feature existed.
+- **Set**: the file is loaded once, tolerantly, the first time `vikunja_templates` is
+  used after startup — a missing file (first run / fresh volume) or a corrupt/malformed
+  file both fall back to an empty template set (logged as a warning for the corrupt
+  case), **never** a crash. Every `create` / `update` / `delete` mutation then
+  write-throughs the full current template set back to the file, **atomically**: written
+  to a temp file in the same directory, then renamed over the target, so a reader never
+  observes a half-written file and a crash mid-write can't corrupt the previous good
+  state. The parent directory is created automatically if it doesn't exist yet.
+
+This is intentionally a plain JSON file, not a database — SQLite was evaluated for this
+work item and parked (native-dependency cost outweighs the need for a single opt-in
+file; see `docs/ROADMAP.md`). The path is a single file, which makes it trivial to mount
+as a Docker volume:
+
+```yaml
+services:
+  vikunja-mcp:
+    image: ghcr.io/netadvanced/vikunja-mcp-ng:latest
+    environment:
+      VIKUNJA_URL: "https://vikunja.example.com/api/v1"
+      VIKUNJA_API_TOKEN_FILE: /run/secrets/vikunja_api_token
+      VIKUNJA_MCP_TEMPLATES_FILE: /data/templates.json
+    volumes:
+      - vikunja-mcp-templates:/data
+    secrets:
+      - source: vikunja_api_token
+        target: vikunja_api_token
+        mode: 0400
+
+volumes:
+  vikunja-mcp-templates:
+
+secrets:
+  vikunja_api_token:
+    file: ./secrets/vikunja_api_token.txt
+```
+
+Or via the config file instead of the env var:
+
+```json
+{
+  "templates": {
+    "persistPath": "/data/templates.json"
+  }
+}
+```
+
+The template file contains no credentials — it's a plain JSON array of template
+definitions (project/task shape, no auth data) — so, like the rest of the config file, it
+doesn't need Docker-secrets treatment; only the volume itself needs to persist across
+container recreations.
+
 ## Secrets Management
 
 **The config file is for non-sensitive settings only.** It's designed to be safe to
@@ -362,6 +434,11 @@ VIKUNJA_MCP_CONFIG=/path/to/vikunja-mcp.config.json   # optional; see Config Fil
 ### Module Gating Variables
 ```env
 VIKUNJA_MCP_MODULE_TASKS=true               # see Module Gating for the full list and defaults
+```
+
+### Templates Persistence Variable
+```env
+VIKUNJA_MCP_TEMPLATES_FILE=/path/to/templates.json   # optional; see Templates Persistence
 ```
 
 ### Logging Variables

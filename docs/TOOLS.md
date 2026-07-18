@@ -204,11 +204,14 @@ narrower tool surface exposed to a client): `vikunja_task_bulk` (`operation`:
 
 ## Project Templates
 
-> **⚠️ Session-only storage:** Templates are stored in memory on the MCP
-> server process, not persisted to Vikunja. They are lost when the server
-> restarts.
+> **⚠️ Never persisted to Vikunja itself; session-only by default:**
+> Templates are stored in memory on the MCP server process by default and
+> are lost when the server restarts. Set the `templates.persistPath` config
+> key (or `VIKUNJA_MCP_TEMPLATES_FILE` env var, which wins) to make them
+> durable across restarts via a JSON file — see
+> [docs/CONFIGURATION.md#templates-persistence](CONFIGURATION.md#templates-persistence).
 
-- `vikunja_templates` - Template operations (session-only persistence — see warning above)
+- `vikunja_templates` - Template operations (session-only by default, opt-in file persistence — see note above)
   - `create` - Create a template from an existing project (required: projectId, name; optional: description, tags)
   - `list` - List all available templates (name, tags, author)
   - `get` - Get template details by ID
