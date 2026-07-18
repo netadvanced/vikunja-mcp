@@ -465,9 +465,13 @@ export class TaskCreationService {
         // /tasks/{taskID}/assignees, body { user_id }, models.TaskAssginee)
         // rather than the bulk endpoint (POST .../assignees/bulk), which
         // REPLACES the whole assignee list — a bulk call would silently
-        // unassign everyone (upstream issue #15).
+        // unassign everyone (upstream issue #15). Sequential on purpose
+        // (post-#89 pattern sweep): concurrent per-user writes to the same
+        // task risk "database is locked" 500s on SQLite-backed instances.
         const taskId = createdTask.id;
-        await Promise.all(userIds.map((userId) => vikunjaRestRequest(authManager, 'PUT', `/tasks/${taskId}/assignees`, { user_id: userId })));
+        for (const userId of userIds) {
+          await vikunjaRestRequest(authManager, 'PUT', `/tasks/${taskId}/assignees`, { user_id: userId });
+        }
       } catch (assignError) {
         logger.error('Failed to assign users to task', {
           taskId: createdTask.id,

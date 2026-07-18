@@ -10,9 +10,36 @@ import { MCPError, ErrorCode } from '../../../types';
 import { parseFilterString, expressionToString } from '../../../utils/filters';
 import { validateTaskCountLimit } from '../../../utils/memory';
 import { logger } from '../../../utils/logger';
+import { VALID_SORT_FIELDS, SORT_FIELD_ALIASES } from '../constants';
 
 /** `models.Task` per the OpenAPI spec — sample task for memory estimation. */
 type Task = components['schemas']['models.Task'];
+
+const VALID_SORT_FIELD_SET = new Set<string>(VALID_SORT_FIELDS);
+
+/**
+ * Normalizes a `sort` argument (comma-separated `sort_by` field list) by
+ * translating this tool's camelCase field aliases to the API's snake_case
+ * names (`dueDate` -> `due_date`, mirroring `FILTER_FIELD_TO_API_FIELD`),
+ * then checks every resulting token against `VALID_SORT_FIELDS`.
+ *
+ * Without this, an unrecognized `sort_by` value is silently ignored by
+ * Vikunja (tasks come back in default order with no error) — exactly the
+ * "free-form field selector that silently no-ops" pattern this validation
+ * closes, per the field/enum allowlist ergonomics sweep.
+ */
+function normalizeAndValidateSort(sort: string): { normalized: string; invalidTokens: string[] } {
+  const invalidTokens: string[] = [];
+  const normalizedTokens = sort.split(',').map((rawToken) => {
+    const token = rawToken.trim();
+    const apiField = SORT_FIELD_ALIASES[token] ?? token;
+    if (!VALID_SORT_FIELD_SET.has(apiField)) {
+      invalidTokens.push(token);
+    }
+    return apiField;
+  });
+  return { normalized: normalizedTokens.join(','), invalidTokens };
+}
 
 /**
  * Validates filter parameters for task listing operations
@@ -253,6 +280,19 @@ export const FilterValidator = {
 
     if (args.sort !== undefined && typeof args.sort !== 'string') {
       errors.push('Sort parameter must be a string');
+    } else if (args.sort !== undefined && args.sort.trim() !== '') {
+      const { normalized, invalidTokens } = normalizeAndValidateSort(args.sort);
+      if (invalidTokens.length > 0) {
+        errors.push(
+          `Invalid sort field(s): ${invalidTokens.join(', ')}. Valid fields: ${VALID_SORT_FIELDS.join(', ')} ` +
+            `(camelCase aliases also accepted: ${Object.keys(SORT_FIELD_ALIASES).join(', ')})`,
+        );
+      } else {
+        // Normalize in place so the corrected (snake_case) value is what
+        // actually reaches the API — validation runs before
+        // FilterExecutor.prepareQueryParameters reads args.sort.
+        args.sort = normalized;
+      }
     }
 
     if (args.filter !== undefined && typeof args.filter !== 'string') {

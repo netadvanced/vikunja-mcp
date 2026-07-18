@@ -226,13 +226,14 @@ export async function createSubtask(
         // Additive per-user endpoint (PUT /tasks/{taskID}/assignees, body
         // {user_id}) — never the bulk endpoint, which REPLACES the whole
         // assignee list (see TaskCreationService.addAssigneesToTask).
-        await Promise.all(
-          assigneeIds.map((userId) =>
-            vikunjaRestRequest(authManager, 'PUT', `/tasks/${taskId}/assignees`, {
-              user_id: userId,
-            }),
-          ),
-        );
+        // Sequential on purpose (post-#89 pattern sweep, mirrors the
+        // apply-labels step above): concurrent per-user writes to the same
+        // task risk "database is locked" 500s on SQLite-backed instances.
+        for (const userId of assigneeIds) {
+          await vikunjaRestRequest(authManager, 'PUT', `/tasks/${taskId}/assignees`, {
+            user_id: userId,
+          });
+        }
       },
     });
   }

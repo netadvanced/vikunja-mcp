@@ -112,6 +112,39 @@ describe('Assignee operations', () => {
       expect(markdown).toContain('Users assigned to task successfully');
     });
 
+    it('assigns users one at a time, never overlapping two in-flight PUTs (post-#89 lock-contention fix)', async () => {
+      // Regression test: assignUsersToTask used to fire all per-user PUTs
+      // concurrently via Promise.all, which risks "database is locked" 500s
+      // on SQLite-backed Vikunja when multiple writes hit the same task
+      // at once (the same class of bug PR #89/#95 fixed for bulk-update's
+      // assignee restore). This asserts the second PUT is only issued after
+      // the first one's response has resolved.
+      const mockTask = { id: 123, title: 'Test Task', assignees: [{ id: 1 }, { id: 2 }, { id: 3 }] };
+      let inFlight = 0;
+      let maxConcurrentPuts = 0;
+      fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+        const method = init?.method ?? 'GET';
+        const path = new URL(url).pathname;
+        if (method === 'PUT' && /\/assignees$/.test(path)) {
+          inFlight++;
+          maxConcurrentPuts = Math.max(maxConcurrentPuts, inFlight);
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          inFlight--;
+          return restOk({});
+        }
+        if (method === 'GET' && /^\/api\/v1\/tasks\/\d+$/.test(path)) {
+          return restOk(mockTask);
+        }
+        return restOk({});
+      });
+
+      await assignUsers({ id: 123, assignees: [1, 2, 3] }, authManager);
+
+      expect(maxConcurrentPuts).toBe(1);
+      const putCalls = fetchMock.mock.calls.filter((c) => (c[1] as RequestInit)?.method === 'PUT');
+      expect(putCalls).toHaveLength(3);
+    });
+
     it('should warn when assignees are not persisted (silent API failure)', async () => {
       // The REST PUT resolves, but the re-fetched task shows no assignees —
       // the defense-in-depth verification (adapted from PR #43) must surface it.

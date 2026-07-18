@@ -47,22 +47,22 @@ export const AssigneeOperationsService = {
       // REPLACES the whole assignee list rather than adding to it, so a bulk
       // call would silently unassign everyone instead of adding users
       // (upstream issue #15). The per-user PUT matches Vikunja's real
-      // additive single-assign model. Calls run concurrently via
-      // Promise.all.
-      await Promise.all(
-        assigneeIds.map((userId) =>
-          withRetry(
-            () =>
-              vikunjaRestRequest(authManager, 'PUT', `/tasks/${taskId}/assignees`, {
-                user_id: userId,
-              }),
-            {
-              ...RETRY_CONFIG.AUTH_ERRORS,
-              shouldRetry: (error) => isAuthenticationError(error)
-            }
-          )
-        )
-      );
+      // additive single-assign model. Sequential on purpose (post-#89
+      // pattern sweep, mirrors removeUsersFromTask below): concurrent
+      // per-user writes to the same task risk "database is locked" 500s on
+      // SQLite-backed instances.
+      for (const userId of assigneeIds) {
+        await withRetry(
+          () =>
+            vikunjaRestRequest(authManager, 'PUT', `/tasks/${taskId}/assignees`, {
+              user_id: userId,
+            }),
+          {
+            ...RETRY_CONFIG.AUTH_ERRORS,
+            shouldRetry: (error) => isAuthenticationError(error)
+          }
+        );
+      }
     } catch (assigneeError) {
       // Check if it's an auth error after retries
       if (isAuthenticationError(assigneeError)) {

@@ -494,12 +494,16 @@ describe('Tasks Tool', () => {
       });
 
       // Server-side filtering is attempted first: the raw filter string is
-      // passed straight through to the API alongside pagination.
+      // passed straight through to the API alongside pagination. `sort`
+      // accepts this tool's camelCase field name and is translated to the
+      // API's snake_case `sort_by` value (see FilterValidator's
+      // normalizeAndValidateSort / SORT_FIELD_ALIASES) — `dueDate` sent
+      // verbatim is not a field Vikunja's sort_by recognizes.
       expect(mockClient.tasks.getProjectTasks).toHaveBeenCalledWith(1, {
         filter: 'priority >= 5',
         page: 2,
         per_page: 25,
-        sort_by: 'dueDate',
+        sort_by: 'due_date',
         s: 'urgent',
       });
 
@@ -520,13 +524,30 @@ describe('Tasks Tool', () => {
         sort: 'priority,dueDate',
       });
 
+      // `priority` is already a valid sort_by field; `dueDate` is this
+      // tool's camelCase alias, translated to `due_date`.
       expect(mockClient.tasks.getProjectTasks).toHaveBeenCalledWith(1, {
         page: 1,
         per_page: 1000,
-        sort_by: 'priority,dueDate',
+        sort_by: 'priority,due_date',
       });
 
       expect(result).toBeDefined();
+    });
+
+    it('should reject an unrecognized sort field with an agent-friendly, allowlisted error', async () => {
+      await expect(callTool('list', { sort: 'notARealField' })).rejects.toThrow(
+        'Invalid sort field(s): notARealField',
+      );
+      await expect(callTool('list', { sort: 'notARealField' })).rejects.toThrow(
+        'Valid fields: id, title, description, done, done_at, due_date',
+      );
+    });
+
+    it('should reject one bad token in a comma-separated sort list without silently accepting the rest', async () => {
+      await expect(callTool('list', { sort: 'priority,bogus' })).rejects.toThrow(
+        'Invalid sort field(s): bogus',
+      );
     });
 
     it('should handle authentication errors', async () => {

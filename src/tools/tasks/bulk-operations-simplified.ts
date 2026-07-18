@@ -117,8 +117,13 @@ export async function bulkUpdateTasks(args: BulkUpdateArgs, authManager: AuthMan
               // Per-user additive assign (PUT /tasks/{taskID}/assignees, body
               // { user_id }, models.TaskAssginee) instead of the bulk endpoint,
               // which REPLACES the whole list and would silently unassign
-              // everyone (upstream issue #15). Run concurrently.
-              await Promise.all((args.value as number[]).map((userId) => withRetry(() => vikunjaRestRequest(authManager, 'PUT', `/tasks/${taskId}/assignees`, { user_id: userId }), { ...RETRY_CONFIG.AUTH_ERRORS, shouldRetry: isAuthenticationError })));
+              // everyone (upstream issue #15). Sequential on purpose (post-#89
+              // pattern sweep, mirrors the removal loop directly below):
+              // concurrent per-user writes to the same task risk "database is
+              // locked" 500s on SQLite-backed instances.
+              for (const userId of args.value as number[]) {
+                await withRetry(() => vikunjaRestRequest(authManager, 'PUT', `/tasks/${taskId}/assignees`, { user_id: userId }), { ...RETRY_CONFIG.AUTH_ERRORS, shouldRetry: isAuthenticationError });
+              }
             } catch (assigneeError) {
               if (isAuthenticationError(assigneeError)) throw new MCPError(ErrorCode.API_ERROR, 'Assignee operations may have authentication issues');
               throw assigneeError;
@@ -333,8 +338,12 @@ export async function bulkCreateTasks(args: BulkCreateArgs, authManager: AuthMan
               // Per-user additive assign (PUT /tasks/{taskID}/assignees, body
               // { user_id }, models.TaskAssginee) instead of the bulk endpoint,
               // which REPLACES the list and would silently unassign everyone
-              // (upstream issue #15). Run concurrently.
-              await Promise.all(assignees.map((userId) => withRetry(() => vikunjaRestRequest(authManager, 'PUT', `/tasks/${createdId}/assignees`, { user_id: userId }), { maxRetries: RETRY_CONFIG.AUTH_ERRORS.maxRetries ?? 3, timeout: (RETRY_CONFIG.AUTH_ERRORS.initialDelay ?? 1000) + (RETRY_CONFIG.AUTH_ERRORS.maxDelay ?? 10000), shouldRetry: isAuthenticationError })));
+              // (upstream issue #15). Sequential on purpose (post-#89 pattern
+              // sweep): concurrent per-user writes to the same task risk
+              // "database is locked" 500s on SQLite-backed instances.
+              for (const userId of assignees) {
+                await withRetry(() => vikunjaRestRequest(authManager, 'PUT', `/tasks/${createdId}/assignees`, { user_id: userId }), { maxRetries: RETRY_CONFIG.AUTH_ERRORS.maxRetries ?? 3, timeout: (RETRY_CONFIG.AUTH_ERRORS.initialDelay ?? 1000) + (RETRY_CONFIG.AUTH_ERRORS.maxDelay ?? 10000), shouldRetry: isAuthenticationError });
+              }
             } catch (assigneeError) {
               if (isAuthenticationError(assigneeError)) {
                 throw new MCPError(ErrorCode.API_ERROR, 'Assignee operations may have authentication issues');
