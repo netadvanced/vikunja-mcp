@@ -145,6 +145,18 @@ export const ModulesConfigSchema = z.object({
 
 export type ModulesConfig = z.infer<typeof ModulesConfigSchema>;
 
+// Templates Configuration Schema
+//
+// Templates are in-memory-only (session-scoped, lost on restart) unless
+// `persistPath` is set, in which case the vikunja_templates tool write-
+// throughs to that file on every mutation and reloads from it at startup.
+// See docs/CONFIGURATION.md for the env var / Docker volume story.
+export const TemplatesConfigSchema = z.object({
+  persistPath: z.string().optional(),
+});
+
+export type TemplatesConfig = z.infer<typeof TemplatesConfigSchema>;
+
 // Complete Application Configuration Schema
 export const ApplicationConfigSchema = z.object({
   environment: z.nativeEnum(Environment).default(Environment.DEVELOPMENT),
@@ -153,6 +165,7 @@ export const ApplicationConfigSchema = z.object({
   rateLimiting: RateLimitConfigSchema.default({}),
   featureFlags: FeatureFlagsConfigSchema.default({}),
   modules: ModulesConfigSchema.default({}),
+  templates: TemplatesConfigSchema.default({}),
 });
 
 export type ApplicationConfig = z.infer<typeof ApplicationConfigSchema>;

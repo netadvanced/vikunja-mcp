@@ -39,6 +39,7 @@ describe('ConfigurationManager', () => {
     delete process.env.VIKUNJA_MCP_MODULE_ADMIN;
     delete process.env.VIKUNJA_MCP_MODULE_USER_DELETION;
     delete process.env.VIKUNJA_MCP_MODULE_TOKEN_MANAGEMENT;
+    delete process.env.VIKUNJA_MCP_TEMPLATES_FILE;
 
     // Reset singleton
     ConfigurationManager.reset();
@@ -561,6 +562,46 @@ describe('ConfigurationManager', () => {
       await expect(
         ConfigurationManager.getInstance().getConfiguration()
       ).rejects.toThrow(ConfigurationError);
+    });
+  });
+
+  describe('Templates Persistence Configuration', () => {
+    it('defaults to no persist path (in-memory-only templates)', async () => {
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.templates.persistPath).toBeUndefined();
+    });
+
+    it('reads the persist path from the config file', async () => {
+      const configPath = path.join(tempDir, 'vikunja-mcp.config.json');
+      fs.writeFileSync(configPath, JSON.stringify({ templates: { persistPath: '/data/templates.json' } }));
+      process.env.VIKUNJA_MCP_CONFIG = configPath;
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.templates.persistPath).toBe('/data/templates.json');
+    });
+
+    it('reads the persist path from VIKUNJA_MCP_TEMPLATES_FILE', async () => {
+      process.env.VIKUNJA_MCP_TEMPLATES_FILE = '/env/templates.json';
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.templates.persistPath).toBe('/env/templates.json');
+    });
+
+    it('lets VIKUNJA_MCP_TEMPLATES_FILE win over the config file value', async () => {
+      const configPath = path.join(tempDir, 'vikunja-mcp.config.json');
+      fs.writeFileSync(configPath, JSON.stringify({ templates: { persistPath: '/config/templates.json' } }));
+      process.env.VIKUNJA_MCP_CONFIG = configPath;
+      process.env.VIKUNJA_MCP_TEMPLATES_FILE = '/env/templates.json';
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.templates.persistPath).toBe('/env/templates.json');
+    });
+
+    it('exposes the templates config section via getTemplatesConfig', async () => {
+      process.env.VIKUNJA_MCP_TEMPLATES_FILE = '/env/templates.json';
+
+      const templatesConfig = await ConfigurationManager.getInstance().getTemplatesConfig();
+      expect(templatesConfig.persistPath).toBe('/env/templates.json');
     });
   });
 
