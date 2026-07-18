@@ -1,12 +1,12 @@
 /**
- * Direct REST helper for Vikunja API endpoints not covered by node-vikunja.
+ * Direct REST helper for Vikunja API endpoints not covered by legacy client.
  *
- * node-vikunja (the typed client this MCP server wraps) does not expose the
+ * legacy client (the typed client this MCP server wraps) does not expose the
  * Kanban view endpoints — listing the buckets of a view, or placing a task
  * into a bucket. Those operations therefore call the Vikunja REST API
  * directly, reusing the credentials of the active authenticated session.
  *
- * Unlike the node-vikunja call paths (which get retry protection via
+ * Unlike the legacy client call paths (which get retry protection via
  * `withRetry` at each call site), this helper previously had none at all —
  * a single dropped connection or transient 502 failed the whole operation.
  * Every request made through `vikunjaRestRequest`/`vikunjaRestMultipartRequest`
@@ -217,7 +217,7 @@ async function vikunjaRestRequestRaw(
     );
     // Also expose the conventional top-level `.status` (mirrors
     // `.details.statusCode`, which pre-dates this): shared classifiers
-    // written against node-vikunja's error shape —
+    // written against the legacy client's error shape —
     // `isAuthenticationError`/`extractHttpStatus`
     // (src/utils/auth-error-handler.ts, src/utils/http-error-detail.ts) —
     // read `.status`/`.response.status` directly on the error object, not
@@ -331,7 +331,7 @@ async function vikunjaRestMultipartRequestRaw(
     );
     // Also expose the conventional top-level `.status` (mirrors
     // `.details.statusCode`, which pre-dates this): shared classifiers
-    // written against node-vikunja's error shape —
+    // written against the legacy client's error shape —
     // `isAuthenticationError`/`extractHttpStatus`
     // (src/utils/auth-error-handler.ts, src/utils/http-error-detail.ts) —
     // read `.status`/`.response.status` directly on the error object, not

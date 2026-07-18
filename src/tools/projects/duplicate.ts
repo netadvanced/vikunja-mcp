@@ -4,9 +4,9 @@
  * Implements `duplicate` (`PUT /projects/{projectID}/duplicate`), which
  * copies a project along with its tasks, files, kanban data, assignees,
  * comments, attachments, labels, relations, and backgrounds into a new
- * project. node-vikunja exposes `duplicateProject`, but per
+ * project. legacy client exposes `duplicateProject`, but per
  * docs/ENDPOINT-PLAYBOOK.md §3 this domain's new HTTP calls go through the
- * direct-REST helper rather than adding a node-vikunja call site.
+ * direct-REST helper rather than adding a legacy client call site.
  */
 
 import type { AuthManager } from '../../auth/AuthManager';

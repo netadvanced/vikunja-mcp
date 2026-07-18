@@ -18,7 +18,7 @@ import {
   expireWebhookEventCache,
 } from '../../src/tools/webhooks';
 import { MCPError, ErrorCode } from '../../src/types';
-import { getClientFromContext } from '../../src/client';
+import { getAuthManagerFromContext } from '../../src/client';
 import * as validationUtils from '../../src/utils/validation';
 import type { MockVikunjaClient, MockAuthManager, MockServer } from '../types/mocks';
 import type { Webhook } from '../../src/types/vikunja';
@@ -26,7 +26,7 @@ import { circuitBreakerRegistry } from '../../src/utils/retry';
 
 // Mock the modules
 jest.mock('../../src/client', () => ({
-  getClientFromContext: jest.fn(),
+  getAuthManagerFromContext: jest.fn(),
   setGlobalClientFactory: jest.fn(),
   clearGlobalClientFactory: jest.fn(),
 }));
@@ -112,8 +112,8 @@ describe('Webhooks Tool', () => {
       tool: jest.fn() as jest.MockedFunction<(name: string, schema: any, handler: any) => void>,
     } as MockServer;
 
-    // Mock the getClientFromContext function
-    (getClientFromContext as jest.Mock).mockResolvedValue(mockClient);
+    // Mock the getAuthManagerFromContext function
+    (getAuthManagerFromContext as jest.Mock).mockResolvedValue(mockClient);
 
     // Mock auth manager session - apiUrl has no /api/v1 prefix, matching a
     // common VIKUNJA_URL misconfiguration that vikunjaRestRequest normalizes.

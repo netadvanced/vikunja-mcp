@@ -2,7 +2,7 @@
  * Project Hierarchy Operations Module
  * Handles complex hierarchical operations like tree building, breadcrumbs, and moves
  *
- * Migrated off node-vikunja (Wave D domain migration, tracking issue #28)
+ * Migrated off the legacy client (Wave D domain migration, tracking issue #28)
  * onto `vikunjaRestRequest` + types generated from the vendored OpenAPI spec.
  * `moveProject` reuses `buildProjectUpdatePayload` from `crud.ts` — see that
  * module's doc comment and docs/API_NOTES.md "Project Operations" for why an

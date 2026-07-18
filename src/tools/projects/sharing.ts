@@ -4,9 +4,9 @@
  * Handles link sharing operations for projects: `create-share`,
  * `list-shares`, `get-share`, `delete-share`, `auth-share`.
  *
- * Migrated off node-vikunja (Wave D domain migration, tracking issue #28)
+ * Migrated off the legacy client (Wave D domain migration, tracking issue #28)
  * onto `vikunjaRestRequest` + types generated from the vendored OpenAPI
- * spec. node-vikunja's `LinkSharing` type is stale — it models
+ * spec. the legacy client's `LinkSharing` type is stale — it models
  * `right`/`label`/`password_enabled`/`expires`, none of which the real API
  * accepts or returns; the spec's `models.LinkSharing` uses `permission` and
  * `name`, and has no `expires`/`password_enabled`/`shares` field at all. See

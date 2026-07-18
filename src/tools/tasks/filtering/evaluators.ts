@@ -2,8 +2,11 @@
  * Filter evaluation functions for tasks
  */
 
-import type { Task } from 'node-vikunja';
+import type { components } from '../../../types/generated/vikunja-openapi';
 import type { FilterCondition, FilterGroup, FilterExpression } from '../../../types/filters';
+
+/** `models.Task` per the OpenAPI spec — the task shape filters evaluate against. */
+type Task = components['schemas']['models.Task'];
 
 /**
  * Evaluates a filter condition against a task
@@ -62,14 +65,14 @@ export function evaluateCondition(task: Task, condition: FilterCondition): boole
       return evaluateDateComparison(task.updated, operator, String(value));
 
     case 'title':
-      return evaluateStringComparison(task.title, operator, String(value));
+      return evaluateStringComparison(task.title ?? '', operator, String(value));
 
     case 'description':
       return evaluateStringComparison(task.description || '', operator, String(value));
 
     case 'assignees':
       return evaluateArrayComparison(
-        task.assignees?.map((a) => a.id) || [],
+        task.assignees?.map((a) => a.id).filter((id): id is number => id !== undefined) || [],
         operator,
         Array.isArray(value) ? value.map((v) => Number(v)) : [Number(value)],
       );

@@ -7,10 +7,10 @@
  * generic LABEL_UPDATE "known limitation" message.
  */
 
-import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
+import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 import { extractHttpErrorDetail, extractHttpStatus } from '../src/utils/http-error-detail';
 import { updateTask } from '../src/tools/tasks/crud/TaskUpdateService';
-import { getClientFromContext, getAuthManagerFromContext } from '../src/client';
+import { getAuthManagerFromContext } from '../src/client';
 import { vikunjaRestRequest } from '../src/utils/vikunja-rest';
 import { isAuthenticationError } from '../src/utils/auth-error-handler';
 import { MCPError } from '../src/types';
@@ -100,15 +100,6 @@ describe('updateTaskLabels surfaces real HTTP status', () => {
     assignees: [],
   } as Record<string, unknown>;
 
-  const mockClient = {
-    tasks: {
-      getTask: jest.fn(),
-      updateTask: jest.fn(),
-      bulkAssignUsersToTask: jest.fn(),
-      removeUserFromTask: jest.fn(),
-    },
-  } as Record<string, Record<string, jest.Mock>>;
-
   const mockAuthManager = {} as AuthManager;
 
   // Both the core task GET/POST and setTaskLabels' POST /tasks/{id}/labels/bulk
@@ -126,15 +117,12 @@ describe('updateTaskLabels surfaces real HTTP status', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    (getClientFromContext as jest.Mock).mockResolvedValue(mockClient);
     (getAuthManagerFromContext as jest.Mock).mockResolvedValue({
       getSession: () => ({ apiUrl: 'https://vikunja.test', apiToken: 'tk_test-token' }),
     });
     // Core task fetch/update and the label-bulk POST all flow through the
     // mocked vikunjaRestRequest; default to resolving the base task.
     (vikunjaRestRequest as jest.Mock).mockResolvedValue({ ...baseTask });
-    mockClient.tasks.getTask.mockResolvedValue({ ...baseTask });
-    mockClient.tasks.updateTask.mockResolvedValue({ ...baseTask });
   });
 
   it('propagates HTTP 403 status + body for an auth-classified label failure', async () => {

@@ -18,11 +18,11 @@ import { parseMarkdown } from '../utils/markdown';
 import { circuitBreakerRegistry } from '../../src/utils/retry';
 
 // Import the functions we're mocking
-import { getClientFromContext } from '../../src/client';
+import { getAuthManagerFromContext } from '../../src/client';
 
 // Mock the modules
 jest.mock('../../src/client', () => ({
-  getClientFromContext: jest.fn(),
+  getAuthManagerFromContext: jest.fn(),
   setGlobalClientFactory: jest.fn(),
   clearGlobalClientFactory: jest.fn(),
 }));
@@ -122,7 +122,7 @@ describe('Tasks Tool - Reminders', () => {
     fetchMock = jest.fn().mockResolvedValue(restOk(mockTask));
     globalThis.fetch = fetchMock as unknown as typeof fetch;
 
-    (getClientFromContext as jest.Mock).mockResolvedValue({ tasks: {} });
+    (getAuthManagerFromContext as jest.Mock).mockResolvedValue(mockAuthManager);
     registerTasksTool(mockServer as McpServer, mockAuthManager as AuthManager);
 
     // Get the tool handler

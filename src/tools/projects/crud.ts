@@ -2,7 +2,7 @@
  * Project CRUD Operations Module
  * Handles basic Create, Read, Update, Delete operations for projects
  *
- * Migrated off node-vikunja (Wave D domain migration, tracking issue #28)
+ * Migrated off the legacy client (Wave D domain migration, tracking issue #28)
  * onto `vikunjaRestRequest` + types generated from the vendored OpenAPI spec.
  * `POST /projects/{id}` is a full-model-replace endpoint (see
  * docs/ENDPOINT-PLAYBOOK.md §4 and docs/API_NOTES.md "Project Operations"):
@@ -140,10 +140,10 @@ export function buildProjectUpdatePayload(
 
 /**
  * Re-throws a REST-layer 404 (`vikunjaRestRequest` throws `MCPError` with
- * `details.statusCode`, not the bare `.statusCode` property node-vikunja's
+ * `details.statusCode`, not the bare `.statusCode` property the legacy client's
  * errors carried, so the shared `handleStatusCodeError`/`wrapToolError` 404
  * detection no longer fires) as the same friendly "Project with ID X not
- * found" message the node-vikunja-backed implementation produced — the same
+ * found" message the legacy-client-backed implementation produced — the same
  * translation `rethrowProjectNotFound` in `sharing.ts` established for this
  * domain in an earlier Wave D PR. Everything else (MCPError or not) is
  * rethrown/wrapped unchanged.
@@ -161,7 +161,7 @@ function rethrowProjectNotFound(error: unknown, id: number, context: string): ne
 /**
  * Fetches all projects (single large page) for hierarchy validation
  * (depth/parent checks). Failures are swallowed by callers that treat this
- * as best-effort — see the original node-vikunja-backed behavior this
+ * as best-effort — see the original legacy-client-backed behavior this
  * preserves.
  */
 async function fetchAllProjects(authManager: AuthManager): Promise<VikunjaProject[]> {
@@ -723,5 +723,5 @@ export async function unarchiveProject(
 
 // Internal helper re-exported for hierarchy.ts (fetches the full project
 // list for depth/parent validation, matching the per_page: 1000 convention
-// the node-vikunja-backed implementation used).
+// the legacy-client-backed implementation used).
 export { fetchAllProjects };

@@ -9,7 +9,7 @@
 
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 import { registerTasksTool } from '../../src/tools/tasks';
-import { getClientFromContext } from '../../src/client';
+import { getAuthManagerFromContext } from '../../src/client';
 import { createMockTestableAuthManager } from '../utils/test-utils';
 import type { MockVikunjaClient, MockAuthManager, MockServer } from '../types/mocks';
 import { circuitBreakerRegistry } from '../../src/utils/retry';
@@ -20,7 +20,9 @@ jest.mock('../../src/utils/logger', () => ({
   logger: { info: jest.fn(), warn: jest.fn(), debug: jest.fn(), error: jest.fn() },
 }));
 
-const mockGetClientFromContext = getClientFromContext as jest.MockedFunction<typeof getClientFromContext>;
+const mockGetAuthManagerFromContext = getAuthManagerFromContext as jest.MockedFunction<
+  typeof getAuthManagerFromContext
+>;
 
 const mockFetch = jest.fn();
 global.fetch = mockFetch as unknown as typeof fetch;
@@ -63,7 +65,7 @@ describe('vikunja_tasks dispatch — set-position / get-by-index', () => {
       tool: jest.fn() as jest.MockedFunction<(name: string, description: string, schema: any, handler: any) => void>,
     } as MockServer;
 
-    mockGetClientFromContext.mockResolvedValue(mockClient);
+    mockGetAuthManagerFromContext.mockResolvedValue(mockAuthManager as any);
     registerTasksTool(mockServer as any, mockAuthManager as any);
 
     const calls = mockServer.tool.mock.calls;

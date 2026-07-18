@@ -5,7 +5,7 @@
  * of its project's Kanban view. This is the operation behind a "move card to
  * the Doing column" workflow.
  *
- * node-vikunja does not expose the Kanban view endpoints, so this calls the
+ * legacy client does not expose the Kanban view endpoints, so this calls the
  * Vikunja REST API directly via the shared `vikunja-rest` helper.
  */
 

@@ -13,7 +13,7 @@
  * `src/storage/SimpleFilterStorage.ts`.
  *
  * Two honesty notes baked into the design below (both driven by what the
- * vendored spec actually documents, not by node-vikunja's drifted types):
+ * vendored spec actually documents, not by the legacy client's drifted types):
  *
  * 1. `models.SavedFilter` has no `project_id` field at all. Saved filters
  *    are never project-scoped via a create/update parameter — the previous

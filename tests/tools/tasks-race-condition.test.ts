@@ -9,17 +9,21 @@ import { MCPError, ErrorCode } from '../../src/types';
 import type { MockVikunjaClient, MockAuthManager, MockServer } from '../types/mocks';
 import { parseMarkdown } from '../utils/markdown';
 
-// Mock the main module and its dependencies
+// Mock the main module and its dependencies. The tasks tool's session guard
+// now calls getAuthManagerFromContext(); provide it so the guard resolves.
 jest.mock('../../src/client', () => ({
   getClientFromContext: jest.fn(),
+  getAuthManagerFromContext: jest.fn(),
   setGlobalClientFactory: jest.fn(),
   clearGlobalClientFactory: jest.fn(),
 }));
 
-// Migrated (Wave D, tasks-core): create/get/delete's core calls go through
-// vikunjaRestRequest now. Labels/assignees remain on the node-vikunja client
-// (sub-resource, sibling item M-B) — this file's race-condition/rollback
-// scenarios are entirely about those sub-resource failures.
+// Migrated (Wave D, node-vikunja removal): create/get/delete's core calls AND
+// the label/assignee sub-resource calls now all go through vikunjaRestRequest
+// (direct REST). Base create is PUT /projects/{id}/tasks; per-label add is
+// PUT /tasks/{id}/labels; per-user assign is PUT /tasks/{id}/assignees; rollback
+// is DELETE /tasks/{id}. These race-condition/rollback scenarios drive those
+// REST calls directly, so routing must discriminate by path, not just method.
 jest.mock('../../src/utils/vikunja-rest', () => ({
   vikunjaRestRequest: jest.fn(),
 }));
@@ -34,7 +38,7 @@ jest.mock('../../src/utils/retry', () => {
 });
 
 // Import the mocked functions
-import { getClientFromContext } from '../../src/client';
+import { getClientFromContext, getAuthManagerFromContext } from '../../src/client';
 import { vikunjaRestRequest } from '../../src/utils/vikunja-rest';
 
 describe('Tasks Tool - Race Condition Fix', () => {
@@ -48,10 +52,21 @@ describe('Tasks Tool - Race Condition Fix', () => {
   /** Sentinel wrapper marking a routeRest handler value as a rejection. */
   const REJECT = (value: unknown): { __reject: true; value: unknown } => ({ __reject: true, value });
 
-  /** Routes vikunjaRestRequest calls to per-HTTP-method fixtures/errors. */
-  function routeRest(handlers: Partial<Record<'GET' | 'POST' | 'PUT' | 'DELETE', unknown>>): void {
-    mockRest.mockImplementation((_auth: unknown, method: string) => {
-      const handler = handlers[method as 'GET' | 'POST' | 'PUT' | 'DELETE'];
+  type RestHandler = unknown | ((path: string) => unknown);
+
+  /**
+   * Routes vikunjaRestRequest calls to per-HTTP-method fixtures/errors. Because
+   * PUT is now used for both the base-task create (`/projects/{id}/tasks`) and
+   * the label/assignee sub-resource adds (`/tasks/{id}/labels`,
+   * `/tasks/{id}/assignees`), a method handler may be a function of the request
+   * path so a single method can succeed for one path and fail for another.
+   */
+  function routeRest(handlers: Partial<Record<'GET' | 'POST' | 'PUT' | 'DELETE', RestHandler>>): void {
+    mockRest.mockImplementation((_auth: unknown, method: string, path: string) => {
+      let handler = handlers[method as 'GET' | 'POST' | 'PUT' | 'DELETE'];
+      if (typeof handler === 'function') {
+        handler = (handler as (p: string) => unknown)(path);
+      }
       if (handler && typeof handler === 'object' && (handler as { __reject?: true }).__reject === true) {
         return Promise.reject((handler as { value: unknown }).value);
       }
@@ -115,6 +130,9 @@ describe('Tasks Tool - Race Condition Fix', () => {
 
     (getClientFromContext as jest.Mock).mockReturnValue(mockClient);
     (getClientFromContext as jest.Mock).mockResolvedValue(mockClient);
+    // Session guard: getAuthManagerFromContext()'s result is discarded (ops use
+    // the injected authManager), so resolving to any object passes the guard.
+    (getAuthManagerFromContext as jest.Mock).mockResolvedValue({});
 
     // Register the tool
     registerTasksTool(mockServer as any, mockAuthManager);
@@ -142,8 +160,14 @@ describe('Tasks Tool - Race Condition Fix', () => {
         project_id: 1,
       };
 
-      routeRest({ PUT: createdTask, DELETE: null });
-      mockClient.tasks.addLabelToTask.mockRejectedValue(new Error('Label assignment failed'));
+      // Base create succeeds; the first label add (PUT /tasks/123/labels) fails.
+      routeRest({
+        PUT: (path) =>
+          path === '/projects/1/tasks'
+            ? createdTask
+            : REJECT(new Error('Label assignment failed')),
+        DELETE: null,
+      });
 
       const args = {
         subcommand: 'create',
@@ -169,9 +193,16 @@ describe('Tasks Tool - Race Condition Fix', () => {
         project_id: 1,
       };
 
-      routeRest({ PUT: createdTask, DELETE: null });
-      mockClient.tasks.addLabelToTask.mockResolvedValue({});
-      mockClient.tasks.assignUserToTask.mockRejectedValue(new Error('User assignment failed'));
+      // Base create + label adds succeed; the assignee add (PUT
+      // /tasks/456/assignees) fails.
+      routeRest({
+        PUT: (path) => {
+          if (path === '/projects/1/tasks') return createdTask;
+          if (path === '/tasks/456/assignees') return REJECT(new Error('User assignment failed'));
+          return {}; // label adds (PUT /tasks/456/labels) succeed
+        },
+        DELETE: null,
+      });
 
       const args = {
         subcommand: 'create',
@@ -198,8 +229,14 @@ describe('Tasks Tool - Race Condition Fix', () => {
         project_id: 1,
       };
 
-      routeRest({ PUT: createdTask, DELETE: REJECT(new Error('Delete failed')) });
-      mockClient.tasks.addLabelToTask.mockRejectedValue(new Error('Label assignment failed'));
+      // Label add fails, and the rollback DELETE also fails.
+      routeRest({
+        PUT: (path) =>
+          path === '/projects/1/tasks'
+            ? createdTask
+            : REJECT(new Error('Label assignment failed')),
+        DELETE: REJECT(new Error('Delete failed')),
+      });
 
       const args = {
         subcommand: 'create',
@@ -249,9 +286,12 @@ describe('Tasks Tool - Race Condition Fix', () => {
         assignees: [{ id: 10, username: 'user1' }],
       };
 
-      routeRest({ PUT: createdTask, GET: completeTask });
-      mockClient.tasks.addLabelToTask.mockResolvedValue({});
-      mockClient.tasks.assignUserToTask.mockResolvedValue({});
+      // Base create returns the task; label/assignee adds (other PUT paths)
+      // succeed; the refresh GET returns the fully-populated task.
+      routeRest({
+        PUT: (path) => (path === '/projects/1/tasks' ? createdTask : {}),
+        GET: completeTask,
+      });
 
       const args = {
         subcommand: 'create',

@@ -3,7 +3,11 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { registerTemplatesTool } from '../../src/tools/templates';
 import type { MockVikunjaClient, MockServer } from '../types/mocks';
-import type { Project, Task, User } from 'node-vikunja';
+import type { components } from '../../src/types/generated/vikunja-openapi';
+
+type Project = components['schemas']['models.Project'];
+type Task = components['schemas']['models.Task'];
+type User = components['schemas']['models.User'];
 import { MCPError, ErrorCode } from '../../src/types';
 import { AuthManager } from '../../src/auth/AuthManager';
 import { parseMarkdown } from '../utils/markdown';
@@ -14,7 +18,6 @@ import { circuitBreakerRegistry } from '../../src/utils/retry';
 // instantiates a task template with labels needs it resolved (see
 // beforeEach below).
 jest.mock('../../src/client', () => ({
-  getClientFromContext: jest.fn(),
   getAuthManagerFromContext: jest.fn(),
   setGlobalClientFactory: jest.fn(),
   clearGlobalClientFactory: jest.fn(),
@@ -27,7 +30,7 @@ jest.mock('../../src/storage', () => ({
 }));
 
 // Import mocked functions
-import { getClientFromContext, getAuthManagerFromContext } from '../../src/client';
+import { getAuthManagerFromContext } from '../../src/client';
 import { storageManager } from '../../src/storage';
 
 // Mock fetch: `create` (getProject, getProjectTasks) and `instantiate`
@@ -155,11 +158,6 @@ describe('Templates Tool', () => {
         updateTaskLabels: jest.fn(),
       },
     } as any;
-
-    // Mock getClientFromContext
-    (getClientFromContext as jest.MockedFunction<typeof getClientFromContext>).mockResolvedValue(
-      mockClient,
-    );
 
     // Setup mock auth manager
     mockAuthManager = new AuthManager();
@@ -1680,15 +1678,14 @@ describe('Templates Tool', () => {
 
   describe('unexpected errors', () => {
     afterEach(() => {
-      // Reset getClientFromContext mock after error tests
-      (getClientFromContext as jest.MockedFunction<typeof getClientFromContext>).mockResolvedValue(
-        mockClient,
-      );
+      // Reset the storage mock after error tests
+      (storageManager.getStorage as jest.Mock).mockResolvedValue(mockFilterStorage);
     });
 
     it('should handle non-MCPError errors', async () => {
-      // Mock getClientFromContext to throw an unexpected error
-      (getClientFromContext as jest.MockedFunction<typeof getClientFromContext>).mockRejectedValue(
+      // Make session storage resolution throw an unexpected error; this happens
+      // before the subcommand switch, so it hits the handler's top-level catch.
+      (storageManager.getStorage as jest.Mock).mockRejectedValue(
         new TypeError('Unexpected type error')
       );
 
@@ -1700,8 +1697,8 @@ describe('Templates Tool', () => {
     });
 
     it('should handle non-Error objects thrown at top level', async () => {
-      // Mock getClientFromContext to throw a non-Error object
-      (getClientFromContext as jest.MockedFunction<typeof getClientFromContext>).mockRejectedValue(
+      // Reject with a non-Error value to exercise the 'Unknown error' branch.
+      (storageManager.getStorage as jest.Mock).mockRejectedValue(
         'String thrown' // eslint-disable-line no-throw-literal
       );
 

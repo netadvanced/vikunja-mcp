@@ -15,7 +15,7 @@ import { formatAorpAsMarkdown } from '../utils/response-factory';
 import type { components } from '../types/generated/vikunja-openapi';
 
 // Sourced from the vendored OpenAPI spec (docs/vikunja-openapi.json) — see
-// docs/API-SPEC.md, replacing node-vikunja's `Team` type (Wave D domain
+// docs/API-SPEC.md, replacing the legacy client's `Team` type (Wave D domain
 // migration, tracking issue #28).
 type Team = components['schemas']['models.Team'];
 
@@ -44,7 +44,7 @@ interface TeamMemberUser {
 
 /**
  * `GET`/`POST /teams/{id}` response shape: a `Team` with its members
- * embedded. node-vikunja's `Team` type does not model this field, so it is
+ * embedded. the legacy client's `Team` type does not model this field, so it is
  * declared locally per the OpenAPI spec / server `models.Team` struct.
  * (An intersection, not `extends`, because `Team`'s inherited index
  * signature rejects an array-typed `members` property on a plain interface

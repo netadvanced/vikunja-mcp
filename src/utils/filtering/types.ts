@@ -11,8 +11,8 @@ export type VikunjaTask = components['schemas']['models.Task'];
 
 /**
  * Query params shared by the task-listing endpoints (page/per_page/s/sort_by
- * plus the server-side `filter` string). Mirrors node-vikunja's
- * `GetTasksParams` shape without depending on the (EOL) node-vikunja package.
+ * plus the server-side `filter` string). Mirrors the legacy client's
+ * `GetTasksParams` shape without depending on the (EOL) legacy client package.
  */
 export interface TaskListApiParams {
   page?: number;

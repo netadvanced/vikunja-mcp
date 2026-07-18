@@ -1,20 +1,19 @@
 import { AuthManager } from '../../src/auth/AuthManager';
 import type { TestableAuthManager } from '../utils/test-utils';
 import { Server } from '@modelcontextprotocol/sdk/server';
-import {
+import type {
   Task,
   Project,
   Label,
   User,
   Team,
-  GetTasksParams,
   Message,
-  RelationKind,
-} from 'node-vikunja';
+} from '../../src/types/vikunja';
+import type { GetTasksParams } from '../../src/utils/filtering/types';
 import type { ZodSchema } from 'zod';
 import type { TaskComment, ProjectShare, SavedFilter } from '../../src/types/vikunja';
 
-// Type definitions for parameters that don't exist in node-vikunja
+// Type definitions for legacy client params not modelled in the local types
 export interface GetProjectsParams {
   page?: number;
   per_page?: number;

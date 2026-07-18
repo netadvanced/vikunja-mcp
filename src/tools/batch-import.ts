@@ -2,7 +2,6 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { AuthManager } from '../auth/AuthManager';
 import type { VikunjaClientFactory } from '../client/VikunjaClientFactory';
-import { getClientFromContext } from '../client';
 import { logger } from '../utils/logger';
 import { MCPError, ErrorCode } from '../types';
 import { parseInputData } from '../parsers/InputParserFactory';
@@ -45,7 +44,6 @@ export function registerBatchImportTool(server: McpServer, authManager: AuthMana
           );
         }
 
-        const client = await getClientFromContext();
         const responseFormatter = new BatchImportResponseFormatter();
 
         // Parse input data
@@ -84,7 +82,7 @@ export function registerBatchImportTool(server: McpServer, authManager: AuthMana
         const taskCreationService = new TaskCreationService();
 
         // Resolve entities (labels and users)
-        const entityResult = await entityResolver.resolveEntities(client, authManager);
+        const entityResult = await entityResolver.resolveEntities(authManager);
         const { userFetchFailedDueToAuth } = entityResult;
 
         // Process tasks
@@ -103,7 +101,6 @@ export function registerBatchImportTool(server: McpServer, authManager: AuthMana
             const creationResult = await taskCreationService.createTask(
               task,
               args.projectId,
-              client,
               authManager,
               entityResult,
               args.skipErrors === true

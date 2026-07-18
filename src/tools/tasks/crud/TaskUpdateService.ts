@@ -4,10 +4,9 @@
  */
 
 import { MCPError, ErrorCode } from '../../../types';
-import { getClientFromContext } from '../../../client';
-import type { VikunjaClient } from 'node-vikunja';
 import type { AuthManager } from '../../../auth/AuthManager';
 import { vikunjaRestRequest } from '../../../utils/vikunja-rest';
+import { getTaskViaRest } from '../../../utils/task-rest-transport';
 import { validateDateString, validateId, convertRepeatConfiguration } from '../validation';
 import { isAuthenticationError } from '../../../utils/auth-error-handler';
 import { RETRY_CONFIG } from '../../../utils/retry';
@@ -89,12 +88,12 @@ export async function updateTask(
 
     // Update labels if provided
     if (args.labels !== undefined) {
-      await updateTaskLabels(await getClientFromContext(), args.id, args.labels);
+      await updateTaskLabels(authManager, args.id, args.labels);
     }
 
     // Update assignees if provided
     if (args.assignees !== undefined) {
-      await updateTaskAssignees(await getClientFromContext(), args.id, args.assignees);
+      await updateTaskAssignees(authManager, args.id, args.assignees);
     }
 
     // Fetch the complete updated task
@@ -139,7 +138,7 @@ export async function updateTask(
   } catch (error) {
     // Re-throw MCPError instances without modification, except a REST 404,
     // which is translated to the same friendly "not found" message the
-    // pre-migration node-vikunja error path produced via handleStatusCodeError
+    // pre-migration legacy client error path produced via handleStatusCodeError
     // (which keys off a bare `.statusCode` property, not the `.details`
     // nesting vikunjaRestRequest's thrown MCPError uses).
     if (error instanceof MCPError) {
@@ -204,7 +203,7 @@ async function analyzeUpdateState(
   if (args.repeatAfter !== undefined && args.repeatAfter !== currentTask.repeat_after) affectedFields.push('repeatAfter');
   // args.repeatMode is the user-facing string enum ('day'|'week'|...);
   // currentTask.repeat_mode is the API's numeric enum (0|1|2) — these were
-  // never the same representation even before this migration (node-vikunja's
+  // never the same representation even before this migration (the legacy client's
   // type incorrectly claimed both were the string enum), so this comparison
   // is always true when repeatMode is supplied. Cast preserves that existing
   // runtime behavior while satisfying the now-correctly-typed comparison.
@@ -239,7 +238,7 @@ function buildUpdateData(currentTask: VikunjaTask, args: UpdateTaskArgs): Vikunj
     ...(args.projectId !== undefined && { project_id: args.projectId }),
     // Handle repeat configuration for updates. The generated
     // `models.Task.repeat_mode` type (0 | 1 | 2) matches the real API, so no
-    // bypass cast is needed here (unlike node-vikunja's incorrect string enum).
+    // bypass cast is needed here (unlike the legacy client's incorrect string enum).
     ...(args.repeatAfter !== undefined || args.repeatMode !== undefined
       ? ((): Partial<VikunjaTask> => {
           const repeatConfig = convertRepeatConfiguration(
@@ -262,9 +261,6 @@ function buildUpdateData(currentTask: VikunjaTask, args: UpdateTaskArgs): Vikunj
 /**
  * Updates task labels with authentication error handling.
  *
- * Labels are a task sub-resource (sibling item M-B); `setTaskLabels` still
- * goes through the node-vikunja client rather than the direct-REST helper.
- *
  * The catch surfaces the HTTP status + body of the underlying Vikunja error
  * in both branches. Previously the catch replaced any 403/422 from
  * `POST /tasks/{id}/labels/bulk` with the generic LABEL_UPDATE "known
@@ -272,9 +268,9 @@ function buildUpdateData(currentTask: VikunjaTask, args: UpdateTaskArgs): Vikunj
  * vs an invalid label id) from the MCP client and made the diagnostic
  * round-trip much longer for the consumer.
  */
-async function updateTaskLabels(client: VikunjaClient, taskId: number, labelIds: number[]): Promise<void> {
+async function updateTaskLabels(authManager: AuthManager, taskId: number, labelIds: number[]): Promise<void> {
   try {
-    await setTaskLabels(client, taskId, labelIds);
+    await setTaskLabels(authManager, taskId, labelIds);
   } catch (labelError) {
     const detail = extractHttpErrorDetail(labelError);
     if (isAuthenticationError(labelError)) {
@@ -297,36 +293,39 @@ async function updateTaskLabels(client: VikunjaClient, taskId: number, labelIds:
 
 /**
  * Updates task assignees with diff calculation and authentication error
- * handling. Assignees are a task sub-resource (sibling item M-B); this still
- * goes through the node-vikunja client rather than the direct-REST helper.
+ * handling, via the direct-REST assignee endpoints.
  */
-async function updateTaskAssignees(client: VikunjaClient, taskId: number, newAssigneeIds: number[]): Promise<void> {
+async function updateTaskAssignees(authManager: AuthManager, taskId: number, newAssigneeIds: number[]): Promise<void> {
   try {
     // Get current assignees to calculate diff
-    const currentTask = await client.tasks.getTask(taskId);
-    const currentAssigneeIds = currentTask.assignees?.map((a) => a.id) || [];
+    const currentTask = await getTaskViaRest(authManager, taskId);
+    const currentAssigneeIds = (currentTask.assignees ?? [])
+      .map((a) => a.id)
+      .filter((id): id is number => typeof id === 'number');
 
     // Calculate which assignees to add and remove
     const toAdd = newAssigneeIds.filter((id: number) => !currentAssigneeIds.includes(id));
     const toRemove = currentAssigneeIds.filter((id: number) => !newAssigneeIds.includes(id));
 
     // Add new assignees first to avoid leaving task unassigned if removal fails.
-    // Use the ADDITIVE single-assign endpoint per user rather than the bulk
-    // endpoint: node-vikunja's bulkAssignUsersToTask sends `{ user_ids }` to
-    // Vikunja's bulk endpoint, which expects `{ assignees }` and REPLACES the
-    // whole list, so the mismatched field silently unassigns everyone instead
-    // of adding users (upstream issue #15). Mirrors the per-user removal loop
-    // directly below.
+    // Use the ADDITIVE single-assign endpoint per user (PUT
+    // /tasks/{taskID}/assignees, body { user_id }, models.TaskAssginee) rather
+    // than the bulk endpoint (POST .../assignees/bulk), which REPLACES the
+    // whole list and would silently unassign everyone (upstream issue #15).
+    // Mirrors the per-user removal loop directly below.
     if (toAdd.length > 0) {
       await Promise.all(
-        toAdd.map((userId: number) => client.tasks.assignUserToTask(taskId, userId))
+        toAdd.map((userId: number) =>
+          vikunjaRestRequest(authManager, 'PUT', `/tasks/${taskId}/assignees`, { user_id: userId }),
+        )
       );
     }
 
-    // Remove old assignees only after new ones are successfully added
+    // Remove old assignees only after new ones are successfully added. DELETE
+    // /tasks/{taskID}/assignees/{userID} per the OpenAPI spec — no body.
     for (const userId of toRemove) {
       try {
-        await client.tasks.removeUserFromTask(taskId, userId);
+        await vikunjaRestRequest(authManager, 'DELETE', `/tasks/${taskId}/assignees/${userId}`);
       } catch (removeError) {
         // Check if it's an auth error on remove
         if (isAuthenticationError(removeError)) {

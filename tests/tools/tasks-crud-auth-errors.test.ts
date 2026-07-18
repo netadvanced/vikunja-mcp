@@ -68,22 +68,34 @@ describe('Tasks CRUD - Authentication Error Handling', () => {
   /** Sentinel wrapper marking a routeRest handler value as a rejection. */
   const REJECT = (value: unknown): { __reject: true; value: unknown } => ({ __reject: true, value });
 
+  type RestHandler = unknown | ((path: string) => unknown);
+
   /**
    * Routes vikunjaRestRequest calls to per-HTTP-method fixtures/errors.
    *
-   * Post Wave-D sub-resource migration (#71), `setTaskLabels` also flows
-   * through `vikunjaRestRequest` (POST `/tasks/{id}/labels/bulk`), so a
-   * `labels` handler routes that path independently of the core task POST.
+   * Post the node-vikunja removal, the label/assignee sub-resource calls all
+   * flow through `vikunjaRestRequest`:
+   *   - task UPDATE labels: POST `/tasks/{id}/labels/bulk` (setTaskLabels) —
+   *     routed by the dedicated `labels` handler, independent of the core POST;
+   *   - task CREATE labels: PUT `/tasks/{id}/labels` (per-label, additive);
+   *   - assignee add: PUT `/tasks/{id}/assignees`;
+   *   - assignee remove: DELETE `/tasks/{id}/assignees/{userId}`.
+   * Because PUT/DELETE are now shared between the base task calls and these
+   * sub-resource calls, a method handler may be a function of the request path
+   * so one method can succeed for one path and fail for another.
    */
   function routeRest(
-    handlers: Partial<Record<'GET' | 'POST' | 'PUT' | 'DELETE', unknown>> & { labels?: unknown },
+    handlers: Partial<Record<'GET' | 'POST' | 'PUT' | 'DELETE', RestHandler>> & { labels?: unknown },
   ): void {
     mockRest.mockImplementation((_auth: unknown, method: string, path?: unknown) => {
       const isLabelBulk = typeof path === 'string' && path.includes('/labels/bulk');
-      const handler =
+      let handler: RestHandler =
         isLabelBulk && 'labels' in handlers
           ? handlers.labels
           : handlers[method as 'GET' | 'POST' | 'PUT' | 'DELETE'];
+      if (typeof handler === 'function') {
+        handler = (handler as (p: string) => unknown)(path as string);
+      }
       if (handler && typeof handler === 'object' && (handler as { __reject?: true }).__reject === true) {
         return Promise.reject((handler as { value: unknown }).value);
       }
@@ -142,13 +154,14 @@ describe('Tasks CRUD - Authentication Error Handling', () => {
 
   describe('createTask authentication errors', () => {
     it('should handle authentication error in label assignment (line 92)', async () => {
-      // Mock successful task creation, and successful rollback delete
+      // Base create succeeds; the per-label add (PUT /tasks/1/labels) fails
+      // with a 401 auth error; rollback DELETE succeeds.
       const createdTask = { id: 1, title: 'Test Task', project_id: 1 };
-      routeRest({ PUT: createdTask, DELETE: null });
-
-      // Mock label assignment failure with 401 auth error
       const authError = createAuthError(401, 'Unauthorized to assign labels');
-      mockClient.tasks.addLabelToTask.mockRejectedValue(authError);
+      routeRest({
+        PUT: (path) => (path === '/projects/1/tasks' ? createdTask : REJECT(authError)),
+        DELETE: null,
+      });
 
       await expect(
         createTask({
@@ -175,12 +188,14 @@ describe('Tasks CRUD - Authentication Error Handling', () => {
     });
 
     it('should handle authentication error in label assignment with Axios-style error', async () => {
+      // Base create succeeds; the per-label add (PUT /tasks/1/labels) fails
+      // with a 403 Axios-style auth error.
       const createdTask = { id: 1, title: 'Test Task', project_id: 1 };
-      routeRest({ PUT: createdTask, DELETE: null });
-
-      // Mock label assignment failure with 403 Axios-style auth error
       const authError = createAxiosAuthError(403, 'Forbidden to assign labels');
-      mockClient.tasks.addLabelToTask.mockRejectedValue(authError);
+      routeRest({
+        PUT: (path) => (path === '/projects/1/tasks' ? createdTask : REJECT(authError)),
+        DELETE: null,
+      });
 
       await expect(
         createTask({
@@ -195,13 +210,18 @@ describe('Tasks CRUD - Authentication Error Handling', () => {
     });
 
     it('should handle authentication error in assignee assignment (line 118)', async () => {
+      // Base create + per-label add succeed; the assignee add (PUT
+      // /tasks/1/assignees) fails with a 401 auth error.
       const createdTask = { id: 1, title: 'Test Task', project_id: 1 };
-      routeRest({ PUT: createdTask, DELETE: null });
-      mockClient.tasks.addLabelToTask.mockResolvedValue(undefined);
-
-      // Mock assignee assignment failure with 401 auth error
       const authError = createAuthError(401, 'Unauthorized to assign users');
-      mockClient.tasks.assignUserToTask.mockRejectedValue(authError);
+      routeRest({
+        PUT: (path) => {
+          if (path === '/projects/1/tasks') return createdTask;
+          if (path === '/tasks/1/assignees') return REJECT(authError);
+          return undefined; // per-label add (PUT /tasks/1/labels) succeeds
+        },
+        DELETE: null,
+      });
 
       await expect(
         createTask({
@@ -231,12 +251,14 @@ describe('Tasks CRUD - Authentication Error Handling', () => {
     });
 
     it('should handle authentication error in assignee assignment with 403 error', async () => {
+      // Base create succeeds; the assignee add (PUT /tasks/1/assignees) fails
+      // with a 403 auth error.
       const createdTask = { id: 1, title: 'Test Task', project_id: 1 };
-      routeRest({ PUT: createdTask, DELETE: null });
-
-      // Mock assignee assignment failure with 403 auth error
       const authError = createAxiosAuthError(403, 'Forbidden to assign users');
-      mockClient.tasks.assignUserToTask.mockRejectedValue(authError);
+      routeRest({
+        PUT: (path) => (path === '/projects/1/tasks' ? createdTask : REJECT(authError)),
+        DELETE: null,
+      });
 
       await expect(
         createTask({
@@ -320,14 +342,16 @@ describe('Tasks CRUD - Authentication Error Handling', () => {
         assignees: [{ id: 1 }, { id: 2 }, { id: 3 }],
       };
 
-      routeRest({ GET: taskWithAssignees, POST: taskWithAssignees });
-      // updateTaskAssignees's diff-calculation fetch (still node-vikunja client)
-      mockClient.tasks.getTask.mockResolvedValue(taskWithAssignees);
-
-      // Mock successful assignee addition but failed removal with auth error
-      mockClient.tasks.assignUserToTask.mockResolvedValue(undefined);
+      // GET (analyze + diff-calc) and POST succeed; the assignee add
+      // (PUT /tasks/1/assignees) succeeds; the assignee removal
+      // (DELETE /tasks/1/assignees/{userId}) fails with a 401 auth error.
       const authError = createAuthError(401, 'Unauthorized to remove assignee');
-      mockClient.tasks.removeUserFromTask.mockRejectedValue(authError);
+      routeRest({
+        GET: taskWithAssignees,
+        POST: taskWithAssignees,
+        PUT: undefined, // additive assignee add succeeds
+        DELETE: REJECT(authError),
+      });
 
       await expect(
         updateTask({
@@ -354,12 +378,14 @@ describe('Tasks CRUD - Authentication Error Handling', () => {
         assignees: [{ id: 1 }, { id: 2 }],
       };
 
-      routeRest({ GET: taskWithAssignees, POST: taskWithAssignees });
-      mockClient.tasks.getTask.mockResolvedValue(taskWithAssignees);
-
-      // Mock failed removal with 403 auth error
+      // The assignee removal (DELETE /tasks/1/assignees/2) fails with a 403
+      // auth error.
       const authError = createAxiosAuthError(403, 'Forbidden to remove assignee');
-      mockClient.tasks.removeUserFromTask.mockRejectedValue(authError);
+      routeRest({
+        GET: taskWithAssignees,
+        POST: taskWithAssignees,
+        DELETE: REJECT(authError),
+      });
 
       await expect(
         updateTask({
@@ -370,14 +396,11 @@ describe('Tasks CRUD - Authentication Error Handling', () => {
     });
 
     it('should handle authentication error in general assignee update (line 369)', async () => {
-      routeRest({ GET: mockTask, POST: mockTask });
-
-      // Mock assignee operations failure with auth error at the top level
+      // The assignee add (PUT /tasks/1/assignees) fails with a 401 auth error,
+      // caught by updateTaskAssignees's outer handler which wraps it as the
+      // ASSIGNEE_UPDATE "(Retried ...)" message.
       const authError = createAuthError(401, 'Unauthorized assignee operation');
-
-      // Make the diff-calculation getTask call fail with auth error (test
-      // calls updateTask twice, so this must persist across both calls)
-      mockClient.tasks.getTask.mockRejectedValue(authError);
+      routeRest({ GET: mockTask, POST: mockTask, PUT: REJECT(authError) });
 
       await expect(
         updateTask({
@@ -399,14 +422,9 @@ describe('Tasks CRUD - Authentication Error Handling', () => {
     });
 
     it('should handle authentication error in general assignee update with 403 error', async () => {
-      routeRest({ GET: mockTask, POST: mockTask });
-
-      // Mock assignee operations failure with 403 auth error
+      // The assignee add (PUT /tasks/1/assignees) fails with a 403 auth error.
       const authError = createAxiosAuthError(403, 'Forbidden assignee operation');
-
-      // Make the assignee addition fail with auth error
-      mockClient.tasks.getTask.mockResolvedValueOnce(mockTask); // diff calculation
-      mockClient.tasks.assignUserToTask.mockRejectedValue(authError);
+      routeRest({ GET: mockTask, POST: mockTask, PUT: REJECT(authError) });
 
       await expect(
         updateTask({
@@ -419,12 +437,14 @@ describe('Tasks CRUD - Authentication Error Handling', () => {
 
   describe('error propagation and non-auth errors', () => {
     it('should properly propagate non-authentication errors in createTask', async () => {
+      // Base create succeeds; the per-label add (PUT /tasks/1/labels) fails
+      // with a non-auth error; rollback DELETE succeeds.
       const createdTask = { id: 1, title: 'Test Task', project_id: 1 };
-      routeRest({ PUT: createdTask, DELETE: null });
-
-      // Mock label assignment failure with non-auth error
       const nonAuthError = new Error('Network timeout');
-      mockClient.tasks.addLabelToTask.mockRejectedValue(nonAuthError);
+      routeRest({
+        PUT: (path) => (path === '/projects/1/tasks' ? createdTask : REJECT(nonAuthError)),
+        DELETE: null,
+      });
 
       await expect(
         createTask({
@@ -498,20 +518,17 @@ describe('Tasks CRUD - Authentication Error Handling', () => {
         // assignees field is missing
       };
 
-      routeRest({ GET: taskWithoutAssignees, POST: taskWithoutAssignees });
-      mockClient.tasks.getTask.mockResolvedValueOnce(taskWithoutAssignees); // diff calculation
-      mockClient.tasks.assignUserToTask.mockResolvedValue(undefined);
+      routeRest({ GET: taskWithoutAssignees, POST: taskWithoutAssignees, PUT: undefined });
 
       await updateTask({
         id: 1,
         assignees: [1, 2],
       }, mockAuthManager);
 
-      // Should handle undefined assignees gracefully and add new ones
-      // (one additive per-user call each)
-      expect(mockClient.tasks.assignUserToTask).toHaveBeenCalledWith(1, 1);
-      expect(mockClient.tasks.assignUserToTask).toHaveBeenCalledWith(1, 2);
-      expect(mockClient.tasks.bulkAssignUsersToTask).not.toHaveBeenCalled();
+      // Should handle undefined assignees gracefully and add new ones via the
+      // additive per-user PUT /tasks/1/assignees { user_id } endpoint
+      expect(mockRest).toHaveBeenCalledWith(mockAuthManager, 'PUT', '/tasks/1/assignees', { user_id: 1 });
+      expect(mockRest).toHaveBeenCalledWith(mockAuthManager, 'PUT', '/tasks/1/assignees', { user_id: 2 });
     });
   });
 });

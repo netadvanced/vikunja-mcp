@@ -8,7 +8,7 @@ import { z } from 'zod';
 import type { AuthManager } from '../../auth/AuthManager';
 import type { VikunjaClientFactory } from '../../client/VikunjaClientFactory';
 import { MCPError, ErrorCode } from '../../types';
-import { getClientFromContext, setGlobalClientFactory } from '../../client';
+import { getAuthManagerFromContext, setGlobalClientFactory } from '../../client';
 import { logger } from '../../utils/logger';
 import { storageManager } from '../../storage';
 import { relationSchema, handleRelationSubcommands } from '../tasks-relations';
@@ -268,7 +268,7 @@ export function registerTasksTool(
         }
 
         // Test client connection
-        await getClientFromContext();
+        await getAuthManagerFromContext();
 
         switch (args.subcommand) {
           case 'list': {

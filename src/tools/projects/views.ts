@@ -3,7 +3,7 @@
  *
  * Implements `list-views`, `get-view`, `create-view`, `update-view`,
  * `delete-view`, and the `set-done-bucket` composite, against Vikunja's
- * project view endpoints (`/projects/{project}/views[/{id}]`). node-vikunja
+ * project view endpoints (`/projects/{project}/views[/{id}]`). legacy client
  * has no support for project views at all, so — like `buckets.ts` — this
  * calls the Vikunja REST API directly via the shared `vikunja-rest` helper.
  *

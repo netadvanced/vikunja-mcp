@@ -8,19 +8,14 @@
 
 import { logger } from '../utils/logger';
 import { isAuthenticationError } from '../utils/auth-error-handler';
-import type { VikunjaClient, Label, User } from 'node-vikunja';
 import type { AuthManager } from '../auth/AuthManager';
 import { MCPError } from '../types';
 import { vikunjaRestRequest } from '../utils/vikunja-rest';
 import type { components } from '../types/generated/vikunja-openapi';
 
-// Sourced from the vendored OpenAPI spec (docs/vikunja-openapi.json). Field
-// shapes line up closely enough with node-vikunja's `User` (id, username,
-// email, name, created, updated) that the REST response is cast to `User[]`
-// below rather than widening `EntityResolutionResult.projectUsers`'s public
-// type — that would ripple into TaskCreationService.ts's `User[]`-typed
-// consumers, which are out of scope for this migration.
+// Sourced from the vendored OpenAPI spec (docs/vikunja-openapi.json).
 type VikunjaUser = components['schemas']['user.User'];
+type VikunjaLabel = components['schemas']['models.Label'];
 
 /**
  * Result of entity resolution operations
@@ -33,9 +28,9 @@ export interface EntityResolutionResult {
   /** Whether user fetch failed due to known authentication issues */
   userFetchFailedDueToAuth: boolean;
   /** Raw labels array for reference */
-  projectLabels: Label[];
+  projectLabels: VikunjaLabel[];
   /** Raw users array for reference */
-  projectUsers: User[];
+  projectUsers: VikunjaUser[];
 }
 
 /**
@@ -51,13 +46,11 @@ export class EntityResolver {
    * - Creating case-insensitive name-to-ID mappings
    * - Providing comprehensive logging for debugging
    *
-   * @param client - The Vikunja API client to use for fetching entities
-   * @param authManager - Active auth manager, used for the direct-REST
-   *   `GET /users` call (see `fetchUsers`)
+   * @param authManager - Active auth manager holding the session credentials,
+   *   used for the direct-REST `GET /labels` and `GET /users` calls
    * @returns Promise resolving to entity resolution results
    */
   async resolveEntities(
-    client: VikunjaClient,
     authManager: AuthManager,
   ): Promise<EntityResolutionResult> {
     const result: EntityResolutionResult = {
@@ -68,7 +61,7 @@ export class EntityResolver {
       projectUsers: [],
     };
 
-    await this.fetchLabels(client, result);
+    await this.fetchLabels(authManager, result);
 
     await this.fetchUsers(authManager, result);
 
@@ -93,15 +86,20 @@ export class EntityResolver {
    * - Network errors
    * - Auth errors (less common for labels than users)
    *
-   * @param client - The Vikunja API client
+   * @param authManager - Active auth manager holding the session credentials
    * @param result - The result object to update with fetched labels
    */
   private async fetchLabels(
-    client: VikunjaClient,
+    authManager: AuthManager,
     result: EntityResolutionResult
   ): Promise<void> {
     try {
-      const labelsResponse = await client.labels.getLabels({});
+      // GET /labels per the OpenAPI spec (models.Label[]).
+      const labelsResponse = await vikunjaRestRequest<VikunjaLabel[]>(
+        authManager,
+        'GET',
+        '/labels',
+      );
 
       // Handle potential null/undefined response
       if (!labelsResponse) {
@@ -124,7 +122,7 @@ export class EntityResolver {
       result.projectLabels = labelsResponse;
       logger.debug('Labels fetched', {
         count: result.projectLabels.length,
-        labels: result.projectLabels.map((l): { id: number; title: string } => ({ id: l.id ?? 0, title: l.title })),
+        labels: result.projectLabels.map((l): { id: number; title: string } => ({ id: l.id ?? 0, title: l.title ?? '' })),
       });
     } catch (error) {
       logger.error('Failed to fetch labels', {
@@ -146,10 +144,10 @@ export class EntityResolver {
    * `GET /users` is a *search* endpoint ("Search for a user by its username,
    * name or full email") that takes an `s` query parameter — it is not a
    * "list all users I can see" endpoint. Called with no `s`, as this method
-   * does (matching the pre-migration node-vikunja call, which passed the
+   * does (matching the pre-migration legacy client call, which passed the
    * same empty `{}` params), it likely returns an empty array on real
    * servers rather than the full set of assignable project users. This
-   * migration moves the transport (node-vikunja -> `vikunjaRestRequest`)
+   * migration moves the transport (legacy client -> `vikunjaRestRequest`)
    * without changing that behavior — fixing the semantic mismatch (e.g.
    * passing a search term, or resolving assignees a different way) is a
    * separate, deliberately out-of-scope follow-up.
@@ -167,14 +165,14 @@ export class EntityResolver {
         'GET',
         '/users',
       );
-      result.projectUsers = (usersResponse || []) as unknown as User[];
+      result.projectUsers = usersResponse || [];
       logger.debug('Users fetched', { count: result.projectUsers.length });
     } catch (error) {
       // This is a known limitation with Vikunja API authentication. Checked
       // directly via `details.statusCode` (set by `vikunjaRestRequest` on
       // every non-2xx response) alongside the shared message-pattern
       // classifier: `isAuthenticationError`'s structured checks look for
-      // `.status`/`.response.status`, properties node-vikunja's HTTP errors
+      // `.status`/`.response.status`, properties the legacy client's HTTP errors
       // carried but a plain `MCPError` from the REST helper does not — so a
       // bare 401/403 with a response body that doesn't happen to match one
       // of the message-pattern fallbacks would otherwise stop being
@@ -210,7 +208,7 @@ export class EntityResolver {
     // Create case-insensitive label name to ID map
     result.labelMap = new Map(
       (result.projectLabels || [])
-        .filter((label): label is Label & { id: number } => label !== null && label.id !== null)
+        .filter((label): label is VikunjaLabel & { id: number } => label !== null && label.id !== null && label.id !== undefined)
         .map((label) => {
           let key: string;
           if (!('title' in label)) {
@@ -229,7 +227,7 @@ export class EntityResolver {
     // Create case-insensitive username to ID map
     result.userMap = new Map(
       (result.projectUsers || [])
-        .filter((user): user is User & { id: number } => user !== null && user.id !== null)
+        .filter((user): user is VikunjaUser & { id: number } => user !== null && user.id !== null && user.id !== undefined)
         .map((user) => {
           let key: string;
           if (!('username' in user)) {

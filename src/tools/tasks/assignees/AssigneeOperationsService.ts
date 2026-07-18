@@ -5,11 +5,11 @@
 
 import type { TaskWithAssignees, Assignee } from '../../../types';
 import { MCPError, ErrorCode } from '../../../types';
-import { getClientFromContext } from '../../../client';
 import type { AuthManager } from '../../../auth/AuthManager';
 import { isAuthenticationError } from '../../../utils/auth-error-handler';
 import { withRetry, RETRY_CONFIG } from '../../../utils/retry';
 import { vikunjaRestRequest } from '../../../utils/vikunja-rest';
+import { getTaskViaRest } from '../../../utils/task-rest-transport';
 import { validateId } from '../../../utils/validation';
 import { AUTH_ERROR_MESSAGES } from '../constants';
 import type { components } from '../../../types/generated/vikunja-openapi';
@@ -108,11 +108,13 @@ export const AssigneeOperationsService = {
   },
 
   /**
-   * Fetch task data to get current assignees
+   * Fetch task data to get current assignees via GET /tasks/{id} (direct-REST)
    */
-  async fetchTaskWithAssignees(taskId: number): Promise<TaskWithAssignees> {
-    const client = await getClientFromContext();
-    const task = await client.tasks.getTask(taskId);
+  async fetchTaskWithAssignees(
+    authManager: AuthManager,
+    taskId: number,
+  ): Promise<TaskWithAssignees> {
+    const task = await getTaskViaRest(authManager, taskId);
     // Ensure required properties exist for TaskWithAssignees
     if (!task.id) {
       throw new MCPError(ErrorCode.INTERNAL_ERROR, 'Task returned from API is missing required id field');
@@ -121,7 +123,11 @@ export const AssigneeOperationsService = {
       ...task,
       id: task.id,
       title: task.title || '',
-      assignees: task.assignees || [],
+      // `models.Task.assignees` is `user.User[]` (all fields optional per Go
+      // `omitempty`); `Assignee` requires `id`/`username`. A persisted
+      // assignee always carries both, so this narrows the spec-optional shape
+      // to the response type the formatters consume.
+      assignees: (task.assignees ?? []) as Assignee[],
     };
   },
 
@@ -175,12 +181,16 @@ export const AssigneeOperationsService = {
    * Fails open: if the verification re-fetch itself errors we return [] (assume
    * OK) so a transient read failure never blocks the assign operation.
    */
-  async verifyAssignees(taskId: number, requestedIds: number[]): Promise<number[]> {
+  async verifyAssignees(
+    authManager: AuthManager,
+    taskId: number,
+    requestedIds: number[],
+  ): Promise<number[]> {
     if (requestedIds.length === 0) {
       return [];
     }
     try {
-      const task = await AssigneeOperationsService.fetchTaskWithAssignees(taskId);
+      const task = await AssigneeOperationsService.fetchTaskWithAssignees(authManager, taskId);
       const persistedIds = new Set(
         AssigneeOperationsService.extractAssignees(task).map((a: Assignee) => a.id)
       );

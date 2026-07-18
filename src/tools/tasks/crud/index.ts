@@ -19,7 +19,7 @@ export type { DeleteTaskArgs } from './TaskDeletionService';
 export type { GetTaskArgs } from './TaskReadService';
 
 // Re-export for backward compatibility - maintain the original API surface.
-// `Task` here is the generated OpenAPI type (models.Task), not node-vikunja's
+// `Task` here is the generated OpenAPI type (models.Task), not the legacy client's
 // (EOL, drifted) type.
 import type { components } from '../../../types/generated/vikunja-openapi';
 export type Task = components['schemas']['models.Task'];

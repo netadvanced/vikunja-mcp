@@ -5,9 +5,9 @@
 
 import { z } from 'zod';
 import { MCPError, ErrorCode, type StandardTaskResponse } from '../types';
-import { getClientFromContext } from '../client';
 import type { AuthManager } from '../auth/AuthManager';
 import { vikunjaRestRequest } from '../utils/vikunja-rest';
+import { getTaskViaRest } from '../utils/task-rest-transport';
 import { logger } from '../utils/logger';
 import { validateId as validateSharedId } from '../utils/validation';
 import { handleStatusCodeError } from '../utils/error-handler';
@@ -15,7 +15,7 @@ import { formatAorpAsMarkdown, createStandardResponse } from '../utils/response-
 
 // Use shared validateId from utils/validation
 
-// Relation kind mapping - matches the node-vikunja RelationKind enum
+// Relation kind mapping - matches the legacy client RelationKind enum
 const RELATION_KIND_MAP: Record<string, string> = {
   unknown: 'unknown',
   subtask: 'subtask',
@@ -65,8 +65,6 @@ export async function handleRelationSubcommands(
   args: RelationArgs,
   authManager: AuthManager,
 ): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
-  const client = await getClientFromContext();
-
   switch (args.subcommand) {
     case 'relate': {
       try {
@@ -100,10 +98,9 @@ export async function handleRelationSubcommands(
           relation_kind: relationKind,
         });
 
-        // Fetch the updated task to show all relations. GET /tasks/{id} is
-        // task CRUD (owned elsewhere) — deliberate node-vikunja leftover,
-        // kept only to refresh the response payload.
-        const updatedTask = await client.tasks.getTask(args.id);
+        // Fetch the updated task to show all relations via GET /tasks/{id}
+        // (direct-REST), kept only to refresh the response payload.
+        const updatedTask = await getTaskViaRest(authManager, args.id);
 
         const response: StandardTaskResponse = {
           success: true,
@@ -126,7 +123,11 @@ export async function handleRelationSubcommands(
         const aorpResponse = createStandardResponse(
           response.operation || 'unknown',
           response.message || 'Operation completed',
-          response,
+          // StandardTaskResponse carries the generated `models.Task` (all
+          // fields spec-optional); the response formatter's `ResponseData`
+          // wants the richer local `Task`. The formatter only reads fields
+          // defensively, so narrow via the parameter type.
+          response as unknown as Parameters<typeof createStandardResponse>[2],
           response.metadata as Record<string, unknown>
         );
 
@@ -187,10 +188,10 @@ export async function handleRelationSubcommands(
           },
         );
 
-        // Fetch the updated task to show remaining relations. Deliberate
-        // node-vikunja leftover — see the matching comment in the 'relate'
-        // case above.
-        const updatedTask = await client.tasks.getTask(args.id);
+        // Fetch the updated task to show remaining relations via
+        // GET /tasks/{id} (direct-REST) — see the matching comment in the
+        // 'relate' case above.
+        const updatedTask = await getTaskViaRest(authManager, args.id);
 
         const response: StandardTaskResponse = {
           success: true,
@@ -213,7 +214,11 @@ export async function handleRelationSubcommands(
         const aorpResponse = createStandardResponse(
           response.operation || 'unknown',
           response.message || 'Operation completed',
-          response,
+          // StandardTaskResponse carries the generated `models.Task` (all
+          // fields spec-optional); the response formatter's `ResponseData`
+          // wants the richer local `Task`. The formatter only reads fields
+          // defensively, so narrow via the parameter type.
+          response as unknown as Parameters<typeof createStandardResponse>[2],
           response.metadata as Record<string, unknown>
         );
 
@@ -241,13 +246,12 @@ export async function handleRelationSubcommands(
         }
         validateSharedId(args.id, 'Task ID');
 
-        // Fetch the task with its relations
-        const task = await client.tasks.getTask(args.id);
+        // Fetch the task with its relations via GET /tasks/{id} (direct-REST)
+        const task = await getTaskViaRest(authManager, args.id);
 
         // Vikunja's API returns `related_tasks` as a map of relation kind to
-        // Task[] (models.RelatedTaskMap), not a flat array. node-vikunja's
-        // typed model incorrectly describes it as Task[], so `.length` on it
-        // was always undefined and the relation count always reported 0.
+        // Task[] (models.RelatedTaskMap), not a flat array, so `.length` on it
+        // as a whole is undefined; iterate the map's entries to count.
         const relatedTasksMap = (task.related_tasks ?? {}) as unknown as Record<
           string,
           unknown[] | undefined
@@ -289,7 +293,11 @@ export async function handleRelationSubcommands(
         const aorpResponse = createStandardResponse(
           response.operation || 'unknown',
           response.message || 'Operation completed',
-          response,
+          // StandardTaskResponse carries the generated `models.Task` (all
+          // fields spec-optional); the response formatter's `ResponseData`
+          // wants the richer local `Task`. The formatter only reads fields
+          // defensively, so narrow via the parameter type.
+          response as unknown as Parameters<typeof createStandardResponse>[2],
           response.metadata as Record<string, unknown>
         );
 

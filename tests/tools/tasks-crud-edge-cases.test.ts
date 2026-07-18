@@ -46,6 +46,8 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
   /** Sentinel wrapper marking a routeRest handler value as a rejection. */
   const REJECT = (value: unknown): { __reject: true; value: unknown } => ({ __reject: true, value });
 
+  type RestHandler = unknown | ((path: string) => unknown);
+
   /**
    * Routes vikunjaRestRequest calls to per-HTTP-method fixtures/errors. Good
    * enough for these tests since each one does at most a handful of calls
@@ -54,10 +56,19 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
    * that method's calls reject instead of resolve — plain `instanceof Error`
    * detection isn't reliable here since some tests deliberately reject with
    * non-Error values (strings, plain objects, undefined).
+   *
+   * Since the label/assignee sub-resource adds now also go through
+   * vikunjaRestRequest (PUT /tasks/{id}/labels, PUT /tasks/{id}/assignees) —
+   * the same method (PUT) as the base-task create (PUT /projects/{id}/tasks) —
+   * a method handler may be a function of the request path so one method can
+   * succeed for one path and fail for another.
    */
-  function routeRest(handlers: Partial<Record<'GET' | 'POST' | 'PUT' | 'DELETE', unknown>>): void {
-    mockRest.mockImplementation((_auth: unknown, method: string) => {
-      const handler = handlers[method as 'GET' | 'POST' | 'PUT' | 'DELETE'];
+  function routeRest(handlers: Partial<Record<'GET' | 'POST' | 'PUT' | 'DELETE', RestHandler>>): void {
+    mockRest.mockImplementation((_auth: unknown, method: string, path: string) => {
+      let handler = handlers[method as 'GET' | 'POST' | 'PUT' | 'DELETE'];
+      if (typeof handler === 'function') {
+        handler = (handler as (p: string) => unknown)(path);
+      }
       if (handler && typeof handler === 'object' && (handler as { __reject?: true }).__reject === true) {
         return Promise.reject((handler as { value: unknown }).value);
       }
@@ -317,21 +328,25 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
         assignees: [{ id: 1 }, { id: 2 }],
       };
 
-      routeRest({ GET: taskWithAssignees, POST: taskWithAssignees });
-      // updateTaskAssignees's diff-calculation fetch (still node-vikunja client)
-      mockClient.tasks.getTask.mockResolvedValue(taskWithAssignees);
-      mockClient.tasks.removeUserFromTask.mockResolvedValue(undefined);
+      // GET routes both analyzeUpdateState's fetch and updateTaskAssignees's
+      // diff-calculation fetch (both now GET /tasks/1 via vikunjaRestRequest).
+      routeRest({ GET: taskWithAssignees, POST: taskWithAssignees, DELETE: null });
 
       const result = await updateTask({
         id: 1,
         assignees: [], // Remove all assignees
       }, mockAuthManager);
 
-      // Should remove all existing assignees
-      expect(mockClient.tasks.removeUserFromTask).toHaveBeenCalledWith(1, 1);
-      expect(mockClient.tasks.removeUserFromTask).toHaveBeenCalledWith(1, 2);
-      // Should not add any assignees
-      expect(mockClient.tasks.bulkAssignUsersToTask).not.toHaveBeenCalled();
+      // Should remove all existing assignees via DELETE /tasks/1/assignees/{userId}
+      expect(mockRest).toHaveBeenCalledWith(mockAuthManager, 'DELETE', '/tasks/1/assignees/1');
+      expect(mockRest).toHaveBeenCalledWith(mockAuthManager, 'DELETE', '/tasks/1/assignees/2');
+      // Should not add any assignees (no PUT to the assignees endpoint)
+      expect(mockRest).not.toHaveBeenCalledWith(
+        mockAuthManager,
+        'PUT',
+        '/tasks/1/assignees',
+        expect.anything(),
+      );
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
@@ -345,9 +360,7 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
         assignees: null, // Null assignees
       };
 
-      routeRest({ GET: taskWithNullAssignees, POST: taskWithNullAssignees });
-      mockClient.tasks.getTask.mockResolvedValue(taskWithNullAssignees);
-      mockClient.tasks.assignUserToTask.mockResolvedValue(undefined);
+      routeRest({ GET: taskWithNullAssignees, POST: taskWithNullAssignees, PUT: {} });
 
       const result = await updateTask({
         id: 1,
@@ -355,12 +368,15 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
       }, mockAuthManager);
 
       // Should add all assignees (since current is empty due to null), one
-      // additive per-user call each
-      expect(mockClient.tasks.assignUserToTask).toHaveBeenCalledWith(1, 1);
-      expect(mockClient.tasks.assignUserToTask).toHaveBeenCalledWith(1, 2);
-      expect(mockClient.tasks.bulkAssignUsersToTask).not.toHaveBeenCalled();
-      // Should not remove any assignees
-      expect(mockClient.tasks.removeUserFromTask).not.toHaveBeenCalled();
+      // additive per-user PUT /tasks/1/assignees { user_id } call each
+      expect(mockRest).toHaveBeenCalledWith(mockAuthManager, 'PUT', '/tasks/1/assignees', { user_id: 1 });
+      expect(mockRest).toHaveBeenCalledWith(mockAuthManager, 'PUT', '/tasks/1/assignees', { user_id: 2 });
+      // Should not remove any assignees (no DELETE to the assignees endpoint)
+      expect(mockRest).not.toHaveBeenCalledWith(
+        mockAuthManager,
+        'DELETE',
+        expect.stringContaining('/tasks/1/assignees/'),
+      );
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
@@ -500,12 +516,14 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
   describe('simple error context tests', () => {
     it('should handle assignee failure during createTask', async () => {
       const createdTask = { id: 1, title: 'Test Task', project_id: 1 };
-      // PUT (create) succeeds; DELETE (rollback) succeeds.
-      routeRest({ PUT: createdTask, DELETE: null });
-
-      // Mock assignee assignment failure
+      // PUT /projects/1/tasks (create) succeeds; PUT /tasks/1/assignees (assign)
+      // fails; DELETE (rollback) succeeds.
       const assigneeError = new Error('Assignee assignment failed');
-      mockClient.tasks.assignUserToTask.mockRejectedValue(assigneeError);
+      routeRest({
+        PUT: (path) =>
+          path === '/projects/1/tasks' ? createdTask : REJECT(assigneeError),
+        DELETE: null,
+      });
 
       await expect(
         createTask({
@@ -520,13 +538,14 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
 
     it('should handle rollback failure during createTask', async () => {
       const createdTask = { id: 1, title: 'Test Task', project_id: 1 };
-      // PUT (create) succeeds; DELETE (rollback) fails.
+      // PUT /projects/1/tasks (create) succeeds; PUT /tasks/1/labels (label add)
+      // fails; DELETE (rollback) also fails.
       const deleteError = new Error('Delete failed');
-      routeRest({ PUT: createdTask, DELETE: REJECT(deleteError) });
-
-      // Mock label assignment failure
       const labelError = new Error('Label assignment failed');
-      mockClient.tasks.addLabelToTask.mockRejectedValue(labelError);
+      routeRest({
+        PUT: (path) => (path === '/projects/1/tasks' ? createdTask : REJECT(labelError)),
+        DELETE: REJECT(deleteError),
+      });
 
       await expect(
         createTask({

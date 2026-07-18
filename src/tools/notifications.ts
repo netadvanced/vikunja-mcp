@@ -7,7 +7,7 @@
  *   - POST /notifications/{id}   -> toggle a single notification's read state
  *
  * All calls go through `vikunjaRestRequest` (direct-REST rule, see
- * docs/ENDPOINT-PLAYBOOK.md §3) — node-vikunja has no notifications support
+ * docs/ENDPOINT-PLAYBOOK.md §3) — legacy client has no notifications support
  * to migrate away from, so this is a pure new call site.
  */
 
@@ -16,7 +16,7 @@ import { z } from 'zod';
 import type { AuthManager } from '../auth/AuthManager';
 import type { VikunjaClientFactory } from '../client/VikunjaClientFactory';
 import { MCPError, ErrorCode } from '../types';
-import { getClientFromContext } from '../client';
+import { getAuthManagerFromContext } from '../client';
 import { logger } from '../utils/logger';
 import { validateAndConvertId } from '../utils/validation';
 import { createAorpResponse } from '../utils/response-factory';
@@ -128,7 +128,7 @@ export function registerNotificationsTool(
         );
       }
 
-      await getClientFromContext(); // Ensure client is initialized
+      await getAuthManagerFromContext(); // Ensure the session is initialized
       const subcommand = args.subcommand;
 
       logger.debug('Notifications tool called', { subcommand, args });

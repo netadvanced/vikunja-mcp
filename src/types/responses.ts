@@ -3,7 +3,10 @@
  * Replaces over-engineered AORP system with clean response types
  */
 
-import type { Task } from 'node-vikunja';
+import type { components } from './generated/vikunja-openapi';
+
+/** `models.Task` per the OpenAPI spec — task shape carried in responses. */
+type Task = components['schemas']['models.Task'];
 
 /**
  * Task-specific response data structure

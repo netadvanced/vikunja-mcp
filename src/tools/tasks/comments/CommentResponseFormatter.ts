@@ -103,11 +103,13 @@ export const commentResponseFormatter = {
         : {})
     };
 
-    // Create proper AORP response instead of casting StandardTaskResponse
     const aorpResponse = createStandardResponse(
       response.operation || 'unknown',
       response.message || 'Operation completed',
-      response,
+      // StandardTaskResponse carries the generated `models.Task` (all fields
+      // spec-optional); the formatter's `ResponseData` wants the local `Task`.
+      // The formatter reads fields defensively, so narrow via the param type.
+      response as unknown as Parameters<typeof createStandardResponse>[2],
       safeMetadata
     );
 

@@ -234,17 +234,17 @@ describe('Tasks CRUD - Final Coverage', () => {
         assignees: [{ id: 1 }, { id: 2 }],
       };
 
-      // analyzeUpdateState's GET (REST) + POST update (REST)
-      mockRest
-        .mockResolvedValueOnce(taskWithAssignees)
-        .mockResolvedValueOnce(taskWithAssignees);
-      // updateTaskAssignees's diff-calculation GET (still node-vikunja client)
-      mockClient.tasks.getTask.mockResolvedValueOnce(taskWithAssignees);
-
-      // Mock successful addition but failed removal with non-auth error
-      mockClient.tasks.assignUserToTask.mockResolvedValue(undefined);
+      // All calls flow through vikunjaRestRequest now: GET routes both
+      // analyzeUpdateState's fetch and updateTaskAssignees's diff-calc fetch;
+      // POST is the update; PUT /tasks/1/assignees adds user 3 (success);
+      // DELETE /tasks/1/assignees/2 removes user 2 and fails with a non-auth error.
       const nonAuthError = new Error('Network timeout during remove operation');
-      mockClient.tasks.removeUserFromTask.mockRejectedValue(nonAuthError);
+      mockRest.mockImplementation((_auth: unknown, method: string, path: string) => {
+        if (method === 'GET' || method === 'POST') return Promise.resolve(taskWithAssignees);
+        if (method === 'PUT') return Promise.resolve(undefined); // add assignee 3
+        if (method === 'DELETE') return Promise.reject(nonAuthError); // remove assignee 2
+        return Promise.resolve(undefined);
+      });
 
       await expect(
         updateTask({
@@ -267,15 +267,15 @@ describe('Tasks CRUD - Final Coverage', () => {
         assignees: [{ id: 1 }, { id: 2 }],
       };
 
-      mockRest
-        .mockResolvedValueOnce(taskWithAssignees) // analyzeUpdateState's GET
-        .mockResolvedValueOnce(taskWithAssignees); // POST update
-      mockClient.tasks.getTask.mockResolvedValueOnce(taskWithAssignees); // assignee diff calculation
-
-      // Mock successful addition but failed removal with non-Error object
-      mockClient.tasks.assignUserToTask.mockResolvedValue(undefined);
+      // GET/POST succeed; PUT adds assignee 3; DELETE (remove assignee 2)
+      // rejects with a non-Error object.
       const nonErrorObject = { status: 500, error: 'Database connection lost' };
-      mockClient.tasks.removeUserFromTask.mockRejectedValue(nonErrorObject);
+      mockRest.mockImplementation((_auth: unknown, method: string) => {
+        if (method === 'GET' || method === 'POST') return Promise.resolve(taskWithAssignees);
+        if (method === 'PUT') return Promise.resolve(undefined); // add assignee 3
+        if (method === 'DELETE') return Promise.reject(nonErrorObject); // remove assignee 2
+        return Promise.resolve(undefined);
+      });
 
       await expect(
         updateTask({

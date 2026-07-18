@@ -3,8 +3,13 @@
  * Adapted from the Deno prototype with additions from API documentation
  */
 
-// Import the Task type from node-vikunja to ensure compatibility
-import type { Task as VikunjaTask } from 'node-vikunja';
+// The API-facing Task shape used in response envelopes is the generated
+// `models.Task` (all fields optional per Go `omitempty`), so REST results can
+// be assigned to these response types without casting. The richer local
+// `Task` interface defined below stays for internal producers that build a
+// task object field-by-field.
+import type { components } from './generated/vikunja-openapi';
+type VikunjaTask = components['schemas']['models.Task'];
 
 // Authentication Types
 export interface LoginCredentials {

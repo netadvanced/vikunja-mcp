@@ -28,10 +28,10 @@ export async function assignUsers(
 
     // Verify the assignees actually persisted (defense-in-depth against silent
     // API failures — adapted from upstream PR #43). Fails open on fetch errors.
-    const missingIds = await AssigneeOperationsService.verifyAssignees(taskId, assigneeIds);
+    const missingIds = await AssigneeOperationsService.verifyAssignees(authManager, taskId, assigneeIds);
 
     // Fetch updated task data
-    const task = await AssigneeOperationsService.fetchTaskWithAssignees(taskId);
+    const task = await AssigneeOperationsService.fetchTaskWithAssignees(authManager, taskId);
 
     // Format and return response, surfacing a warning if verification failed
     const response = AssigneeResponseFormatter.formatAssignResponse(task);
@@ -68,7 +68,7 @@ export async function unassignUsers(
     await AssigneeOperationsService.removeUsersFromTask(authManager, taskId, userIds);
 
     // Fetch updated task data
-    const task = await AssigneeOperationsService.fetchTaskWithAssignees(taskId);
+    const task = await AssigneeOperationsService.fetchTaskWithAssignees(authManager, taskId);
 
     // Format and return response
     const response = AssigneeResponseFormatter.formatUnassignResponse(task);

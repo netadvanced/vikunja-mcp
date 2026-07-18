@@ -5,7 +5,7 @@
  * the full task-update endpoint (`POST /tasks/{id}`, a full-model-replace).
  * These operations therefore fetch the task, merge the `reminders` array,
  * and POST the whole task back via the shared
- * `src/utils/task-rest-transport.ts` helper, rather than node-vikunja's
+ * `src/utils/task-rest-transport.ts` helper, rather than the legacy client's
  * `getTask`/`updateTask` (see that file's doc comment for why this is a
  * standalone helper instead of a change to `TaskUpdateService.ts`).
  */

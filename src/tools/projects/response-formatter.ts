@@ -11,7 +11,7 @@ import type { AorpFactoryResult, AorpVerbosityLevel } from '../../types';
 import type { components } from '../../types/generated/vikunja-openapi';
 
 // Sourced from the vendored OpenAPI spec (docs/vikunja-openapi.json) — see
-// docs/API-SPEC.md, replacing node-vikunja's `Project` type (Wave D domain
+// docs/API-SPEC.md, replacing the legacy client's `Project` type (Wave D domain
 // migration, tracking issue #28).
 type Project = components['schemas']['models.Project'];
 
