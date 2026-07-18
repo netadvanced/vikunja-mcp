@@ -699,6 +699,141 @@ describe('Export Tool', () => {
     });
   });
 
+  describe('vikunja_user_export_status', () => {
+    it('should register the status tool', () => {
+      expect(mockServer.tool).toHaveBeenCalledWith(
+        'vikunja_user_export_status',
+        expect.stringContaining('GET /user/export'),
+        {},
+        expect.any(Object), // ToolAnnotations
+        expect.any(Function),
+      );
+    });
+
+    it('should retrieve the export status successfully, routed through vikunjaRestRequest with /api/v1 normalization', async () => {
+      jest.mocked(global.fetch).mockResolvedValueOnce({
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            id: 42,
+            created: '2026-07-01T00:00:00Z',
+            expires: '2026-08-01T00:00:00Z',
+            size: 12345,
+          }),
+        statusText: 'OK',
+      } as Response);
+
+      const handler = mockServer.tool.mock.calls.find(
+        (call) => call[0] === 'vikunja_user_export_status',
+      )?.at(-1);
+
+      const result = await handler?.({});
+
+      expect(result).toMatchObject({
+        content: [
+          {
+            type: 'text',
+            text: expect.any(String),
+          },
+        ],
+      });
+
+      const markdown = result.content[0].text;
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('Retrieved the current user data export status');
+      expect(markdown).toContain('42');
+      expect(markdown).toContain('12345');
+
+      // apiUrl has no /api/v1 suffix, so vikunjaRestRequest must normalize it.
+      expect(global.fetch).toHaveBeenCalledWith(
+        'https://vikunja.example.com/api/v1/user/export',
+        expect.objectContaining({
+          method: 'GET',
+          headers: expect.objectContaining({
+            Authorization: 'Bearer test-token',
+            'Content-Type': 'application/json',
+          }),
+        }),
+      );
+    });
+
+    it('should fall back to a null status and honest message when the server returns an empty body', async () => {
+      jest.mocked(global.fetch).mockResolvedValueOnce({
+        ok: true,
+        text: async () => '',
+        statusText: 'OK',
+      } as Response);
+
+      const handler = mockServer.tool.mock.calls.find(
+        (call) => call[0] === 'vikunja_user_export_status',
+      )?.at(-1);
+
+      const result = await handler?.({});
+
+      const markdown = result.content[0].text;
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('No user data export has been requested yet');
+    });
+
+    it('should handle missing authentication token', async () => {
+      jest.mocked(mockAuthManager.getSession).mockReturnValueOnce({
+        apiUrl: 'https://vikunja.example.com',
+        apiToken: null,
+      });
+
+      const handler = mockServer.tool.mock.calls.find(
+        (call) => call[0] === 'vikunja_user_export_status',
+      )?.at(-1);
+
+      await expect(handler?.({})).rejects.toThrow('No authentication token available');
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it('should handle API errors when checking export status', async () => {
+      jest.mocked(global.fetch).mockResolvedValueOnce({
+        ok: false,
+        status: 404,
+        text: async () => JSON.stringify({ message: 'Not found' }),
+        statusText: 'Not Found',
+      } as Response);
+
+      const handler = mockServer.tool.mock.calls.find(
+        (call) => call[0] === 'vikunja_user_export_status',
+      )?.at(-1);
+
+      await expect(handler?.({})).rejects.toThrow('Not found');
+    });
+
+    it('should surface HTTP status details when the error body is not JSON', async () => {
+      // Persistent: a bare 500 is retried by default, so every attempt must
+      // see the same failing response for the final message to match.
+      jest.mocked(global.fetch).mockResolvedValue({
+        ok: false,
+        status: 500,
+        text: async () => 'Invalid JSON',
+        statusText: 'Server Error',
+      } as Response);
+
+      const handler = mockServer.tool.mock.calls.find(
+        (call) => call[0] === 'vikunja_user_export_status',
+      )?.at(-1);
+
+      await expect(handler?.({})).rejects.toThrow('HTTP 500 Server Error');
+    });
+
+    it('should handle network connection errors', async () => {
+      // Persistent: "network" is a retryable message under the default
+      // policy, so every retry attempt must see the same rejection.
+      jest.mocked(global.fetch).mockRejectedValue(new Error('Network request failed'));
+
+      const handler = mockServer.tool.mock.calls.find(
+        (call) => call[0] === 'vikunja_user_export_status',
+      )?.at(-1);
+
+      await expect(handler?.({})).rejects.toThrow('Network request failed');
+    });
+  });
+
   describe('global read-only mode', () => {
     function getHandler(toolName: string): (args: Record<string, unknown>) => Promise<unknown> {
       const handler = mockServer.tool.mock.calls.find((call) => call[0] === toolName)?.at(-1);
@@ -752,6 +887,15 @@ describe('Export Tool', () => {
         isReadOnlyRejection(
           await callAndCatch(getHandler('vikunja_download_user_export'), { password: 'pw' }),
         ),
+      ).toBe(false);
+    });
+
+    it('vikunja_user_export_status (GET-only) is never rejected', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: true } });
+
+      expect(
+        isReadOnlyRejection(await callAndCatch(getHandler('vikunja_user_export_status'), {})),
       ).toBe(false);
     });
   });

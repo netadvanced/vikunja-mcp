@@ -426,14 +426,18 @@ const EXPECTED_TOOLS_PRESENT = [
 ].sort();
 
 // Config-gated absences expected with API-token auth (tk_*) and default
-// module config: users/export are JWT-only; tokens/admin are
-// deny-by-default ("dangerous") modules with no config file enabling them.
+// module config: users/export are JWT-only; tokens/caldav-tokens/admin are
+// deny-by-default ("dangerous") modules with no config file enabling them
+// (caldav-tokens is additionally JWT-only, like export — see
+// src/tools/caldav-tokens.ts).
 const EXPECTED_TOOLS_ABSENT = [
   'vikunja_users',
   'vikunja_export_project',
   'vikunja_request_user_export',
+  'vikunja_user_export_status',
   'vikunja_download_user_export',
   'vikunja_tokens',
+  'vikunja_caldav_tokens',
   'vikunja_admin',
 ];
 

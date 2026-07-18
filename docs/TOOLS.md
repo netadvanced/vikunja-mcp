@@ -317,6 +317,7 @@ narrower tool surface exposed to a client): `vikunja_task_bulk` (`operation`:
   - Exports all tasks with full details, all labels used in the project, and (optionally) the full child-project hierarchy with circular-reference detection
   - **Note:** requires JWT authentication; not registered for API-token sessions.
 - `vikunja_request_user_export` - Request a full user data export (required: `password` for security verification). You'll receive an email when the export is ready.
+- `vikunja_user_export_status` - Check whether a previously requested user data export is ready, and when (`GET /user/export`, returns `models.UserExportStatus`: `id`/`created`/`expires`/`size`). Completes the request → status → download trio.
 - `vikunja_download_user_export` - Confirm a previously requested user data export is ready on the server (required: `password`). Returns the server's confirmation message, not the export file itself — per the Vikunja API spec, this endpoint never returns the archive's contents, and MCP has no binary-attachment support. Retrieve the actual file from the Vikunja web UI or a direct API client using the same credentials.
 
 ## API Token Management — deny-by-default
@@ -332,6 +333,21 @@ narrower tool surface exposed to a client): `vikunja_task_bulk` (`operation`:
   - `create` - Create a new API token (`PUT /tokens`) (required: title, permissions — a map of resource group → allowed actions, e.g. `{"tasks":["read_all","update"]}`, valid keys/values come from the server's `GET /routes`; optional: expiresAt (ISO 8601), ownerId). The token's secret value is only ever returned in this response — it cannot be retrieved again afterwards.
   - `delete` - Delete a token by id (`DELETE /tokens/{tokenID}`) (required: tokenId)
   - **Note:** `/tokens` shares its authentication scheme with other user-scoped endpoints that have historically rejected `tk_*` API tokens (see docs/VIKUNJA_API_ISSUES.md #2) — a call made with an API-token session may be rejected server-side even though the tool itself is registered for both session types.
+
+## CalDAV Token Management — deny-by-default + JWT-only
+
+> **Reserved/disabled by default, and JWT-only.** `vikunja_caldav_tokens`
+> requires BOTH the `caldavTokens` module config key to be explicitly set to
+> `true` AND an active JWT session (see
+> [CONFIGURATION.md#module-gating](CONFIGURATION.md#module-gating)) — unlike
+> `vikunja_tokens`, the underlying `/user/settings/token/caldav*` endpoints
+> are JWT-only per the vendored OpenAPI spec, so module config can only
+> narrow this JWT-only gate, never expand it.
+
+- `vikunja_caldav_tokens` - Manage the current user's Vikunja CalDAV tokens **[Requires JWT authentication]** — separate credentials from API tokens (`vikunja_tokens`), used to authenticate third-party CalDAV clients against Vikunja's CalDAV interface
+  - `list` - List existing CalDAV tokens (`GET /user/settings/token/caldav`) — returns each token's id and created date only (the secret is never re-shown after creation)
+  - `create` - Generate a new CalDAV token (`PUT /user/settings/token/caldav`, no request body). The token's secret value is only ever returned in this response — it cannot be retrieved again afterwards.
+  - `delete` - Delete a CalDAV token by id (`DELETE /user/settings/token/caldav/{id}`) (required: tokenId)
 
 ## Instance Admin — deny-by-default + JWT-only
 

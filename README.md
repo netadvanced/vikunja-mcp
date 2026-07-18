@@ -96,15 +96,15 @@ Full install options, JWT vs. API-token auth, module gating, and every environme
 | **Collaborate** | `vikunja_teams`, `vikunja_users`\*, `vikunja_notifications`, `vikunja_subscriptions`, `vikunja_reactions` | Team membership, notifications, watch/react |
 | **Automate & move data** | `vikunja_webhooks`, `vikunja_batch_import`, `vikunja_export_project`\* | Webhooks, CSV/JSON import, project export |
 
-\* JWT authentication only.
+\* JWT authentication only. User data export also has request/status/download tools (`vikunja_request_user_export`, `vikunja_user_export_status`, `vikunja_download_user_export`), all JWT-only.
 
-Two more tools — `vikunja_tokens` and `vikunja_admin` — exist for API-token management and instance administration. Both are **disabled by default**; an operator opts in explicitly (see Configuration).
+Three more tools — `vikunja_tokens`, `vikunja_caldav_tokens`, and `vikunja_admin` — exist for API-token management, CalDAV-token management, and instance administration. All are **disabled by default**; an operator opts in explicitly (see Configuration).
 
 Full subcommand-by-subcommand reference: [`docs/TOOLS.md`](docs/TOOLS.md).
 
 ## Safety by design
 
-Every entity is a toggle you can disable in config, `vikunja_admin`/`vikunja_tokens` ship off until an operator opts in (and `vikunja_admin` additionally requires an active JWT session), and a global read-only mode can reject every write/destructive subcommand while reads keep working. Full details: [Configuration guide](docs/CONFIGURATION.md#module-gating).
+Every entity is a toggle you can disable in config, `vikunja_admin`/`vikunja_tokens`/`vikunja_caldav_tokens` ship off until an operator opts in (and `vikunja_admin`/`vikunja_caldav_tokens` additionally require an active JWT session), and a global read-only mode can reject every write/destructive subcommand while reads keep working. Full details: [Configuration guide](docs/CONFIGURATION.md#module-gating).
 
 ## Links
 

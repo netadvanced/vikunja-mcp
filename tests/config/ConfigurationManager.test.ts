@@ -39,6 +39,7 @@ describe('ConfigurationManager', () => {
     delete process.env.VIKUNJA_MCP_MODULE_ADMIN;
     delete process.env.VIKUNJA_MCP_MODULE_USER_DELETION;
     delete process.env.VIKUNJA_MCP_MODULE_TOKEN_MANAGEMENT;
+    delete process.env.VIKUNJA_MCP_MODULE_CALDAV_TOKENS;
     delete process.env.VIKUNJA_MCP_READ_ONLY;
     delete process.env.VIKUNJA_MCP_TEMPLATES_FILE;
 
@@ -469,6 +470,13 @@ describe('ConfigurationManager', () => {
       expect(config.modules.admin).toBe(false);
       expect(config.modules.userDeletion).toBe(false);
       expect(config.modules.tokenManagement).toBe(false);
+      expect(config.modules.caldavTokens).toBe(false);
+    });
+
+    it('should honor VIKUNJA_MCP_MODULE_CALDAV_TOKENS=true to enable the reserved caldavTokens module', async () => {
+      process.env.VIKUNJA_MCP_MODULE_CALDAV_TOKENS = 'true';
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.modules.caldavTokens).toBe(true);
     });
 
     it('should silently skip a missing default config file', async () => {

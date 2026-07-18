@@ -72,6 +72,10 @@ jest.mock('../../src/tools/tokens', () => ({
   registerTokensTool: jest.fn(),
 }));
 
+jest.mock('../../src/tools/caldav-tokens', () => ({
+  registerCaldavTokensTool: jest.fn(),
+}));
+
 jest.mock('../../src/tools/admin', () => ({
   registerAdminTool: jest.fn(),
 }));
@@ -92,6 +96,7 @@ import { registerNotificationsTool } from '../../src/tools/notifications';
 import { registerSubscriptionsTool } from '../../src/tools/subscriptions';
 import { registerReactionsTool } from '../../src/tools/reactions';
 import { registerTokensTool } from '../../src/tools/tokens';
+import { registerCaldavTokensTool } from '../../src/tools/caldav-tokens';
 import { registerAdminTool } from '../../src/tools/admin';
 
 describe('Tool Registration', () => {
@@ -117,6 +122,7 @@ describe('Tool Registration', () => {
     'VIKUNJA_MCP_MODULE_ADMIN',
     'VIKUNJA_MCP_MODULE_USER_DELETION',
     'VIKUNJA_MCP_MODULE_TOKEN_MANAGEMENT',
+    'VIKUNJA_MCP_MODULE_CALDAV_TOKENS',
   ];
 
   beforeEach(() => {
@@ -532,6 +538,75 @@ describe('Tool Registration', () => {
         registerTools(mockServer, mockAuthManager, undefined);
 
         expect(registerTokensTool).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('caldavTokens module (deny-by-default + JWT-only)', () => {
+      it('should NOT register vikunja_caldav_tokens by default', () => {
+        const mockClientFactory = { test: 'factory' };
+        mockAuthManager.isAuthenticated.mockReturnValue(true);
+        mockAuthManager.getAuthType.mockReturnValue('jwt');
+
+        registerTools(mockServer, mockAuthManager, mockClientFactory);
+
+        expect(registerCaldavTokensTool).not.toHaveBeenCalled();
+      });
+
+      it('should register vikunja_caldav_tokens when enabled AND JWT-authenticated', () => {
+        process.env.VIKUNJA_MCP_MODULE_CALDAV_TOKENS = 'true';
+        const mockClientFactory = { test: 'factory' };
+        mockAuthManager.isAuthenticated.mockReturnValue(true);
+        mockAuthManager.getAuthType.mockReturnValue('jwt');
+
+        registerTools(mockServer, mockAuthManager, mockClientFactory);
+
+        expect(registerCaldavTokensTool).toHaveBeenCalledTimes(1);
+        expect(registerCaldavTokensTool).toHaveBeenCalledWith(
+          mockServer,
+          mockAuthManager,
+          mockClientFactory,
+        );
+      });
+
+      it('should stay unregistered when enabled but authenticated with an API token (config narrows auth, never expands it)', () => {
+        process.env.VIKUNJA_MCP_MODULE_CALDAV_TOKENS = 'true';
+        const mockClientFactory = { test: 'factory' };
+        mockAuthManager.isAuthenticated.mockReturnValue(true);
+        mockAuthManager.getAuthType.mockReturnValue('api-token');
+
+        registerTools(mockServer, mockAuthManager, mockClientFactory);
+
+        expect(registerCaldavTokensTool).not.toHaveBeenCalled();
+      });
+
+      it('should stay unregistered when JWT-authenticated but the module is left at its default (off)', () => {
+        const mockClientFactory = { test: 'factory' };
+        mockAuthManager.isAuthenticated.mockReturnValue(true);
+        mockAuthManager.getAuthType.mockReturnValue('jwt');
+
+        registerTools(mockServer, mockAuthManager, mockClientFactory);
+
+        expect(registerCaldavTokensTool).not.toHaveBeenCalled();
+      });
+
+      it('should stay unregistered when enabled but not authenticated at all', () => {
+        process.env.VIKUNJA_MCP_MODULE_CALDAV_TOKENS = 'true';
+        const mockClientFactory = { test: 'factory' };
+        mockAuthManager.isAuthenticated.mockReturnValue(false);
+
+        registerTools(mockServer, mockAuthManager, mockClientFactory);
+
+        expect(registerCaldavTokensTool).not.toHaveBeenCalled();
+      });
+
+      it('should not register vikunja_caldav_tokens without a clientFactory even when enabled', () => {
+        process.env.VIKUNJA_MCP_MODULE_CALDAV_TOKENS = 'true';
+        mockAuthManager.isAuthenticated.mockReturnValue(true);
+        mockAuthManager.getAuthType.mockReturnValue('jwt');
+
+        registerTools(mockServer, mockAuthManager, undefined);
+
+        expect(registerCaldavTokensTool).not.toHaveBeenCalled();
       });
     });
 

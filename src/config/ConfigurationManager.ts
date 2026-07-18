@@ -432,6 +432,12 @@ export class ConfigurationManager {
       process.env.VIKUNJA_MCP_MODULE_TOKEN_MANAGEMENT,
       true
     );
+    this.assignEnvValue(
+      modules,
+      'caldavTokens',
+      process.env.VIKUNJA_MCP_MODULE_CALDAV_TOKENS,
+      true
+    );
     if (Object.keys(modules).length > 0) {
       result.modules = modules;
     }

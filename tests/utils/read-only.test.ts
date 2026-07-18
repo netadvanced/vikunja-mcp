@@ -68,6 +68,13 @@ describe('read-only.ts', () => {
       expect(classifySubcommand('vikunja_export_project', 'export')).toBe('read');
       expect(classifySubcommand('vikunja_request_user_export', 'request')).toBe('write');
       expect(classifySubcommand('vikunja_download_user_export', 'download')).toBe('read');
+      expect(classifySubcommand('vikunja_user_export_status', 'status')).toBe('read');
+    });
+
+    it('classifies vikunja_caldav_tokens subcommands', () => {
+      expect(classifySubcommand('vikunja_caldav_tokens', 'list')).toBe('read');
+      expect(classifySubcommand('vikunja_caldav_tokens', 'create')).toBe('write');
+      expect(classifySubcommand('vikunja_caldav_tokens', 'delete')).toBe('destructive');
     });
   });
 
@@ -95,6 +102,7 @@ describe('read-only.ts', () => {
     it('is true for a tool whose entire surface is read', () => {
       expect(isToolReadOnly('vikunja_auth')).toBe(true);
       expect(isToolReadOnly('vikunja_export_project')).toBe(true);
+      expect(isToolReadOnly('vikunja_user_export_status')).toBe(true);
     });
 
     it('is false for a tool with any write/destructive subcommand', () => {
@@ -111,6 +119,7 @@ describe('read-only.ts', () => {
     it('is true when any subcommand is destructive', () => {
       expect(isToolDestructive('vikunja_tasks')).toBe(true);
       expect(isToolDestructive('vikunja_tokens')).toBe(true);
+      expect(isToolDestructive('vikunja_caldav_tokens')).toBe(true);
     });
 
     it('is false when no subcommand is destructive', () => {

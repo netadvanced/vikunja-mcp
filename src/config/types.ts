@@ -118,7 +118,12 @@ export function isModuleEnabled(toggle: ModuleToggle): boolean {
 // dangerous/destructive in nature. These have no registered tools yet, but
 // the config keys are reserved now so future admin/user-deletion/token-
 // management tools plug into the same deny-by-default gating from day one.
-export const DANGEROUS_MODULE_KEYS = ['admin', 'userDeletion', 'tokenManagement'] as const;
+export const DANGEROUS_MODULE_KEYS = [
+  'admin',
+  'userDeletion',
+  'tokenManagement',
+  'caldavTokens',
+] as const;
 
 export const ModulesConfigSchema = z.object({
   // Ordinary modules — default ON.
@@ -141,6 +146,16 @@ export const ModulesConfigSchema = z.object({
   admin: ModuleToggleSchema.default(false),
   userDeletion: ModuleToggleSchema.default(false),
   tokenManagement: ModuleToggleSchema.default(false),
+
+  // Gates `vikunja_caldav_tokens` (CalDAV token list/create/delete for the
+  // connected account). Deny-by-default — credential-adjacent, and a
+  // created token's secret value is only ever shown once (see
+  // src/tools/caldav-tokens.ts). Unlike `tokenManagement`, the underlying
+  // `/user/settings/token/caldav*` endpoints are JWT-only per the vendored
+  // OpenAPI spec (`security: [{JWTKeyAuth: []}]`), so registration composes
+  // with the same JWT-only gate as `users`/`export`/`admin` — see
+  // src/tools/index.ts.
+  caldavTokens: ModuleToggleSchema.default(false),
 });
 
 export type ModulesConfig = z.infer<typeof ModulesConfigSchema>;

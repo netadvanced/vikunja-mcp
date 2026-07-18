@@ -267,8 +267,9 @@ const BATCH_IMPORT: ClassificationTable = {
 };
 
 // vikunja_export_project / vikunja_request_user_export /
-// vikunja_download_user_export have no subcommand field either — each is
-// registered as its own single-purpose tool. Fixed keys below.
+// vikunja_download_user_export / vikunja_user_export_status have no
+// subcommand field either — each is registered as its own single-purpose
+// tool. Fixed keys below.
 const EXPORT_PROJECT: ClassificationTable = {
   // GET-only recursive walk of project/task/label data — never mutates.
   export: 'read',
@@ -286,6 +287,12 @@ const DOWNLOAD_USER_EXPORT: ClassificationTable = {
   // models.Message, never the archive) — no new state is created by this
   // call, so it is classified as a read for read-only-mode purposes.
   download: 'read',
+};
+
+const USER_EXPORT_STATUS: ClassificationTable = {
+  // GET /user/export returns models.UserExportStatus (id/created/expires/
+  // size) — a pure read, never mutates server state.
+  status: 'read',
 };
 
 const NOTIFICATIONS: ClassificationTable = {
@@ -306,6 +313,12 @@ const REACTIONS: ClassificationTable = {
 };
 
 const TOKENS: ClassificationTable = {
+  list: 'read',
+  create: 'write',
+  delete: 'destructive',
+};
+
+const CALDAV_TOKENS: ClassificationTable = {
   list: 'read',
   create: 'write',
   delete: 'destructive',
@@ -343,10 +356,12 @@ export const TOOL_CLASSIFICATIONS: Record<string, ClassificationTable> = {
   vikunja_export_project: EXPORT_PROJECT,
   vikunja_request_user_export: REQUEST_USER_EXPORT,
   vikunja_download_user_export: DOWNLOAD_USER_EXPORT,
+  vikunja_user_export_status: USER_EXPORT_STATUS,
   vikunja_notifications: NOTIFICATIONS,
   vikunja_subscriptions: SUBSCRIPTIONS,
   vikunja_reactions: REACTIONS,
   vikunja_tokens: TOKENS,
+  vikunja_caldav_tokens: CALDAV_TOKENS,
   vikunja_admin: ADMIN,
 };
 

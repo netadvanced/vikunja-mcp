@@ -201,12 +201,13 @@ requiring any config migration.
 | `admin` | **OFF** ⚠️ | Gates `vikunja_admin` (instance-admin operations: overview, all-projects listing + owner reassignment, user list/create/delete, admin-flag + status toggles). Deny-by-default AND JWT-only — see [Composing with Auth-Type Gating](#composing-with-auth-type-gating). `delete-user` additionally requires an explicit `confirm: true` tool argument. |
 | `userDeletion` | **OFF** (reserved) | No tool implements this yet. Deny-by-default — destructive. |
 | `tokenManagement` | **OFF** ⚠️ | Gates `vikunja_tokens` (API token list/create/delete for the connected account). Deny-by-default — credential-adjacent. No auth-type restriction at registration time (unlike `admin`/`users`/`export`), but the underlying `/tokens` endpoints may reject API-token sessions server-side — see `src/tools/tokens.ts`. |
+| `caldavTokens` | **OFF** ⚠️ | Gates `vikunja_caldav_tokens` (CalDAV token list/create/delete for the connected account). Deny-by-default — credential-adjacent, and a created token's secret is shown only once. Unlike `tokenManagement`, the underlying `/user/settings/token/caldav*` endpoints ARE JWT-only per the vendored OpenAPI spec, so registration composes with the same JWT-only gate as `users`/`export`/`admin` — see [Composing with Auth-Type Gating](#composing-with-auth-type-gating) and `src/tools/caldav-tokens.ts`. |
 
 Ordinary modules default **ON** (matching pre-existing behavior — this system is
-additive, not a breaking change). The three reserved "dangerous" modules default **OFF**
-(deny-by-default): `admin` and `tokenManagement` now have tools wired to them and ship
-already gated closed until an operator opts in; `userDeletion` remains fully reserved
-(no tool yet) for the same reason.
+additive, not a breaking change). The four reserved "dangerous" modules default **OFF**
+(deny-by-default): `admin`, `tokenManagement`, and `caldavTokens` now have tools wired to
+them and ship already gated closed until an operator opts in; `userDeletion` remains
+fully reserved (no tool yet) for the same reason.
 
 ### Module Env Var Overrides
 
@@ -233,6 +234,7 @@ VIKUNJA_MCP_MODULE_REACTIONS=true
 VIKUNJA_MCP_MODULE_ADMIN=false
 VIKUNJA_MCP_MODULE_USER_DELETION=false
 VIKUNJA_MCP_MODULE_TOKEN_MANAGEMENT=false
+VIKUNJA_MCP_MODULE_CALDAV_TOKENS=false
 ```
 
 As with every other setting, these env vars always win over the config file.
@@ -264,6 +266,14 @@ API-token session, `vikunja_admin` stays unregistered regardless of the config v
 JWT-only gate — `vikunja_tokens` registers for either session type once its module key
 is enabled, since the underlying endpoints' auth requirement is a runtime server
 behavior rather than something this server enforces at registration time.
+
+`caldavTokens`, by contrast, DOES compose with the JWT-only gate, the same way
+`admin` does — `vikunja_caldav_tokens` registers only when both
+`VIKUNJA_MCP_MODULE_CALDAV_TOKENS=true` (or the config-file equivalent) AND the
+session is JWT-authenticated, because the vendored OpenAPI spec scopes every
+`/user/settings/token/caldav*` operation to `JWTKeyAuth` only (no `APIKeyAuth` entry) —
+unlike `/tokens`, this is enforced at registration time, not left for the server to
+reject at runtime.
 
 ## Global Read-Only Safety Mode
 

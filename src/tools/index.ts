@@ -39,6 +39,7 @@ import { registerNotificationsTool } from './notifications';
 import { registerSubscriptionsTool } from './subscriptions';
 import { registerReactionsTool } from './reactions';
 import { registerTokensTool } from './tokens';
+import { registerCaldavTokensTool } from './caldav-tokens';
 import { registerAdminTool } from './admin';
 
 // Re-export for testing
@@ -64,6 +65,7 @@ export {
   registerSubscriptionsTool,
   registerReactionsTool,
   registerTokensTool,
+  registerCaldavTokensTool,
   registerAdminTool,
 };
 
@@ -203,6 +205,19 @@ export function registerTools(
     }
     if (jwtAuthenticated && isModuleEnabled(modules.export)) {
       registerExportTool(server, authManager, clientFactory);
+    }
+
+    // Register CalDAV token management tool. Reserved/deny-by-default AND
+    // JWT-only: both the 'caldavTokens' module config key and JWT auth must
+    // allow it (config can only narrow what auth permits, never expand it —
+    // same composition as users/export/admin). Unlike 'tokenManagement'
+    // (vikunja_tokens, which registers for either session type), the
+    // underlying /user/settings/token/caldav* endpoints are JWT-only per
+    // the vendored OpenAPI spec, so the JWT gate is enforced here at
+    // registration time rather than left to the server to reject at
+    // runtime — see src/tools/caldav-tokens.ts.
+    if (jwtAuthenticated && isModuleEnabled(modules.caldavTokens)) {
+      registerCaldavTokensTool(server, authManager, clientFactory);
     }
 
     // Register instance-admin tool. Reserved/deny-by-default AND JWT-only:

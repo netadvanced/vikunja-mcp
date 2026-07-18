@@ -25,6 +25,7 @@ type VikunjaProject = components['schemas']['models.Project'];
 type VikunjaTask = components['schemas']['models.Task'];
 type VikunjaLabel = components['schemas']['models.Label'];
 type VikunjaUser = components['schemas']['user.User'];
+type VikunjaUserExportStatus = components['schemas']['models.UserExportStatus'];
 
 /**
  * Shape of the JSON body Vikunja returns from both `POST /user/export/request`
@@ -343,6 +344,62 @@ export function registerExportTool(server: McpServer, authManager: AuthManager, 
             serverMessage: result?.message ?? null,
             fileDeliveredThroughThisTool: false,
           },
+        );
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: formatAorpAsMarkdown(response),
+            },
+          ],
+        };
+      } catch (error) {
+        // MCP validates schema before calling handler, so this is unreachable
+        /* istanbul ignore if */
+        if (error instanceof z.ZodError) {
+          /* istanbul ignore next 4 */
+          throw new MCPError(
+            ErrorCode.VALIDATION_ERROR,
+            `Invalid parameters: ${error.errors.map((e) => `${e.path.join('.')}: ${e.message}`).join(', ')}`,
+          );
+        }
+        throw error;
+      }
+    },
+  );
+
+  // Check the status of a previously requested user data export
+  server.tool(
+    'vikunja_user_export_status',
+    withReadOnlyNote(
+      'vikunja_user_export_status',
+      'Check whether a previously requested user data export is ready, and when. Calls GET /user/export, which returns models.UserExportStatus — id, created (when the export was generated), expires (when it will be purged), and size (bytes) — as JSON, not the export archive itself. Completes the request -> status -> download trio: use vikunja_request_user_export to start preparing an export, this tool to check whether/when it finished, and vikunja_download_user_export to confirm it is ready before retrieving the actual file from the Vikunja web UI or a direct API client (MCP has no binary-attachment support).',
+    ),
+    {},
+    getToolAnnotations('vikunja_user_export_status'),
+    async () => {
+      try {
+        if (!authManager.getSession().apiToken) {
+          throw new MCPError(ErrorCode.AUTH_REQUIRED, 'No authentication token available');
+        }
+
+        // No subcommand field on this single-purpose tool — 'status' is
+        // its fixed classification-table key (GET-only, always 'read').
+        assertWriteAllowed('vikunja_user_export_status', 'status');
+
+        const status = await vikunjaRestRequest<VikunjaUserExportStatus>(
+          authManager,
+          'GET',
+          '/user/export',
+        );
+
+        const response = createStandardResponse(
+          'success',
+          status
+            ? 'Retrieved the current user data export status.'
+            : 'No user data export has been requested yet, or the server returned no status.',
+          { status: status ?? null },
         );
 
         return {
