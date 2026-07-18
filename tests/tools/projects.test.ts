@@ -476,10 +476,9 @@ describe('Projects Tool', () => {
       // MCP-layer e2e harness (scripts/mcp-e2e.ts) against a real Vikunja
       // server, where every project starts out at the root.
       const rootProject: Project = { ...mockProject, id: 5, parent_project_id: 0 };
-      mockClient.projects.getProject.mockResolvedValue(rootProject);
-      mockClient.projects.updateProject.mockResolvedValue({
-        ...rootProject,
-        description: 'updated description',
+      routeFetch({
+        'GET /projects/5': mockResponse({ body: rootProject }),
+        'POST /projects/5': mockResponse({ body: { ...rootProject, description: 'updated description' } }),
       });
 
       await callTool('update', {
@@ -488,8 +487,7 @@ describe('Projects Tool', () => {
         // parentProjectId intentionally omitted, like a normal partial update
       });
 
-      expect(mockClient.projects.updateProject).toHaveBeenCalledWith(
-        5,
+      expect(bodyOf('POST', '/projects/5')).toEqual(
         expect.objectContaining({
           description: 'updated description',
           parent_project_id: 0,

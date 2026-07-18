@@ -87,6 +87,41 @@ describe('Tasks Tool', () => {
     });
   }
 
+  /**
+   * Builds a fetch router for the bulk describe blocks. Bulk core CRUD
+   * (create/get/update/delete) went through vikunjaRestRequest -> fetch in
+   * the #70 migration, so those fetches are delegated back to the
+   * node-vikunja `mockClient.tasks` methods each test already configures and
+   * asserts on. setTaskLabels' POST /tasks/{id}/labels/bulk (#71) is routed
+   * to `labelWrite`, letting label-write failures be simulated without
+   * affecting the core create/update fetches.
+   */
+  function makeTaskCrudFetchRouter(labelWrite: jest.Mock): jest.Mock {
+    return jest.fn(async (url: string, init?: { method?: string; body?: string }) => {
+      const pathname = new URL(url).pathname.replace(/^\/api\/v\d+/, '');
+      const method = init?.method ?? 'GET';
+      const body = init?.body !== undefined ? JSON.parse(init.body) : undefined;
+
+      const labelBulkMatch = /^\/tasks\/(\d+)\/labels\/bulk$/.exec(pathname);
+      if (method === 'POST' && labelBulkMatch?.[1] !== undefined) {
+        await labelWrite(Number(labelBulkMatch[1]), body);
+        return jsonResponse({ labels: [] });
+      }
+      const taskIdMatch = /^\/tasks\/(\d+)$/.exec(pathname);
+      if (taskIdMatch?.[1] !== undefined) {
+        const taskId = Number(taskIdMatch[1]);
+        if (method === 'GET') return jsonResponse(await mockClient.tasks.getTask(taskId));
+        if (method === 'POST') return jsonResponse(await mockClient.tasks.updateTask(taskId, body));
+        if (method === 'DELETE') return jsonResponse(await mockClient.tasks.deleteTask(taskId));
+      }
+      const projectTasksMatch = /^\/projects\/(-?\d+)\/tasks$/.exec(pathname);
+      if (method === 'PUT' && projectTasksMatch?.[1] !== undefined) {
+        return jsonResponse(await mockClient.tasks.createTask(Number(projectTasksMatch[1]), body));
+      }
+      throw new Error(`makeTaskCrudFetchRouter: unhandled ${method} ${pathname}`);
+    });
+  }
+
   // Mock data
   const mockTask: Task = {
     id: 1,
@@ -1906,11 +1941,14 @@ describe('Tasks Tool', () => {
   });
 
   describe('bulk-update subcommand', () => {
-    // setTaskLabels (src/utils/label-bulk.ts) now calls the direct-REST
-    // helper for POST /tasks/{id}/labels/bulk rather than node-vikunja's
-    // updateTaskLabels — default to success here (only the labels-field
-    // test below actually exercises it).
+    // Bulk core ops (GET/POST /tasks/{id}) go through vikunjaRestRequest ->
+    // fetch after the #70 migration, so fetch is routed back to the
+    // node-vikunja `mockClient.tasks` methods (keeping every call-count/arg
+    // assertion valid). setTaskLabels' POST /tasks/{id}/labels/bulk (#71) is
+    // routed to `labelWrite` so label-write failures can be simulated
+    // independently of the core create/update fetches.
     let fetchMock: jest.Mock;
+    let labelWrite: jest.Mock;
     let originalFetch: typeof fetch;
 
     beforeEach(() => {
@@ -1927,12 +1965,8 @@ describe('Tasks Tool', () => {
       mockClient.tasks.assignUserToTask = jest.fn().mockResolvedValue({});
 
       originalFetch = globalThis.fetch;
-      fetchMock = jest.fn().mockResolvedValue({
-        ok: true,
-        status: 200,
-        statusText: 'OK',
-        text: jest.fn(async () => JSON.stringify({ labels: [] })),
-      } as unknown as Response);
+      labelWrite = jest.fn().mockResolvedValue(undefined);
+      fetchMock = makeTaskCrudFetchRouter(labelWrite);
       globalThis.fetch = fetchMock as unknown as typeof fetch;
       circuitBreakerRegistry.clear();
     });
@@ -2613,11 +2647,13 @@ describe('Tasks Tool', () => {
     // breaker state. Bypass it the same way tests/tools/tasks/bulk-operations.test.ts
     // does, so each test only exercises the mocked client call it configured.
     let withRetrySpy: ReturnType<typeof jest.spyOn>;
-    // setTaskLabels (src/utils/label-bulk.ts) now calls the direct-REST
-    // helper for POST /tasks/{id}/labels/bulk rather than node-vikunja's
-    // updateTaskLabels — default to success here; tests that specifically
-    // exercise a label-write failure override fetchMock.
+    // Bulk core ops (PUT /projects/{id}/tasks create, DELETE /tasks/{id}
+    // cleanup) go through vikunjaRestRequest -> fetch after the #70
+    // migration, routed back to the node-vikunja `mockClient.tasks` methods.
+    // setTaskLabels' POST /tasks/{id}/labels/bulk (#71) is routed to
+    // `labelWrite`; tests that exercise a label-write failure override it.
     let fetchMock: jest.Mock;
+    let labelWrite: jest.Mock;
     let originalFetch: typeof fetch;
 
     beforeEach(() => {
@@ -2626,12 +2662,8 @@ describe('Tasks Tool', () => {
         .mockImplementation((operation: () => Promise<unknown>) => operation());
 
       originalFetch = globalThis.fetch;
-      fetchMock = jest.fn().mockResolvedValue({
-        ok: true,
-        status: 200,
-        statusText: 'OK',
-        text: jest.fn(async () => JSON.stringify({ labels: [] })),
-      } as unknown as Response);
+      labelWrite = jest.fn().mockResolvedValue(undefined);
+      fetchMock = makeTaskCrudFetchRouter(labelWrite);
       globalThis.fetch = fetchMock as unknown as typeof fetch;
       circuitBreakerRegistry.clear();
     });
@@ -2837,7 +2869,7 @@ describe('Tasks Tool', () => {
         project_id: 1,
       });
 
-      fetchMock.mockRejectedValue(new Error('Label update failed'));
+      labelWrite.mockRejectedValue(new Error('Label update failed'));
       mockClient.tasks.deleteTask.mockResolvedValue(undefined);
 
       await expect(
@@ -2870,7 +2902,7 @@ describe('Tasks Tool', () => {
         project_id: 1,
       });
 
-      fetchMock.mockRejectedValue(new Error('Label update failed'));
+      labelWrite.mockRejectedValue(new Error('Label update failed'));
       mockClient.tasks.deleteTask.mockRejectedValue(new Error('Delete failed'));
 
       await expect(
