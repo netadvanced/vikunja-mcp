@@ -7,6 +7,7 @@ Companion documents:
 - **[docs/API-COVERAGE.md](API-COVERAGE.md)** — the raw endpoint-by-endpoint audit this plan was built from, fully re-verified row-by-row on 2026-07-18 against `main` @ `ce81bd7` (post node-vikunja removal, Waves A–F). Its summary counts were recounted directly from the row markers on the same date (see §4) and match — no drift.
 - **[docs/API_NOTES.md](API_NOTES.md)** / **[docs/VIKUNJA_API_ISSUES.md](VIKUNJA_API_ISSUES.md)** — hard-won implementation gotchas and known upstream API quirks. Read before touching endpoint code.
 - **[docs/ENDPOINT-PLAYBOOK.md](ENDPOINT-PLAYBOOK.md)** — the how-to conventions for implementing new capabilities.
+- **[docs/ENDPOINT-TAIL-RETRIAGE.md](ENDPOINT-TAIL-RETRIAGE.md)** — the C2 (2026-07-18) re-examination of all 64 not-implemented ops under direct REST, with the grouped IMPLEMENT backlog (see §4).
 - **[docs/history/2026-07-18-competitive-review.md](history/2026-07-18-competitive-review.md)** — redacted snapshot of the 2026-07-18 competitive analysis against `@eargollo/vikunja-mcp`, the source for §3a's positioning notes.
 
 ---
@@ -72,6 +73,7 @@ This log is **append-only** — never edit or remove an existing row; add new da
 | 10 | Go rewrite: **parked** (not rejected). See §3a(a) for the case and the reopening condition. | 2026-07-18 |
 | 11 | SQLite persistence: **parked** in favor of an opt-in JSON file store for templates. See §3a(b) for the reopening trigger. | 2026-07-18 |
 | 12 | Positioning adopted from the 2026-07-18 competitive review: global read-only mode + MCP tool annotations (adopted tonight, sibling PRs); version-pinned live e2e (adopted earlier, Wave D). See §3b. | 2026-07-18 |
+| 13 | Endpoint-tail re-triage (C2): all 64 `❌` ops re-examined under direct REST. §4's won't-implement list rewritten to a 20 IMPLEMENT / 36 PARKED / 8 NEVER split (no coverage-count change); backlog G1–G7 in `docs/ENDPOINT-TAIL-RETRIAGE.md`. Supersedes the reasoning (not the append-only history) of decision 4's original won't-implement framing. | 2026-07-18 |
 
 ### §3a. Evaluated options (parked)
 
@@ -118,18 +120,25 @@ Vikunja documents **169 API operations**. Fully re-verified row-by-row on 2026-0
 
 This re-verification found that most of the "implemented (bug)"/"partial" rows from the original audit had already been fixed by Wave B/C/D code changes but never re-graded in the coverage table — 8 of the 9 "implemented (bug)" rows and 1 of the 3 "partial" rows moved to ✅ on this pass, alongside 20 rows moving straight from ❌ to ✅ (project duplication, project views CRUD, Kanban bucket CRUD, direct user/team project sharing, and the export request/download tools, all of which existed in code but were undercounted). Only 1 ⚠️ row and 2 by-design 🟡 rows remain; see `docs/API-COVERAGE.md`'s Issues table and Correctness Issues section for what's still genuinely open. This closes the "post-removal polish queue" re-grading item previously tracked here and in issue #28.
 
-**Won't implement (and why):**
-- **Binary/blob endpoints** (project backgrounds, Unsplash, avatars, TOTP QR codes): MCP has no binary content channel; nothing useful to expose.
-- **Credential ceremonies** (login, register, OIDC, password reset/change, TOTP enroll/enable/disable, email confirm): this server deliberately uses a pre-provisioned token; interactive auth flows belong to the web UI, and an AI assistant handling password ceremonies is an anti-pattern.
-- **CalDAV tokens**: niche, and the underlying library call was broken upstream anyway (moot now that we hand-roll HTTP, but the niche-ness argument stands on its own).
-- **Migration importers & testing endpoints** (21 ops): one-shot administrative migrations (Todoist/Trello/…) with file uploads — wrong tool for an MCP.
-- **User deletion**: destructive account-level operation; excluded unless explicitly requested later (would be deny-by-default config in any case; note `vikunja_admin`'s `delete-user` op is the one exception, already gated behind `confirm: true` + deny-by-default + JWT-only).
+**Endpoint-tail re-triage (C2, 2026-07-18, decision 13).** All 64 `❌` operations were re-examined under the direct-REST architecture (`node-vikunja` removed) — the historical won't-implement list below predated that migration and several of its reasons no longer held (a broken client-library call; a blanket "binary/blob → nothing to expose" rule that had mislabeled JSON endpoints as blobs). New split: **20 IMPLEMENT (approved-to-build) / 36 PARKED / 8 NEVER**. This changed no coverage counts — all 64 stay `❌` until each IMPLEMENT row's code lands. Full per-operation verdicts, spec evidence, and the grouped candidate backlog (G1–G7) are in **[docs/ENDPOINT-TAIL-RETRIAGE.md](ENDPOINT-TAIL-RETRIAGE.md)**; the 20 flipped rows are annotated in `docs/API-COVERAGE.md`.
+
+**Approved-to-build (20, were "won't-implement" or "not yet built" → now IMPLEMENT):** CalDAV tokens (G1); task duplicate + mark-read (G2); the server-side user-export *status* read (G3, JSON `UserExportStatus`, not binary); user-level webhooks (G4, identical `models.Webhook` shape to project webhooks); avatar *provider* get/set + optional upload (G5, the provider endpoints are JSON, not image bytes); user deletion request/confirm/cancel (G6, behind the reserved deny-by-default `userDeletion` key + `confirm: true`); and the JSON subset of project backgrounds — remove / set-unsplash / unsplash-search (G7, low-priority/cosmetic). None coded yet.
+
+**Won't implement — parked (36, feasible but deferred; each has a reopening trigger in the re-triage doc):**
+- **Genuinely-binary image bytes** (project/Unsplash background *images* + thumbs, per-user avatar bytes, TOTP QR image): MCP has no binary content channel; a download-URL pattern is possible but very low value. (Note: the avatar/background *settings* and Unsplash *search* are JSON and were re-graded IMPLEMENT above — only the raw image bytes stay parked.)
+- **Account-settings & session ceremonies that are feasible but governance-sensitive/low-value** (change password, change email, email confirm, one-time `/user/token`, server-side logout): deferred pending an explicit self-service account-settings module.
+- **TOTP 2FA flows** (status/enroll/enable/disable + QR): an AI driving 2FA enrollment/teardown is a security anti-pattern; parked for a human-in-the-loop security-settings module.
+- **Migration importers** (19 ops: CSV wizard + Todoist/Trello/Wekan/TickTick/MS-Todo/vikunja-file): one-shot administrative imports with OAuth ceremonies / file uploads — wrong tool for an MCP; the vikunja-file importer has the clearest latent value (round-trip our own `export.ts`).
+- **`POST /tasks/{taskID}/assignees/bulk`**: replace-semantics footgun (silently unassigns everyone); the additive `PUT /assignees` loop is used deliberately (upstream issue #15). Reopens only if a true set-exact-assignees composite is wanted.
+- **`GET /routes`**: API self-listing with no AI task-management use case.
+
+**Never (8, hard reason it makes no sense over MCP):** interactive `login`/`register`, OIDC callback, JWT `token/refresh` (needs a browser refresh-cookie this static-token client never holds — architecturally unreachable), the two anonymous pre-auth password-reset legs, and the two destructive test-only endpoints (`DELETE /test/all`, `PATCH /test/{table}`). Legitimate account provisioning remains `vikunja_admin create-user`; destructive account deletion is exposed once, `vikunja_admin`'s `delete-user`, gated behind `confirm: true` + deny-by-default + JWT-only.
 
 ## 5. Target tool surface
 
 **22 registered top-level tools today** (`src/tools/index.ts`), ~148 subcommands across them (`vikunja_auth`, `vikunja_tasks` + 6 task sub-resource tools, `vikunja_projects`, `vikunja_labels`, `vikunja_teams`, `vikunja_users`, `vikunja_filters`, `vikunja_templates`, `vikunja_webhooks`, `vikunja_batch_import`, `vikunja_export`, `vikunja_notifications`, `vikunja_subscriptions`, `vikunja_reactions`, `vikunja_tokens`, `vikunja_admin`). Most new capability arrives as *subcommands on existing tools*, not new tools — consolidation is deliberate: fewer, smarter tools cost less AI context and make module toggles meaningful (see §3b: this is the same axis the competitive review flagged as our clearest structural advantage over a flat 1:1-endpoint design).
 
-Remaining target surface (from the original ~55–60-operation Wave D plan, now delivered): saved filters, project sharing (link shares plus direct user/team sharing), project views/Kanban CRUD, project duplication, task extras (position/by-index/direct listing/subtask composites), attachments read-side, tokens/admin/info — **all landed**. What's left of the 64 not-implemented operations (§4) is overwhelmingly the explicit won't-implement list; any remaining genuinely-deferred items are tracked in issue #28.
+Remaining target surface (from the original ~55–60-operation Wave D plan, now delivered): saved filters, project sharing (link shares plus direct user/team sharing), project views/Kanban CRUD, project duplication, task extras (position/by-index/direct listing/subtask composites), attachments read-side, tokens/admin/info — **all landed**. Of the 64 not-implemented operations (§4), the C2 re-triage (2026-07-18) found **20 are approved-to-build** — grouped as candidate wave items G1–G7 in [docs/ENDPOINT-TAIL-RETRIAGE.md](ENDPOINT-TAIL-RETRIAGE.md), most arriving as subcommands on existing tools (`vikunja_tasks`, `vikunja_users`, `vikunja_projects`, `vikunja_webhooks`) plus two small new tools (`vikunja_caldav_tokens`, `vikunja_user_deletion`). The other 44 are parked/never per §4; all remaining work is tracked in issue #28.
 
 ## 6. Plan of record (waves)
 
