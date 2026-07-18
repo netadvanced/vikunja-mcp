@@ -1,0 +1,12 @@
+{
+  "id": "share-project-by-user",
+  "title": "Share a project via a public link",
+  "description": "Ergonomics probe for project-sharing discoverability: a project needs to exist and get a link share, exercising the create-share composite (src/tools/projects/sharing.ts).",
+  "promptTemplate": "Create a project called \"{{prefix}}Shared Roadmap\" with one task called \"{{prefix}}kickoff\", then share the project via a read-only public link so it can be sent to a client.",
+  "optimalCallCount": 3,
+  "verify": [
+    { "type": "project-exists", "titleContains": "{{prefix}}Shared Roadmap" },
+    { "type": "min-tasks-in-project", "projectTitleContains": "{{prefix}}Shared Roadmap", "min": 1 },
+    { "type": "project-has-share", "projectTitleContains": "{{prefix}}Shared Roadmap" }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "id": "filter-high-priority-search",
+  "title": "Filter syntax probe: high-priority, not-done tasks due soon",
+  "description": "Ergonomics probe for the Vikunja filter query language (docs/API_NOTES.md's 'Filter Implementation Notes'): sets up mixed data, then asks the agent to narrow it down with a filter expression rather than fetching everything and filtering client-side.",
+  "promptTemplate": "Create a project called \"{{prefix}}Filter Probe\" with 6 tasks: three called \"{{prefix}}urgent-N\" (N=1..3) with priority 5, due in 3 days, and three called \"{{prefix}}later-N\" (N=1..3) with priority 1, due in 60 days. Then use a filter query (not manual inspection) to find just the not-done tasks with priority 4 or higher, due within the next 14 days, and tell me their titles.",
+  "optimalCallCount": 3,
+  "verify": [
+    { "type": "project-exists", "titleContains": "{{prefix}}Filter Probe" },
+    { "type": "min-tasks-in-project", "projectTitleContains": "{{prefix}}Filter Probe", "min": 6 },
+    { "type": "tasks-field-match-count", "projectTitleContains": "{{prefix}}Filter Probe", "field": "priority", "op": "gte", "value": 4, "min": 3 },
+    { "type": "tasks-field-match-count", "projectTitleContains": "{{prefix}}Filter Probe", "field": "due_date", "op": "set", "min": 6 }
+  ]
+}

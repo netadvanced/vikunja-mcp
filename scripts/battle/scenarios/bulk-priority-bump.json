@@ -1,0 +1,12 @@
+{
+  "id": "bulk-priority-bump",
+  "title": "Bulk edit ergonomics: mark everything high priority",
+  "description": "Probes whether the agent discovers vikunja_task_bulk / bulk-update rather than updating each task one at a time (docs/API_NOTES.md's 'Bulk Operations' section).",
+  "promptTemplate": "Create a project called \"{{prefix}}Backlog Cleanup\" with 8 tasks named \"{{prefix}}item-1\" through \"{{prefix}}item-8\". Then, in one bulk update, mark all 8 of them as high priority (priority 5).",
+  "optimalCallCount": 3,
+  "verify": [
+    { "type": "project-exists", "titleContains": "{{prefix}}Backlog Cleanup" },
+    { "type": "min-tasks-in-project", "projectTitleContains": "{{prefix}}Backlog Cleanup", "min": 8 },
+    { "type": "tasks-field-match-count", "projectTitleContains": "{{prefix}}Backlog Cleanup", "field": "priority", "op": "eq", "value": 5, "min": 8 }
+  ]
+}

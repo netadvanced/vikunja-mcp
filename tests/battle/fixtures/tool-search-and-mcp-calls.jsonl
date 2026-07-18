@@ -1,0 +1,7 @@
+{"type":"system","subtype":"init","cwd":"/tmp","session_id":"s3","tools":["ToolSearch"],"mcp_servers":[{"name":"vikunja-battle","status":"connected"}]}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"ts_1","name":"ToolSearch","input":{"query":"select:vikunja_projects","max_results":5}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"ts_1","content":"loaded schema","is_error":false}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"call_1","name":"mcp__vikunja-battle__vikunja_projects","input":{"subcommand":"create","title":"battle-x-Demo"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":"Created project (ID: 1)","is_error":false}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Done."}]}}
+{"type":"result","subtype":"success","is_error":false,"duration_ms":2000,"num_turns":2,"result":"Done.","total_cost_usd":0.02,"usage":{"input_tokens":50,"output_tokens":20,"cache_creation_input_tokens":5,"cache_read_input_tokens":0}}

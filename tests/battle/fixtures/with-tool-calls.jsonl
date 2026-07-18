@@ -1,0 +1,12 @@
+{"type":"system","subtype":"init","cwd":"/tmp","session_id":"s2","tools":[],"mcp_servers":[{"name":"vikunja-battle","status":"connected"}]}
+{"type":"assistant","message":{"model":"claude-sonnet-5","role":"assistant","content":[{"type":"tool_use","id":"call_1","name":"mcp__vikunja-battle__vikunja_projects","input":{"subcommand":"create","title":"battle-test-Foo"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":"Created project \"battle-test-Foo\" (ID: 42)","is_error":false}]}}
+{"type":"assistant","message":{"model":"claude-sonnet-5","role":"assistant","content":[{"type":"tool_use","id":"call_2","name":"mcp__vikunja-battle__vikunja_tasks","input":{"subcommand":"create","projectId":"42"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_2","content":"VALIDATION_ERROR: projectId must be a number","is_error":true}]}}
+{"type":"assistant","message":{"model":"claude-sonnet-5","role":"assistant","content":[{"type":"tool_use","id":"call_3","name":"mcp__vikunja-battle__vikunja_tasks","input":{"subcommand":"create","projectId":42,"title":"first task"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_3","content":"Created task \"first task\" (ID: 99)","is_error":false}]}}
+{"type":"assistant","message":{"model":"claude-sonnet-5","role":"assistant","content":[{"type":"tool_use","id":"call_4","name":"Bash","input":{"command":"ls"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_4","content":"file1 file2","is_error":false}]}}
+{"type":"assistant","message":{"model":"claude-sonnet-5","role":"assistant","content":[{"type":"text","text":"Done, created the project and task."}]}}
+{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"}}
+{"type":"result","subtype":"success","is_error":false,"duration_ms":5000,"num_turns":4,"result":"Done, created the project and task.","total_cost_usd":0.05,"usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":10,"cache_read_input_tokens":5}}

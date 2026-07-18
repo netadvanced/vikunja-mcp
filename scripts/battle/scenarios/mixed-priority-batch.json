@@ -1,0 +1,13 @@
+{
+  "id": "mixed-priority-batch",
+  "title": "Mixed-priority batch creation",
+  "description": "Probes whether the agent correctly varies a per-item field (priority) within a single batch creation request, rather than collapsing everything to one value or issuing one call per task.",
+  "promptTemplate": "Create a project called \"{{prefix}}Feature Backlog\" with 6 tasks: two low priority (priority 1) called \"{{prefix}}low-N\", two medium priority (priority 3) called \"{{prefix}}med-N\", and two high priority (priority 5) called \"{{prefix}}high-N\" (N=1..2 within each group).",
+  "optimalCallCount": 2,
+  "verify": [
+    { "type": "project-exists", "titleContains": "{{prefix}}Feature Backlog" },
+    { "type": "min-tasks-in-project", "projectTitleContains": "{{prefix}}Feature Backlog", "min": 6 },
+    { "type": "tasks-field-match-count", "projectTitleContains": "{{prefix}}Feature Backlog", "field": "priority", "op": "eq", "value": 1, "min": 2 },
+    { "type": "tasks-field-match-count", "projectTitleContains": "{{prefix}}Feature Backlog", "field": "priority", "op": "gte", "value": 5, "min": 2 }
+  ]
+}
