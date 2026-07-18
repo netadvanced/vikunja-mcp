@@ -12,7 +12,7 @@
 
 ## What this gives your AI assistant
 
-This server exposes Vikunja as **21 tools**, each covering one entity (tasks, projects, labels, teams…) with a consistent `subcommand` pattern — not a 1:1 REST proxy, but composite operations built for how an AI actually works: resolve a username instead of demanding a user ID, create-a-label-if-it-doesn't-exist-yet, verify-then-apply for anything destructive. Your assistant reasons in natural language; the server turns that into correct, idempotent Vikunja API calls.
+This server exposes Vikunja as **27 tools** (a session tool, 22 available by default or by auth type, and 4 sensitive ones that are off until an operator opts in), each covering one entity (tasks, projects, labels, teams…) with a consistent `subcommand` pattern — not a 1:1 REST proxy, but composite operations built for how an AI actually works: resolve a username instead of demanding a user ID, verify that tricky writes actually stuck instead of trusting a 200, and explicit confirmation gates on destructive operations. Your assistant reasons in natural language; the server turns that into correct Vikunja API calls and reports partial failures honestly instead of pretending success.
 
 ## See it in action
 
@@ -98,7 +98,7 @@ Full install options, JWT vs. API-token auth, module gating, and every environme
 
 \* JWT authentication only. User data export also has request/status/download tools (`vikunja_request_user_export`, `vikunja_user_export_status`, `vikunja_download_user_export`), all JWT-only. (`vikunja_webhooks`' account-wide `scope: 'user'` is JWT-only too; its default `scope: 'project'` works with either auth type.)
 
-Four more tools — `vikunja_tokens`, `vikunja_caldav_tokens`, `vikunja_admin`, and `vikunja_user_deletion` — exist for API-token management, CalDAV-token management, instance administration, and self account deletion. All are **disabled by default**; an operator opts in explicitly (see Configuration). `vikunja_user_deletion` is the most sensitive of the four — it can delete the connected account — so read its [Configuration guide entry](docs/CONFIGURATION.md#known-modules) before enabling it. `vikunja_projects` also has three opt-in cosmetic subcommands (project backgrounds) behind a `backgrounds` module toggle, off by default for the opposite reason: low value, not danger.
+A session tool, `vikunja_auth` (connect / status / info / refresh / disconnect), rounds out the always-on surface. Four more tools — `vikunja_tokens`, `vikunja_caldav_tokens`, `vikunja_admin`, and `vikunja_user_deletion` — exist for API-token management, CalDAV-token management, instance administration, and self account deletion. All are **disabled by default**; an operator opts in explicitly (see Configuration). `vikunja_user_deletion` is the most sensitive of the four — it can delete the connected account — so read its [Configuration guide entry](docs/CONFIGURATION.md#known-modules) before enabling it. `vikunja_projects` also has three opt-in cosmetic subcommands (project backgrounds) behind a `backgrounds` module toggle, off by default for the opposite reason: low value, not danger.
 
 Full subcommand-by-subcommand reference: [`docs/TOOLS.md`](docs/TOOLS.md).
 
