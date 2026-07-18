@@ -157,7 +157,9 @@ export function registerTemplatesTool(server: McpServer, authManager: AuthManage
         "are session-only — kept in this server process's memory and lost on restart. " +
         'Set the templates.persistPath config key (or VIKUNJA_MCP_TEMPLATES_FILE env ' +
         'var, which wins) to make them durable across restarts via a JSON file on disk ' +
-        '— see docs/CONFIGURATION.md.',
+        '— see docs/CONFIGURATION.md. `create`/`update` responses also report a ' +
+        '`persisted` boolean and a matching note in their message, so this is never ' +
+        'just a one-time warning buried in this description.',
     ),
     {
       subcommand: z.enum(['create', 'list', 'get', 'update', 'delete', 'instantiate']),
@@ -265,11 +267,21 @@ export function registerTemplatesTool(server: McpServer, authManager: AuthManage
               });
               await persistTemplatesIfConfigured(storage);
 
+              // FIXED (was: docs/API-COVERAGE.md Issues table, LOW): the
+              // session-only-by-default durability gap was already flagged
+              // in the tool description, but individual responses gave no
+              // per-call signal — a caller who never reads the static tool
+              // description had no way to know THIS template will vanish on
+              // restart. Every mutating response now says so explicitly.
+              const persisted = getTemplatesPersistPath() !== undefined;
               const response = createStandardResponse(
                 'create-template',
-                `Template "${args.name}" created successfully`,
+                `Template "${args.name}" created successfully` +
+                  (persisted
+                    ? ' (persisted to disk — durable across restarts)'
+                    : ' (session-only — will be lost on restart; set templates.persistPath or VIKUNJA_MCP_TEMPLATES_FILE to persist)'),
                 { template: templateData },
-                { sourceProjectId: args.projectId, taskCount: tasks.length },
+                { sourceProjectId: args.projectId, taskCount: tasks.length, persisted },
               );
 
               return {
@@ -387,10 +399,15 @@ export function registerTemplatesTool(server: McpServer, authManager: AuthManage
                 await persistTemplatesIfConfigured(storage);
               }
 
+              const persisted = getTemplatesPersistPath() !== undefined;
               const response = createStandardResponse(
                 'update-template',
-                `Template "${template.name}" updated successfully`,
+                `Template "${template.name}" updated successfully` +
+                  (persisted
+                    ? ' (persisted to disk — durable across restarts)'
+                    : ' (session-only — will be lost on restart; set templates.persistPath or VIKUNJA_MCP_TEMPLATES_FILE to persist)'),
                 { template },
+                { persisted },
               );
 
               return {

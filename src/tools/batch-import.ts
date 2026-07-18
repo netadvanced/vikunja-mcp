@@ -91,8 +91,17 @@ export function registerBatchImportTool(server: McpServer, authManager: AuthMana
         const entityResolver = new EntityResolver();
         const taskCreationService = new TaskCreationService();
 
-        // Resolve entities (labels and users)
-        const entityResult = await entityResolver.resolveEntities(authManager);
+        // Resolve entities (labels and users). GET /users is a *search*
+        // endpoint per the OpenAPI spec (see EntityResolver.fetchUsers), so
+        // rather than one parameter-less "list everyone" call, gather every
+        // unique username actually referenced by this batch's assignees and
+        // search for each one individually.
+        const assigneeUsernames = Array.from(
+          new Set(
+            tasks.flatMap((task) => task.assignees ?? []),
+          ),
+        );
+        const entityResult = await entityResolver.resolveEntities(authManager, assigneeUsernames);
         const { userFetchFailedDueToAuth } = entityResult;
 
         // Process tasks

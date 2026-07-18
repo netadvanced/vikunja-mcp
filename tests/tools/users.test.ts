@@ -228,6 +228,11 @@ describe('Users Tool', () => {
       // SearchParams type modeled page/per_page but the real endpoint has no
       // such query params. page/perPage are still accepted as tool arguments
       // (surfaced in response metadata) but are not sent over the wire.
+      //
+      // ALREADY FIXED (docs/API-COVERAGE.md Issues table, LOW): this test
+      // pre-dates the E4 residual-coverage-issues pass and already proves
+      // the fix — the outgoing URL below is exactly '/users' with no query
+      // string, confirming page/perPage never reach the wire.
       (vikunjaRestRequest as jest.Mock).mockResolvedValue([mockUser]);
 
       const result = await callTool('search', { page: 2, perPage: 10 });

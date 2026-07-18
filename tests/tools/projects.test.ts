@@ -43,7 +43,7 @@ function mockResponse(opts: {
 /**
  * Routes `fetch` calls by `METHOD pathname` (the query string is ignored —
  * `/projects` is hit both by `list` with pagination params and by the
- * `per_page=1000` "fetch all projects" helper used for hierarchy/depth
+ * fully-paginated "fetch all projects" helper used for hierarchy/depth
  * validation, but no single test exercises both, so this is unambiguous in
  * practice). A route may be a single Response (reused for every call to that
  * key) or an array (consumed in order, the last entry repeating once
@@ -923,6 +923,42 @@ describe('Projects Tool', () => {
       const result = await callTool('get-children', { id: 1 });
       const markdown = result.content[0].text;
       expect(markdown).toContain('Found 1 child project for project ID 1');
+    });
+
+    it('paginates past a single 1000-item page instead of silently truncating (LOW issue, docs/API-COVERAGE.md)', async () => {
+      // fetchAllProjects (crud.ts) used to make one GET /projects?per_page=1000
+      // call, silently dropping anything past project #1000 on a large
+      // instance. It now walks pages until a short page signals the end.
+      // Simulate a full first page (200 items — the loop's page size) plus a
+      // second, short page holding the child we actually care about.
+      const fullFirstPage = Array.from({ length: 200 }, (_, i) => ({
+        ...mockProject,
+        id: 100 + i,
+        title: `Filler ${i}`,
+      }));
+      const childOnSecondPage = { ...mockProject, id: 9999, title: 'Late Child', parent_project_id: 1 };
+      const secondPage = [mockProject, childOnSecondPage];
+
+      routeFetch({
+        'GET /projects/1': mockResponse({ body: mockProject }),
+        'GET /projects': [
+          mockResponse({ body: fullFirstPage }),
+          mockResponse({ body: secondPage }),
+        ],
+      });
+
+      const result = await callTool('get-children', { id: 1 });
+      const markdown = result.content[0].text;
+
+      // Two /projects calls were made (page 1 full, page 2 short -> stop),
+      // and the child that only appeared on the second page was found.
+      const projectsCalls = (mockFetch.mock.calls as [string, RequestInit][]).filter(
+        ([url]) => new URL(url).pathname.replace(/^\/api\/v\d+/, '') === '/projects',
+      );
+      expect(projectsCalls).toHaveLength(2);
+      expect(projectsCalls[0][0]).toContain('page=1');
+      expect(projectsCalls[1][0]).toContain('page=2');
+      expect(markdown).toContain('Late Child');
     });
   });
 

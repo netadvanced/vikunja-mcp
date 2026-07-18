@@ -89,8 +89,24 @@ export function expireWebhookEventCache(): void {
 // Scope-aware REST paths
 // ---------------------------------------------------------------------------
 
-function webhookCollectionPath(scope: WebhookScope, projectId?: number): string {
-  return scope === 'project' ? `/projects/${projectId}/webhooks` : '/user/settings/webhooks';
+// `GET /projects/{id}/webhooks` documents optional `page`/`per_page` query
+// params (see docs/API-COVERAGE.md's Issues table — this tool used to never
+// forward them). `GET /user/settings/webhooks` documents neither, so
+// page/perPage are only ever applied for scope 'project'.
+function webhookCollectionPath(
+  scope: WebhookScope,
+  projectId?: number,
+  page?: number,
+  perPage?: number,
+): string {
+  if (scope !== 'project') {
+    return '/user/settings/webhooks';
+  }
+  const params = new URLSearchParams();
+  if (page !== undefined) params.set('page', String(page));
+  if (perPage !== undefined) params.set('per_page', String(perPage));
+  const query = params.toString();
+  return `/projects/${projectId}/webhooks${query ? `?${query}` : ''}`;
 }
 
 function webhookItemPath(scope: WebhookScope, webhookId: number, projectId?: number): string {
@@ -248,6 +264,13 @@ export function registerWebhooksTool(server: McpServer, authManager: AuthManager
         .describe("Required when scope is 'project'; must be omitted when scope is 'user'."),
       webhookId: z.number().int().positive().optional(),
 
+      // Pagination for the 'list' subcommand (scope 'project' only — GET
+      // /projects/{id}/webhooks documents page/per_page; GET
+      // /user/settings/webhooks documents neither, so these are ignored
+      // when scope is 'user').
+      page: z.number().int().positive().optional(),
+      perPage: z.number().int().positive().max(100).optional(),
+
       // Create/Update parameters
       targetUrl: z.string().url().optional(),
       events: z.array(z.string()).optional(),
@@ -289,7 +312,7 @@ export function registerWebhooksTool(server: McpServer, authManager: AuthManager
               (await vikunjaRestRequest<Webhook[]>(
                 authManager,
                 'GET',
-                webhookCollectionPath(scope, projectId),
+                webhookCollectionPath(scope, projectId, args.page, args.perPage),
               )) ?? [];
 
             const description =
@@ -307,7 +330,9 @@ export function registerWebhooksTool(server: McpServer, authManager: AuthManager
               {
                 success: true,
                 metadata: {
-                  count: webhooks.length
+                  count: webhooks.length,
+                  ...(scope === 'project' && args.page !== undefined && { page: args.page }),
+                  ...(scope === 'project' && args.perPage !== undefined && { perPage: args.perPage }),
                 }
               }
             );

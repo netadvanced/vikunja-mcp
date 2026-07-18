@@ -193,6 +193,41 @@ describe('Webhooks Tool', () => {
       expect(result.content[0].text).toContain('**count:** 2');
     });
 
+    it('forwards page/perPage query params (LOW issue, docs/API-COVERAGE.md)', async () => {
+      // Reproduces the gap: GET /projects/{id}/webhooks documents optional
+      // page/per_page query params, but this tool used to never forward
+      // them, making it impossible to paginate large webhook lists.
+      const mockWebhooks = [mockWebhook];
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: mockWebhooks }));
+
+      const result = await mockHandler({ subcommand: 'list', projectId: 1, page: 2, perPage: 10 });
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://api.vikunja.test/api/v1/projects/1/webhooks?page=2&per_page=10',
+        {
+          method: 'GET',
+          headers: {
+            Authorization: 'Bearer test-token',
+            'Content-Type': 'application/json',
+          },
+        },
+      );
+      expect(result.content[0].text).toContain('**page:** 2');
+      expect(result.content[0].text).toContain('**perPage:** 10');
+    });
+
+    it('ignores page/perPage for scope "user" (GET /user/settings/webhooks documents no pagination params)', async () => {
+      const mockWebhooks = [mockWebhook];
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: mockWebhooks }));
+
+      await mockHandler({ subcommand: 'list', scope: 'user', page: 2, perPage: 10 });
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://api.vikunja.test/api/v1/user/settings/webhooks',
+        expect.objectContaining({ method: 'GET' }),
+      );
+    });
+
     it('should handle empty webhook list', async () => {
       mockFetch.mockResolvedValueOnce(mockResponse({ body: [] }));
 

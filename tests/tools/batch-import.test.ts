@@ -227,8 +227,13 @@ describe('Batch Import Tool', () => {
           return toFetchOutcome(error);
         }
       }
-      // EntityResolver.fetchUsers -> GET /users (migrated to direct REST).
-      if (method === 'GET' && url.endsWith('/users')) {
+      // EntityResolver.fetchUsers -> GET /users?s=<username> (one search
+      // call per unique assignee username referenced by the batch, per the
+      // MEDIUM fix in docs/API-COVERAGE.md: GET /users is a *search*
+      // endpoint, not a "list everyone" one — matched here on the path
+      // alone, ignoring the `s` query value, so existing per-test
+      // `mockClient.users.getUsers` setups still drive every search call).
+      if (method === 'GET' && /\/users(\?|$)/.test(url)) {
         try {
           const users = await mockClient.users.getUsers({});
           return mockResponse({ text: JSON.stringify(users ?? []) });
@@ -1904,13 +1909,17 @@ Description,1`;
       // including this non-Error one — into a real MCPError (see
       // vikunjaRestRequestRaw) before EntityResolver's catch logs it, so
       // the logged `error` is that MCPError, not the original raw string.
+      // An assignee must be present so EntityResolver actually issues a
+      // `GET /users?s=...` search — since the MEDIUM fix (see
+      // docs/API-COVERAGE.md), a task with no assignees makes no /users
+      // call at all, so this path would otherwise never trigger.
       mockClient.users.getUsers.mockRejectedValue('Users fetch failed');
       mockClient.tasks.createTask.mockResolvedValue({ id: 2601, title: 'Test' });
 
       const result = await toolHandler({
         projectId: 1,
         format: 'json',
-        data: JSON.stringify({ title: 'Test' }),
+        data: JSON.stringify({ title: 'Test', assignees: ['someone'] }),
       });
 
       expect(logger.warn).toHaveBeenCalledWith(
@@ -1957,14 +1966,17 @@ Description,1`;
     });
 
     it('should handle getUsers error with Error instance', async () => {
-      // Test line 309 Error branch
+      // Test line 309 Error branch. As above, an assignee must be present
+      // so a `GET /users?s=...` search is actually issued — see the MEDIUM
+      // fix in docs/API-COVERAGE.md (no assignees referenced -> no /users
+      // call at all).
       mockClient.users.getUsers.mockRejectedValue(new Error('Network error'));
       mockClient.tasks.createTask.mockResolvedValue({ id: 3001, title: 'Test' });
 
       const result = await toolHandler({
         projectId: 1,
         format: 'json',
-        data: JSON.stringify({ title: 'Test' }),
+        data: JSON.stringify({ title: 'Test', assignees: ['someone'] }),
       });
 
       expect(logger.warn).toHaveBeenCalledWith(

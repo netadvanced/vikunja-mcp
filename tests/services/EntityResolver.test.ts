@@ -83,6 +83,12 @@ describe('EntityResolver', () => {
     { id: 103, username: 'charlie', email: 'charlie@example.com', name: 'Charlie' },
   ];
 
+  // Usernames a hypothetical batch import references as assignees — passed
+  // to `resolveEntities` so `fetchUsers` has something to search `s=` for
+  // (see the MEDIUM issue this migration fixed: `GET /users` is a *search*
+  // endpoint, not a "list everyone" one).
+  const mockUsernames = ['alice', 'bob', 'charlie'];
+
   beforeEach(() => {
     resolver = new EntityResolver();
 
@@ -107,7 +113,7 @@ describe('EntityResolver', () => {
         const value = await getLabelsMock();
         return mockResponse({ text: value === undefined ? '' : JSON.stringify(value) });
       }
-      if (method === 'GET' && /\/users$/.test(url)) {
+      if (method === 'GET' && /\/users(\?|$)/.test(url)) {
         return getUsersMock();
       }
       throw new Error(`Unexpected fetch ${method} ${url}`);
@@ -121,23 +127,36 @@ describe('EntityResolver', () => {
       usersJson(mockUsers);
 
       // Act
-      const result = await resolver.resolveEntities(authManager);
+      const result = await resolver.resolveEntities(authManager, mockUsernames);
 
       // Assert
       expect(result.labelMap.size).toBe(3);
       expect(result.userMap.size).toBe(3);
       expect(result.userFetchFailedDueToAuth).toBe(false);
       expect(result.projectLabels).toEqual(mockLabels);
-      expect(result.projectUsers).toEqual(mockUsers);
+      // Each username search returns the full mock list in this test, so
+      // the merged (deduped-by-id) result still has exactly the 3 users.
+      expect(result.projectUsers).toHaveLength(3);
+      expect(result.projectUsers).toEqual(expect.arrayContaining(mockUsers));
 
-      // Verify the request hit GET /users with no search param, matching
-      // the pre-migration `getUsers({})` call (see the KNOWN ISSUE comment
-      // on EntityResolver.fetchUsers).
+      // FIXED (was: docs/API-COVERAGE.md Issues table, MEDIUM): GET /users
+      // is a *search* endpoint per the OpenAPI spec — this now issues one
+      // `s=<username>` search per referenced username instead of a single
+      // parameter-less "list everyone" call.
       expect(mockFetch).toHaveBeenCalledWith(
-        'https://vikunja.test/api/v1/users',
+        'https://vikunja.test/api/v1/users?s=alice',
         expect.objectContaining({ method: 'GET' }),
       );
-      // ...and GET /labels the same way.
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://vikunja.test/api/v1/users?s=bob',
+        expect.objectContaining({ method: 'GET' }),
+      );
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://vikunja.test/api/v1/users?s=charlie',
+        expect.objectContaining({ method: 'GET' }),
+      );
+      expect(getUsersMock).toHaveBeenCalledTimes(3);
+      // ...and GET /labels is untouched by this fix.
       expect(mockFetch).toHaveBeenCalledWith(
         'https://vikunja.test/api/v1/labels',
         expect.objectContaining({ method: 'GET' }),
@@ -158,8 +177,8 @@ describe('EntityResolver', () => {
       respondLabels([]);
       usersJson([]);
 
-      // Act
-      const result = await resolver.resolveEntities(authManager);
+      // Act: a single referenced username that the server reports no match for.
+      const result = await resolver.resolveEntities(authManager, ['nobody']);
 
       // Assert
       expect(result.labelMap.size).toBe(0);
@@ -169,19 +188,43 @@ describe('EntityResolver', () => {
       expect(result.projectUsers).toEqual([]);
     });
 
+    it('should skip the /users call entirely when no assignee usernames are referenced', async () => {
+      // Arrange: this is the regression case for the MEDIUM issue — no
+      // batch task references an assignee, so there is nothing to search
+      // for and no reason to hit /users at all (previously this made a
+      // single parameter-less, spec-non-compliant call every time).
+      respondLabels(mockLabels);
+
+      // Act
+      const result = await resolver.resolveEntities(authManager, []);
+
+      // Assert
+      expect(result.userMap.size).toBe(0);
+      expect(result.projectUsers).toEqual([]);
+      expect(getUsersMock).not.toHaveBeenCalled();
+      expect(mockFetch).not.toHaveBeenCalledWith(
+        expect.stringContaining('/users'),
+        expect.anything(),
+      );
+      // Same behavior when the parameter is simply omitted (the default).
+      const resultNoArg = await resolver.resolveEntities(authManager);
+      expect(resultNoArg.projectUsers).toEqual([]);
+      expect(getUsersMock).not.toHaveBeenCalled();
+    });
+
     it('should handle null label response', async () => {
       // Arrange
       respondLabels(null);
       usersJson(mockUsers);
 
       // Act
-      const result = await resolver.resolveEntities(authManager);
+      const result = await resolver.resolveEntities(authManager, mockUsernames);
 
       // Assert
       expect(result.labelMap.size).toBe(0);
       expect(result.userMap.size).toBe(3);
       expect(result.projectLabels).toEqual([]);
-      expect(result.projectUsers).toEqual(mockUsers);
+      expect(result.projectUsers).toEqual(expect.arrayContaining(mockUsers));
       expect(logger.warn).toHaveBeenCalledWith('Labels response is null/undefined');
     });
 
@@ -192,13 +235,13 @@ describe('EntityResolver', () => {
       usersJson(mockUsers);
 
       // Act
-      const result = await resolver.resolveEntities(authManager);
+      const result = await resolver.resolveEntities(authManager, mockUsernames);
 
       // Assert
       expect(result.labelMap.size).toBe(0);
       expect(result.userMap.size).toBe(3);
       expect(result.projectLabels).toEqual([]);
-      expect(result.projectUsers).toEqual(mockUsers);
+      expect(result.projectUsers).toEqual(expect.arrayContaining(mockUsers));
       expect(logger.warn).toHaveBeenCalledWith('Labels response is null/undefined');
     });
 
@@ -208,13 +251,13 @@ describe('EntityResolver', () => {
       usersJson(mockUsers);
 
       // Act
-      const result = await resolver.resolveEntities(authManager);
+      const result = await resolver.resolveEntities(authManager, mockUsernames);
 
       // Assert
       expect(result.labelMap.size).toBe(0);
       expect(result.userMap.size).toBe(3);
       expect(result.projectLabels).toEqual([]);
-      expect(result.projectUsers).toEqual(mockUsers);
+      expect(result.projectUsers).toEqual(expect.arrayContaining(mockUsers));
       expect(logger.warn).toHaveBeenCalledWith('Labels response is not an array', expect.any(Object));
     });
 
@@ -228,7 +271,7 @@ describe('EntityResolver', () => {
       usersStatus(401, 'missing, malformed, expired or otherwise invalid token provided');
 
       // Act
-      const result = await resolver.resolveEntities(authManager);
+      const result = await resolver.resolveEntities(authManager, ['alice']);
 
       // Assert
       expect(result.labelMap.size).toBe(3);
@@ -250,7 +293,7 @@ describe('EntityResolver', () => {
       rejectUsers(new Error('Service unavailable'));
 
       // Act
-      const result = await resolver.resolveEntities(authManager);
+      const result = await resolver.resolveEntities(authManager, ['alice']);
 
       // Assert
       expect(result.labelMap.size).toBe(3);
@@ -273,14 +316,14 @@ describe('EntityResolver', () => {
       usersJson(mockUsers);
 
       // Act
-      const result = await resolver.resolveEntities(authManager);
+      const result = await resolver.resolveEntities(authManager, mockUsernames);
 
       // Assert
       expect(result.labelMap.size).toBe(0);
       expect(result.userMap.size).toBe(3);
       expect(result.userFetchFailedDueToAuth).toBe(false);
       expect(result.projectLabels).toEqual([]);
-      expect(result.projectUsers).toEqual(mockUsers);
+      expect(result.projectUsers).toEqual(expect.arrayContaining(mockUsers));
       // GET /labels now flows through vikunjaRestRequest, which wraps the
       // original message with its own request context — substring match.
       expect(logger.error).toHaveBeenCalledWith(
@@ -298,7 +341,7 @@ describe('EntityResolver', () => {
       usersStatus(401, 'Auth failed');
 
       // Act
-      const result = await resolver.resolveEntities(authManager);
+      const result = await resolver.resolveEntities(authManager, ['alice']);
 
       // Assert
       expect(result.labelMap.size).toBe(0);
@@ -334,7 +377,7 @@ describe('EntityResolver', () => {
       usersJson(edgeCaseUsers);
 
       // Act
-      const result = await resolver.resolveEntities(authManager);
+      const result = await resolver.resolveEntities(authManager, ['spaced', 'UPPERCASE', '']);
 
       // Assert
       expect(result.labelMap.size).toBe(3);
@@ -358,7 +401,7 @@ describe('EntityResolver', () => {
       usersRaw('');
 
       // Act
-      const result = await resolver.resolveEntities(authManager);
+      const result = await resolver.resolveEntities(authManager, ['alice']);
 
       // Assert
       expect(result.labelMap.size).toBe(3);
@@ -373,7 +416,7 @@ describe('EntityResolver', () => {
       usersJson(mockUsers);
 
       // Act
-      await resolver.resolveEntities(authManager);
+      await resolver.resolveEntities(authManager, mockUsernames);
 
       // Assert
       expect(logger.debug).toHaveBeenCalledWith('Labels fetched', {
@@ -385,7 +428,7 @@ describe('EntityResolver', () => {
         ],
       });
 
-      expect(logger.debug).toHaveBeenCalledWith('Users fetched', { count: 3 });
+      expect(logger.debug).toHaveBeenCalledWith('Users fetched', { searchCount: 3, count: 3 });
 
       expect(logger.debug).toHaveBeenCalledWith('Label and user maps created', {
         labelMapSize: 3,
@@ -419,7 +462,7 @@ describe('EntityResolver', () => {
       usersJson([]);
 
       // Act
-      const result = await resolver.resolveEntities(authManager);
+      const result = await resolver.resolveEntities(authManager, ['nobody']);
 
       // Assert
       expect(result.labelMap.size).toBe(4);
@@ -447,7 +490,7 @@ describe('EntityResolver', () => {
       usersJson(invalidUsers);
 
       // Act
-      const result = await resolver.resolveEntities(authManager);
+      const result = await resolver.resolveEntities(authManager, ['validuser']);
 
       // Assert
       expect(result.userMap.size).toBe(4);
@@ -463,7 +506,7 @@ describe('EntityResolver', () => {
       usersJson(mockUsers);
 
       // Act
-      const result = await resolver.resolveEntities(authManager);
+      const result = await resolver.resolveEntities(authManager, mockUsernames);
 
       // Assert. Both labels and users now round-trip through JSON transport,
       // so the arrays are structurally equal to the source data rather than

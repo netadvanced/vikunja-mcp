@@ -55,17 +55,26 @@ interface ProjectExportData {
 /**
  * Recursively exports a project and its children.
  *
- * All calls go through the direct-REST helper (`vikunjaRestRequest`). This
- * function deliberately keeps the documented O(depth) refetch shape (one
- * `GET /projects` per recursion level to re-derive that level's children) —
- * that inefficiency is a pre-existing, documented tradeoff, not something
- * this transport migration is meant to fix.
+ * All calls go through the direct-REST helper (`vikunjaRestRequest`).
+ *
+ * FIXED (was: docs/API-COVERAGE.md Issues table, LOW): this used to call
+ * `GET /projects` (the caller's *entire* accessible project catalog) inside
+ * the recursion, once per recursion level — an O(depth) full-catalog
+ * refetch purely to client-side filter by `parent_project_id`. It now
+ * fetches that catalog once, at the top-level call, and threads it through
+ * `allProjects` on every recursive call, so a deep/wide project tree costs
+ * one `GET /projects` for the whole export instead of one per level.
+ *
+ * @param allProjects - The full project catalog, fetched once by the
+ *   top-level caller (undefined there) and passed down unchanged on every
+ *   recursive call. Only read when `includeChildren` is true.
  */
 async function exportProjectRecursive(
   authManager: AuthManager,
   projectId: number,
   includeChildren: boolean = false,
   visitedIds: Set<number> = new Set(),
+  allProjects?: VikunjaProject[],
 ): Promise<ProjectExportData> {
   // Prevent infinite recursion
   if (visitedIds.has(projectId)) {
@@ -138,8 +147,11 @@ async function exportProjectRecursive(
 
   // Export child projects if requested
   if (includeChildren && project.id) {
-    const allProjects = await vikunjaRestRequest<VikunjaProject[]>(authManager, 'GET', '/projects');
-    const childProjects = allProjects.filter(
+    // Fetch the full catalog once per export (not once per recursion level
+    // — see this function's doc comment) and thread it through recursive
+    // calls.
+    const projects = allProjects ?? (await vikunjaRestRequest<VikunjaProject[]>(authManager, 'GET', '/projects'));
+    const childProjects = projects.filter(
       (p: VikunjaProject) => p.parent_project_id === project.id,
     );
 
@@ -152,6 +164,7 @@ async function exportProjectRecursive(
             child.id,
             true,
             new Set(visitedIds),
+            projects,
           );
           exportData.child_projects.push(childExport);
         }

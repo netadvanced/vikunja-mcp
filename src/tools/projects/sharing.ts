@@ -63,6 +63,9 @@ export interface ListSharesArgs {
   projectId: number;
   page?: number;
   perPage?: number;
+  /** Search shares by hash — the OpenAPI spec's `s` query param for
+   *  `GET /projects/{project}/shares`. */
+  search?: string;
   verbosity?: string;
   useOptimizedFormat?: boolean;
   useAorp?: boolean;
@@ -202,6 +205,7 @@ export async function listProjectShares(
     projectId,
     page = 1,
     perPage = 50,
+    search,
     verbosity,
     useOptimizedFormat,
     useAorp
@@ -216,6 +220,10 @@ export async function listProjectShares(
     const params = new URLSearchParams();
     if (page !== 1) params.set('page', String(page));
     if (perPage !== 50) params.set('per_page', String(perPage));
+    // `s` (search-by-hash) — the OpenAPI spec's third documented query param
+    // for this endpoint, previously never exposed by this tool (see
+    // docs/API-COVERAGE.md's Issues table).
+    if (search !== undefined) params.set('s', search);
     const query = params.toString();
 
     const shares = await vikunjaRestRequest<VikunjaLinkShare[]>(
@@ -233,6 +241,7 @@ export async function listProjectShares(
         projectId,
         page,
         perPage,
+        ...(search !== undefined && { search }),
         count: shareList.length,
         totalShares: shareList.length
       },

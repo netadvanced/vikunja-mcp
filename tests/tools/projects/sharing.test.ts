@@ -157,6 +157,34 @@ describe('project link sharing (REST-migrated)', () => {
       expect(url).toBe('https://vikunja.test/api/v1/projects/1/shares?page=2&per_page=10');
     });
 
+    it('exposes the spec\'s `s` (search-by-hash) query param (LOW issue, docs/API-COVERAGE.md)', async () => {
+      // Reproduces the gap: GET /projects/{project}/shares documents page,
+      // per_page AND s, but this tool used to only ever send page/per_page.
+      mockFetch
+        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ id: 1 }) }))
+        .mockResolvedValueOnce(mockResponse({ text: '[]' }));
+
+      await listProjectShares({ projectId: 1, search: 'abc123' }, authManager);
+
+      const url = mockFetch.mock.calls[1][0] as string;
+      expect(url).toBe('https://vikunja.test/api/v1/projects/1/shares?s=abc123');
+    });
+
+    it('combines search with page/per_page in the outgoing query string', async () => {
+      mockFetch
+        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ id: 1 }) }))
+        .mockResolvedValueOnce(mockResponse({ text: '[]' }));
+
+      const result = await listProjectShares(
+        { projectId: 1, page: 2, perPage: 10, search: 'abc123' },
+        authManager,
+      );
+
+      const url = mockFetch.mock.calls[1][0] as string;
+      expect(url).toBe('https://vikunja.test/api/v1/projects/1/shares?page=2&per_page=10&s=abc123');
+      expect(result.content[0].text).toContain('Retrieved 0 shares for project 1');
+    });
+
     it('treats a non-array response as an empty list', async () => {
       mockFetch
         .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ id: 1 }) }))

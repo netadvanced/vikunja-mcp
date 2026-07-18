@@ -99,6 +99,11 @@ describe('vikunja_templates file-backed persistence', () => {
       name: 'Durable Template',
     });
     expect(createResult.content[0]!.text).toContain('created successfully');
+    // Honest per-call feedback (LOW issue, docs/API-COVERAGE.md): with
+    // persistence configured, the response says so explicitly rather than
+    // only relying on the static tool description.
+    expect(createResult.content[0]!.text).toContain('persisted to disk');
+    expect(createResult.content[0]!.text).toContain('**persisted:** true');
 
     // Write-through: the file must exist immediately after the mutation,
     // without any explicit "flush"/"save" call.
@@ -178,6 +183,11 @@ describe('vikunja_templates file-backed persistence', () => {
     fetchOkOnce([{ id: 1, title: 'Task 1' }]);
     const result = await handler({ subcommand: 'create', projectId: 1, name: 'Ephemeral' });
     expect(result.content[0]!.text).toContain('created successfully');
+    // Honest per-call feedback (LOW issue, docs/API-COVERAGE.md): with no
+    // persistence configured, the response says so explicitly, not just the
+    // static tool description.
+    expect(result.content[0]!.text).toContain('session-only — will be lost on restart');
+    expect(result.content[0]!.text).toContain('**persisted:** false');
 
     expect(fs.existsSync(persistFile)).toBe(false);
 

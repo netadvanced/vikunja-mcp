@@ -48,10 +48,20 @@ export class EntityResolver {
    *
    * @param authManager - Active auth manager holding the session credentials,
    *   used for the direct-REST `GET /labels` and `GET /users` calls
+   * @param assigneeUsernames - Usernames referenced by the batch being
+   *   imported (e.g. every task's `assignees` list, deduplicated by the
+   *   caller). Per the OpenAPI spec `GET /users` is a *search* endpoint
+   *   (the `s` query param is its only documented filter) — there is no
+   *   "list every user" call to make. Passing the actual usernames that
+   *   need resolving lets this method search for each one individually
+   *   instead of making a single parameter-less call the spec never
+   *   promised would return anything useful. Defaults to `[]` (no
+   *   assignees referenced → no `/users` calls at all).
    * @returns Promise resolving to entity resolution results
    */
   async resolveEntities(
     authManager: AuthManager,
+    assigneeUsernames: string[] = [],
   ): Promise<EntityResolutionResult> {
     const result: EntityResolutionResult = {
       labelMap: new Map(),
@@ -63,7 +73,7 @@ export class EntityResolver {
 
     await this.fetchLabels(authManager, result);
 
-    await this.fetchUsers(authManager, result);
+    await this.fetchUsers(authManager, assigneeUsernames, result);
 
     this.createResolutionMaps(result);
 
@@ -140,33 +150,56 @@ export class EntityResolver {
    * KNOWN VIKUNJA API ISSUE: Users endpoint often fails with API tokens.
    * This is not a bug in our code - it's a documented Vikunja API limitation.
    *
-   * KNOWN ISSUE (Wave D migration): per the vendored OpenAPI spec,
-   * `GET /users` is a *search* endpoint ("Search for a user by its username,
-   * name or full email") that takes an `s` query parameter — it is not a
-   * "list all users I can see" endpoint. Called with no `s`, as this method
-   * does (matching the pre-migration legacy client call, which passed the
-   * same empty `{}` params), it likely returns an empty array on real
-   * servers rather than the full set of assignable project users. This
-   * migration moves the transport (legacy client -> `vikunjaRestRequest`)
-   * without changing that behavior — fixing the semantic mismatch (e.g.
-   * passing a search term, or resolving assignees a different way) is a
-   * separate, deliberately out-of-scope follow-up.
+   * FIXED (was: docs/API-COVERAGE.md Issues table, MEDIUM): per the vendored
+   * OpenAPI spec, `GET /users` is a *search* endpoint ("Search for a user by
+   * its username, name or full email") that takes an `s` query parameter —
+   * it is not a "list all users I can see" endpoint. This method used to
+   * call it with no `s` at all (matching the pre-migration legacy client
+   * call, which passed the same empty `{}` params), which on a real server
+   * returns an empty array rather than the full set of assignable project
+   * users, silently breaking every assignee-by-username resolution. It now
+   * issues one `GET /users?s=<username>` search per unique username actually
+   * referenced by the batch (passed in as `assigneeUsernames`), matching the
+   * endpoint's documented contract, and merges the (deduplicated-by-id)
+   * results. When `assigneeUsernames` is empty (no task in the batch
+   * references an assignee) no `/users` call is made at all.
    *
-   * @param authManager - Active auth manager for the direct-REST call
+   * @param authManager - Active auth manager for the direct-REST calls
+   * @param assigneeUsernames - Usernames to search for, one `s=` query per
+   *   unique entry (case-insensitive dedup is the caller's responsibility;
+   *   duplicates here just cost an extra, harmless round trip)
    * @param result - The result object to update with fetched users
    */
   private async fetchUsers(
     authManager: AuthManager,
+    assigneeUsernames: string[],
     result: EntityResolutionResult
   ): Promise<void> {
+    if (assigneeUsernames.length === 0) {
+      result.projectUsers = [];
+      logger.debug('No assignee usernames referenced by this batch; skipping /users search entirely');
+      return;
+    }
+
+    const usersById = new Map<number, VikunjaUser>();
     try {
-      const usersResponse = await vikunjaRestRequest<VikunjaUser[]>(
-        authManager,
-        'GET',
-        '/users',
-      );
-      result.projectUsers = usersResponse || [];
-      logger.debug('Users fetched', { count: result.projectUsers.length });
+      for (const username of assigneeUsernames) {
+        const usersResponse = await vikunjaRestRequest<VikunjaUser[]>(
+          authManager,
+          'GET',
+          `/users?s=${encodeURIComponent(username)}`,
+        );
+        for (const user of usersResponse || []) {
+          if (user && user.id !== null && user.id !== undefined) {
+            usersById.set(user.id, user);
+          }
+        }
+      }
+      result.projectUsers = Array.from(usersById.values());
+      logger.debug('Users fetched', {
+        searchCount: assigneeUsernames.length,
+        count: result.projectUsers.length,
+      });
     } catch (error) {
       // This is a known limitation with Vikunja API authentication. Checked
       // directly via `details.statusCode` (set by `vikunjaRestRequest` on
@@ -191,7 +224,10 @@ export class EntityResolver {
         // Some other error - log but continue
         logger.warn('Failed to fetch users', { error });
       }
-      result.projectUsers = [];
+      // Preserve whatever users were successfully resolved before the
+      // failing search (partial results are still useful), matching the
+      // "continue, best-effort" behavior of the rest of this method.
+      result.projectUsers = Array.from(usersById.values());
     }
   }
 

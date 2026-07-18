@@ -158,19 +158,44 @@ function rethrowProjectNotFound(error: unknown, id: number, context: string): ne
   throw transformApiError(error, context);
 }
 
+// Safety valve for fetchAllProjects' pagination loop below: bounds the
+// number of `GET /projects` round trips so a misbehaving server (one that
+// never returns a short final page) can't turn hierarchy validation into an
+// unbounded loop. 50 pages * 200/page = 10,000 projects, comfortably beyond
+// any real instance's hierarchy depth/breadth.
+const FETCH_ALL_PROJECTS_PAGE_SIZE = 200;
+const FETCH_ALL_PROJECTS_MAX_PAGES = 50;
+
 /**
- * Fetches all projects (single large page) for hierarchy validation
+ * Fetches every project the caller can see, for hierarchy validation
  * (depth/parent checks). Failures are swallowed by callers that treat this
  * as best-effort — see the original legacy-client-backed behavior this
  * preserves.
+ *
+ * FIXED (was: docs/API-COVERAGE.md Issues table, LOW — "pagination
+ * honesty"): this used to make a single `GET /projects?per_page=1000` call,
+ * silently truncating hierarchy/breadcrumb/move-cycle validation on
+ * instances with more than 1000 projects. It now walks `page` until a page
+ * comes back shorter than `per_page` (the standard "last page" signal for
+ * this API — see docs/API_NOTES.md), so instances of any size are covered,
+ * bounded by `FETCH_ALL_PROJECTS_MAX_PAGES` as a DoS/safety valve against a
+ * server that never returns a short final page.
  */
 async function fetchAllProjects(authManager: AuthManager): Promise<VikunjaProject[]> {
-  const response = await vikunjaRestRequest<VikunjaProject[]>(
-    authManager,
-    'GET',
-    '/projects?per_page=1000',
-  );
-  return Array.isArray(response) ? response : [];
+  const all: VikunjaProject[] = [];
+  for (let page = 1; page <= FETCH_ALL_PROJECTS_MAX_PAGES; page++) {
+    const response = await vikunjaRestRequest<VikunjaProject[]>(
+      authManager,
+      'GET',
+      `/projects?per_page=${FETCH_ALL_PROJECTS_PAGE_SIZE}&page=${page}`,
+    );
+    const batch = Array.isArray(response) ? response : [];
+    all.push(...batch);
+    if (batch.length < FETCH_ALL_PROJECTS_PAGE_SIZE) {
+      break;
+    }
+  }
+  return all;
 }
 
 /**
@@ -721,7 +746,7 @@ export async function unarchiveProject(
   }
 }
 
-// Internal helper re-exported for hierarchy.ts (fetches the full project
-// list for depth/parent validation, matching the per_page: 1000 convention
-// the legacy-client-backed implementation used).
+// Internal helper re-exported for hierarchy.ts (fetches the full,
+// fully-paginated project list for depth/parent validation — see
+// fetchAllProjects' own doc comment for the pagination-honesty fix).
 export { fetchAllProjects };

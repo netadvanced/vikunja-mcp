@@ -175,6 +175,7 @@ narrower tool surface exposed to a client): `vikunja_task_bulk` (`operation`:
     - `move` - Move a project to a new parent (validates against circular references, enforces max depth of 10 levels)
   - **Sharing — link shares** (anonymous/password links)
     - `create-share` / `list-shares` / `get-share` / `delete-share` / `auth-share`
+    - `list-shares` supports `page`/`perPage` and an optional `search` argument (forwarded as the spec's `s` search-by-hash query param)
   - **Project Views**
     - `list-views` / `get-view` / `create-view` / `update-view` / `delete-view`
     - `set-done-bucket` - Composite: set a Kanban view's done bucket (resolves the view, updates it, and verifies the change took effect)
@@ -227,6 +228,9 @@ narrower tool surface exposed to a client): `vikunja_task_bulk` (`operation`:
 > key (or `VIKUNJA_MCP_TEMPLATES_FILE` env var, which wins) to make them
 > durable across restarts via a JSON file — see
 > [docs/CONFIGURATION.md#templates-persistence](CONFIGURATION.md#templates-persistence).
+> `create`/`update` responses also carry a `persisted` boolean and a matching
+> note in their message, so this isn't only a one-time warning in the tool
+> description.
 
 - `vikunja_templates` - Template operations (session-only by default, opt-in file persistence — see note above)
   - `create` - Create a template from an existing project (required: projectId, name; optional: description, tags)
@@ -270,7 +274,7 @@ narrower tool surface exposed to a client): `vikunja_task_bulk` (`operation`:
 - `vikunja_webhooks` - Webhook operations for project automation, plus the current user's account-wide webhooks
   - `scope` - `'project'` (default) or `'user'`. `'project'` operates on a single project's webhooks (`/projects/{id}/webhooks*`) and requires `projectId`. `'user'` operates on the current user's account-wide webhooks (`/user/settings/webhooks*`, G4), which fire across every project the user has access to, and must **not** be combined with `projectId`. Both scopes share the identical `models.Webhook` shape and the same subcommands below.
   - `list-events` - Get all available webhook event types (for the selected scope)
-  - `list` - List webhooks (required: `projectId` when `scope` is `'project'`)
+  - `list` - List webhooks (required: `projectId` when `scope` is `'project'`; optional `page`/`perPage` — only honored for `scope: 'project'`, since `GET /user/settings/webhooks` documents no pagination params)
   - `get` - Get a specific webhook (required: `webhookId`; also `projectId` when `scope` is `'project'`) — emulated client-side via `list` + filter-by-id, since the spec has no single-webhook GET in either scope
   - `create` - Create a new webhook (required: `targetUrl`, `events` array; also `projectId` when `scope` is `'project'`; optional: `secret` for HMAC signing) — events are validated against available event types
   - `update` - Update webhook events (required: `webhookId`, `events` array; also `projectId` when `scope` is `'project'`) — validated the same way. The API only allows changing `events`, not `targetUrl`/`secret`, in either scope.

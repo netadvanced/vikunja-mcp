@@ -259,18 +259,19 @@ describe('Export Tool', () => {
 
       const mockAllProjects: Project[] = [mockParentProject, mockChildProject];
 
-      // exportProjectRecursive's calls are sequential (awaited), so mocking
-      // by call order is reliable. Parent: GET project, GET tasks, GET all
-      // projects (to find children). Child (id 2, no children of its own,
-      // but includeChildren still fetches all projects again to check —
-      // this is the documented O(depth) refetch shape, unchanged by this
-      // migration): GET project, GET tasks, GET all projects.
+      // FIXED (was: docs/API-COVERAGE.md Issues table, LOW): exportProjectRecursive
+      // used to re-fetch the full project catalog (GET /projects) once per
+      // recursion level. It's now fetched once, at the top level, and
+      // threaded through recursive calls — so the sequence below has only
+      // ONE "GET all projects" call for the whole (parent + child) export,
+      // not one per level. Parent: GET project, GET tasks, GET all projects
+      // (to find children). Child (id 2, no children of its own): GET
+      // project, GET tasks only — no second catalog refetch.
       fetchOkOnce(mockParentProject);
       fetchOkOnce([]);
       fetchOkOnce(mockAllProjects);
       fetchOkOnce(mockChildProject);
       fetchOkOnce([]);
-      fetchOkOnce(mockAllProjects);
 
       const handler = mockServer.tool.mock.calls.find(
         (call) => call[0] === 'vikunja_export_project',
@@ -292,6 +293,11 @@ describe('Export Tool', () => {
       expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('Project exported successfully');
       expect(markdown).toContain('Parent Project');
+
+      // Exactly 5 fetch calls total (2 per project x 2 projects, plus one
+      // shared catalog fetch) — not 6, which is what the old O(depth)
+      // refetch shape would have required.
+      expect(global.fetch).toHaveBeenCalledTimes(5);
     });
 
     it('should handle circular references in project hierarchy', async () => {
