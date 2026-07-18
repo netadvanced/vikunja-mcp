@@ -145,6 +145,19 @@ describe('Bulk operations', () => {
         );
       });
 
+      it('should reject a camelCase field name that would silently no-op in the native fields:[] payload', async () => {
+        // The native POST /tasks/bulk payload keys `fields` by these exact
+        // strings (see applyFieldUpdate / models.BulkTask); 'dueDate' is the
+        // MCP-schema camelCase spelling and is never one of them, so letting
+        // it through would send `fields: ["dueDate"]`, which the server
+        // ignores — a silent no-op rather than an update. Reject it up
+        // front and list the valid (snake_case) field names for
+        // discoverability.
+        await expect(
+          bulkUpdateTasks({ taskIds: [1, 2], field: 'dueDate', value: '2024-05-24T10:00:00Z' }),
+        ).rejects.toThrow('Invalid field: dueDate. Allowed fields:');
+      });
+
       it('should validate priority range', async () => {
         await expect(bulkUpdateTasks({ taskIds: [1, 2], field: 'priority', value: 6 })).rejects.toThrow(
           'Priority must be between 0 and 5'
@@ -262,6 +275,91 @@ describe('Bulk operations', () => {
           1,
           expect.objectContaining({ priority: 3 }),
         );
+      });
+    });
+
+    describe('Native bulk update path (POST /tasks/bulk honesty)', () => {
+      // These tests exercise the native single-request path directly, so
+      // POST /tasks/bulk must be handled by the mock (the shared beforeEach
+      // mockRest only routes GET/POST/DELETE for /tasks/{id} and friends).
+      const routeNativeBulk = (
+        bulkResponseTasks: Array<Record<string, unknown>>,
+        options: { assigneesByTaskId?: Record<number, Array<{ id: number }>>; assigneeRestoreError?: Error } = {},
+      ) => {
+        mockRest.mockImplementation(async (_auth: unknown, method: string, path: string, body?: unknown) => {
+          const taskIdMatch = /^\/tasks\/(\d+)$/.exec(path);
+          if (method === 'GET' && taskIdMatch?.[1] !== undefined) {
+            const id = Number(taskIdMatch[1]);
+            return {
+              id,
+              title: `Task ${id}`,
+              done: false,
+              assignees: options.assigneesByTaskId?.[id] ?? [],
+            };
+          }
+          if (method === 'POST' && path === '/tasks/bulk') {
+            return { task_ids: (body as { task_ids: number[] }).task_ids, tasks: bulkResponseTasks };
+          }
+          if (method === 'PUT' && /^\/tasks\/\d+\/assignees$/.test(path)) {
+            if (options.assigneeRestoreError) throw options.assigneeRestoreError;
+            return undefined;
+          }
+          throw new Error(`mockRest: unhandled ${method} ${path}`);
+        });
+      };
+
+      it('reports partial success when the server returns fewer tasks than requested (2 of 3)', async () => {
+        routeNativeBulk([
+          { id: 1, title: 'Task 1', done: true, assignees: [] },
+          { id: 2, title: 'Task 2', done: true, assignees: [] },
+        ]);
+
+        const result = await bulkUpdateTasks({ taskIds: [1, 2, 3], field: 'done', value: true });
+
+        const markdown = result.content[0].text;
+        const parsed = parseMarkdown(markdown);
+        expect(parsed.hasHeading(2, /Error/)).toBe(true);
+        expect(markdown).toContain(
+          'Bulk update partially completed. Successfully updated 2 tasks. Failed task IDs: 3',
+        );
+        expect(markdown).toContain('**count:** 2');
+        expect(markdown).toContain('**FailedCount**:\n1');
+        expect(markdown).toContain('**FailedIds**:\n[3]');
+      });
+
+      it('reports unchanged full success when the server returns every requested task', async () => {
+        routeNativeBulk([
+          { id: 1, title: 'Task 1', done: true, assignees: [] },
+          { id: 2, title: 'Task 2', done: true, assignees: [] },
+        ]);
+
+        const result = await bulkUpdateTasks({ taskIds: [1, 2], field: 'done', value: true });
+
+        const markdown = result.content[0].text;
+        const parsed = parseMarkdown(markdown);
+        expect(parsed.hasHeading(2, /Success/)).toBe(true);
+        expect(markdown).toContain('Successfully updated 2 tasks');
+        expect(markdown).toContain('**count:** 2');
+        expect(markdown).not.toContain('failedCount');
+        expect(markdown).not.toContain('assigneeRestoreFailures');
+      });
+
+      it('surfaces assignee-restore failures instead of silently swallowing them', async () => {
+        const restoreError = new Error('assignee restore failed: database is locked');
+        routeNativeBulk(
+          [{ id: 1, title: 'Task 1', done: true, assignees: [] }],
+          { assigneesByTaskId: { 1: [{ id: 5 }] }, assigneeRestoreError: restoreError },
+        );
+
+        const result = await bulkUpdateTasks({ taskIds: [1], field: 'done', value: true });
+
+        const markdown = result.content[0].text;
+        const parsed = parseMarkdown(markdown);
+        expect(parsed.hasHeading(2, /Error/)).toBe(true);
+        expect(markdown).toContain('Assignee restoration failed for task(s): 1');
+        expect(markdown).toContain('**count:** 1');
+        // No missing IDs in this scenario — only the assignee restore failed.
+        expect(markdown).not.toContain('FailedIds');
       });
     });
 

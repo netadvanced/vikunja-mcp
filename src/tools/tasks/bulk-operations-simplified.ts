@@ -183,19 +183,9 @@ export async function bulkUpdateTasks(args: BulkUpdateArgs, authManager: AuthMan
       };
       const result = await vikunjaRestRequest<BulkTask | Task[]>(authManager, 'POST', '/tasks/bulk', payload);
 
-      // Re-add the assignees the bulk endpoint cleared. Sequential on purpose:
-      // concurrent writes 500 with "database is locked" on SQLite backends.
-      for (const [taskId, userIds] of assigneesByTask) {
-        for (const userId of userIds) {
-          try {
-            await vikunjaRestRequest(authManager, 'PUT', `/tasks/${taskId}/assignees`, { user_id: userId });
-          } catch (e) {
-            logger.warn('Could not restore assignee after bulk update', { taskId, userId, error: e instanceof Error ? e.message : String(e) });
-          }
-        }
-      }
-
       // 2.x echoes { task_ids, fields, values, tasks }; tolerate a bare Task[] too.
+      // The honesty check below is derived from THIS array — the server's own
+      // account of what it updated — never from the requested taskIds.
       const updatedTasks: Task[] = Array.isArray(result) ? result : (result?.tasks ?? []);
       // Sanity-check the server actually applied the value — guards against
       // running into an older server that ignores fields/values.
@@ -205,10 +195,53 @@ export async function bulkUpdateTasks(args: BulkUpdateArgs, authManager: AuthMan
         throw new MCPError(ErrorCode.API_ERROR, 'Native bulk update did not apply the requested value');
       }
 
+      // A server that silently drops a subset of the requested IDs
+      // (permissions, partial bulk transaction) must not be reported as a
+      // full success. Match the server-returned IDs against what was asked for.
+      const returnedIds = new Set(updatedTasks.map((t) => t.id).filter((id): id is number => typeof id === 'number'));
+      const missingIds = taskIds.filter((id) => !returnedIds.has(id));
+
+      // Re-add the assignees the bulk endpoint cleared. Sequential on purpose:
+      // concurrent writes 500 with "database is locked" on SQLite backends.
+      // Failures are collected (not just logged) so a lost assignee is
+      // surfaced to the caller rather than silently swallowed.
+      const assigneeRestoreFailures: Array<{ taskId: number; userId: number }> = [];
+      for (const [taskId, userIds] of assigneesByTask) {
+        for (const userId of userIds) {
+          try {
+            await vikunjaRestRequest(authManager, 'PUT', `/tasks/${taskId}/assignees`, { user_id: userId });
+          } catch (e) {
+            logger.warn('Could not restore assignee after bulk update', { taskId, userId, error: e instanceof Error ? e.message : String(e) });
+            assigneeRestoreFailures.push({ taskId, userId });
+          }
+        }
+      }
+
       // Re-fetch when assignees were restored so the response reflects them.
+      // This is presentation only — it does not feed the honesty check above,
+      // which stays fixed to what POST /tasks/bulk itself returned.
       const responseTasks = assigneesByTask.size > 0
         ? (await processors.update.processBatches(taskIds, async (id) => await vikunjaRestRequest<Task>(authManager, 'GET', `/tasks/${id}`))).successful
         : updatedTasks;
+
+      if (missingIds.length > 0 || assigneeRestoreFailures.length > 0) {
+        const messages: string[] = [
+          missingIds.length > 0
+            ? `Bulk update partially completed. Successfully updated ${updatedTasks.length} tasks. Failed task IDs: ${missingIds.join(', ')}`
+            : `Successfully updated ${updatedTasks.length} tasks`,
+        ];
+        if (assigneeRestoreFailures.length > 0) {
+          const restoreFailedTaskIds = [...new Set(assigneeRestoreFailures.map((f) => f.taskId))];
+          messages.push(`Assignee restoration failed for task(s): ${restoreFailedTaskIds.join(', ')}.`);
+        }
+        return successResponse('update-task', messages.join(' '), responseTasks, {
+          count: updatedTasks.length,
+          affectedFields: [args.field],
+          success: false,
+          ...(missingIds.length > 0 && { failedCount: missingIds.length, failedIds: missingIds }),
+          ...(assigneeRestoreFailures.length > 0 && { assigneeRestoreFailures }),
+        });
+      }
 
       return successResponse('update-task', `Successfully updated ${taskIds.length} tasks`, responseTasks, { count: taskIds.length, affectedFields: [args.field] });
     } catch (nativeError) {
