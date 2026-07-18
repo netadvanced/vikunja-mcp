@@ -11,7 +11,12 @@ import { validateDateString, validateId, convertRepeatConfiguration } from '../v
 import { isAuthenticationError } from '../../../utils/auth-error-handler';
 import { RETRY_CONFIG } from '../../../utils/retry';
 import { setTaskLabels } from '../../../utils/label-bulk';
-import { transformApiError, handleFetchError, handleStatusCodeError } from '../../../utils/error-handler';
+import {
+  transformApiError,
+  handleFetchError,
+  handleStatusCodeError,
+  wrapIfRestOrigin,
+} from '../../../utils/error-handler';
 import { extractHttpErrorDetail } from '../../../utils/http-error-detail';
 import { AUTH_ERROR_MESSAGES } from '../constants';
 import { createTaskResponse } from './TaskResponseFormatter';
@@ -136,16 +141,21 @@ export async function updateTask(
       ],
     };
   } catch (error) {
-    // Re-throw MCPError instances without modification, except a REST 404,
-    // which is translated to the same friendly "not found" message the
+    // A REST 404 is translated to the same friendly "not found" message the
     // pre-migration legacy client error path produced via handleStatusCodeError
     // (which keys off a bare `.statusCode` property, not the `.details`
-    // nesting vikunjaRestRequest's thrown MCPError uses).
+    // nesting vikunjaRestRequest's thrown MCPError uses). Any other
+    // REST-origin MCPError (label/assignee writes, the task-refresh GET —
+    // all now throw MCPError directly via vikunjaRestRequest, unlike the
+    // pre-migration legacy client) gets the conventional "Failed to update
+    // task: ..." wrapping restored via wrapIfRestOrigin, preserving the
+    // original code/details; this tool's own validation/internal MCPErrors
+    // (no REST statusCode) still pass through unmodified.
     if (error instanceof MCPError) {
       if (error.details?.statusCode === 404 && args.id) {
         throw new MCPError(ErrorCode.NOT_FOUND, `Task with ID ${args.id} not found`);
       }
-      throw error;
+      throw wrapIfRestOrigin(error, 'update task');
     }
 
     // Handle fetch/connection errors with helpful guidance
