@@ -64,3 +64,8 @@ temp/
 coverage_output.txt
 *-report.json
 .inspector-pid
+
+# Version-matrix verdict files (npm run test:matrix) -- regenerate via a
+# fresh run rather than trusting a stale committed one; see
+# docs/LOCAL-TESTING.md's "Version-matrix testing" section.
+e2e-verdicts/

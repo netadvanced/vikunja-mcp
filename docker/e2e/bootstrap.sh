@@ -16,13 +16,30 @@
 # Usage: docker/e2e/bootstrap.sh
 # (invoked by `npm run e2e:up`, which runs `docker compose up` first)
 #
-# See docs/LOCAL-TESTING.md for the full workflow.
+# The Vikunja image tag is controlled by the `VIKUNJA_VERSION` env var
+# (default `2.3.0`, see docker/e2e/docker-compose.yml) -- docker compose
+# picks it up automatically via `${VIKUNJA_VERSION:-2.3.0}` interpolation
+# in that file, since this script's `compose()` helper just inherits
+# whatever is in this process's environment. Exporting it explicitly here
+# (rather than relying on it merely being inherited) makes the effective
+# version visible in this script's own log output and guarantees `docker
+# compose` sees it even if a caller invoked this script directly (bypassing
+# `npm run e2e:up`, which also forwards it) without exporting it first:
+#
+#   VIKUNJA_VERSION=2.4.0 npm run e2e:up
+#
+# See docs/LOCAL-TESTING.md for the full workflow, including the
+# version-matrix runner (`npm run test:matrix`) that drives this.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"
 ENV_FILE="$SCRIPT_DIR/.env"
+
+# Default + export so it's visible in the log line below and so `docker
+# compose` sees it regardless of how this script was invoked.
+export VIKUNJA_VERSION="${VIKUNJA_VERSION:-2.3.0}"
 
 VIKUNJA_URL="http://localhost:33456/api/v1"
 TEST_USERNAME="e2e-test"
@@ -105,6 +122,7 @@ mint_api_token() {
 }
 
 main() {
+  log "Vikunja version: $VIKUNJA_VERSION"
   wait_for_health
 
   local jwt

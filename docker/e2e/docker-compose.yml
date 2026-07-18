@@ -22,8 +22,18 @@
 # spec/docs but *absent* from this stack. If a real-server run against
 # this stack fails on something that looks brand new, check whether it's
 # one of those not-yet-released commits before treating it as drift.
-# Re-pin by bumping the tag below (see docs/LOCAL-TESTING.md's
-# version-refresh note) once a newer stable release ships.
+#
+# The tag is env-driven (`VIKUNJA_VERSION`, default `2.3.0` below) so the
+# version-matrix runner (`npm run test:matrix`, see
+# scripts/test-matrix.ts and docs/LOCAL-TESTING.md) can bring this stack
+# up against a different Vikunja release without editing this file:
+#
+#   VIKUNJA_VERSION=2.4.0 npm run e2e:up
+#
+# Plain `npm run e2e:up` (no override) still uses the `2.3.0` default.
+# Re-pin the *default* by bumping the fallback value below (see
+# docs/LOCAL-TESTING.md's version-refresh note) once a newer stable
+# release ships and becomes the new baseline everyone gets by default.
 name: vikunja-mcp-e2e
 
 services:
@@ -58,7 +68,7 @@ services:
       - vikunja-mcp-e2e-files:/files
 
   vikunja:
-    image: vikunja/vikunja:2.3.0
+    image: vikunja/vikunja:${VIKUNJA_VERSION:-2.3.0}
     restart: unless-stopped
     depends_on:
       db:

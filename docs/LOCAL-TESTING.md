@@ -277,6 +277,112 @@ Every mismatch the harness finds is reported as one of:
   — reproduced with a raw, tool-independent request to confirm it isn't
   this codebase's fault before filing it here).
 
+A **known, currently-tolerated** instance of the last category:
+`GET /tasks/{id}/assignees` returns HTTP 500 unconditionally on Vikunja
+2.3.0 (fixed upstream on `go-vikunja/vikunja`'s `main` via PR #2791, not in
+a tagged release yet as of this writing). The harness still *runs* this
+check on every version — it is never globally skipped — but when it hits
+exactly this signature, it's reported as `⚠ list task assignees
+(server-drift, tolerated: ...)` instead of `✗ ...`: recorded as a
+`server-drift` finding and excluded from the pass/fail counts and exit
+code, rather than as a hard failure. See `driftTolerated()` in
+`scripts/mcp-e2e.ts` for the implementation. **Remove this tolerance** once
+a Vikunja release ships that fix and re-test — if it still 500s on a
+newer tagged release, that's a new, real regression, not the same known
+gap.
+
+## Version-matrix testing (`npm run test:matrix`)
+
+`scripts/test-matrix.ts` is the one-command runner that ties the two
+harnesses above together against a *chosen* Vikunja server version, so
+re-validating this project against a newly-released Vikunja tag (or
+re-confirming it against the current pin) is a single command instead of a
+manual sequence of stack-recreation and harness-invocation steps.
+
+```bash
+npm run test:matrix                        # against the default pin, 2.3.0
+VIKUNJA_VERSION=2.4.0 npm run test:matrix  # against a different tag
+```
+
+For the chosen `VIKUNJA_VERSION` (default `2.3.0`, matching the compose
+file's own default — see "Version pinning and refresh" above), it:
+
+1. **Ensures the stack is up on that version.** If the local stack is
+   already running and `GET /api/v1/info` reports the requested version,
+   it's reused as-is (still re-running `npm run e2e:up` to mint a fresh
+   token into `docker/e2e/.env`, cheap and idempotent). If it's running a
+   *different* version, it's fully recreated (`npm run e2e:down` — which
+   drops the named volumes, so there's no stale-schema risk when going
+   from a newer version back down to an older one — then `VIKUNJA_VERSION=
+   <version> npm run e2e:up`). If it's not running at all, it's brought up
+   fresh on the requested version.
+2. **Runs both harnesses against it**: `npm run test:mcp` (the ~23-check
+   direct-REST suite) and `npm run test:e2e:mcp` (the ~51-check MCP-tool
+   -layer suite), streaming their output live and also capturing it.
+3. **Reads the actual server version from `GET /api/v1/info`** rather than
+   trusting the `VIKUNJA_VERSION` input — if the requested tag doesn't
+   exist on Docker Hub (or the server otherwise comes up reporting
+   something else), the run fails loudly with that mismatch instead of
+   silently mislabeling results.
+4. **Writes a verdict file** to `e2e-verdicts/vikunja-<server-version>.md`
+   (gitignored — see "Verdict files aren't committed" below) with a
+   `# vikunja-mcp-ng <our-version> vs Vikunja <server-version>: PASS/FAIL`
+   header, the full per-check list from both harnesses (parsed from their
+   own `✓`/`✗`/`⊘`/`⚠` stdout lines — see "Findings categorization" above
+   for what those mean), and a closing verdict paragraph. The overall
+   verdict is `PASS` only if *both* harnesses exit 0 with zero non-tolerated
+   (`✗`) failures; `⚠ server-drift` entries don't block a `PASS`.
+5. **Exits 0 on `PASS`, 1 on `FAIL`** — usable as a plain shell gate even
+   without CI (GitHub Actions are disabled repo-wide by explicit owner
+   decision; this is why this entire workflow is a local script rather
+   than a workflow file).
+
+### Safety
+
+Exactly like `test:e2e:mcp` (see above), this script never reads the
+ambient `VIKUNJA_URL` / `VIKUNJA_API_TOKEN` env vars — every child process
+it spawns (`npm run e2e:down`, `npm run e2e:up`, `npm run test:mcp`,
+`npm run test:e2e:mcp`) gets a copy of `process.env` with those (plus
+`VIKUNJA_API_TOKEN_FILE`) stripped first. `test:mcp` needs *some*
+credentials (unlike `test:e2e:mcp`, it doesn't mint its own), so this
+script reads them explicitly out of `docker/e2e/.env` after bootstrapping
+and hands them to that one child process only, asserting the URL resolves
+to `localhost`/`127.0.0.1`/`::1` first. This matters concretely in this
+repo: this directory has a real, production-pointed `.envrc` that a
+developer's shell may already have loaded via direnv — never read `.env`
+or `.envrc` directly, and never trust that ambient env vars are safe
+defaults.
+
+### Verdict files aren't committed
+
+`e2e-verdicts/` is gitignored, the same convention as `coverage/` — a
+verdict file is a point-in-time run artifact tied to whatever commit and
+Vikunja version produced it, not something that stays accurate sitting in
+the tree. Regenerate with `npm run test:matrix` rather than trusting a
+stale committed one; paste or attach the freshly-generated file's contents
+in a PR description when a run needs to be shown to a reviewer.
+
+### When a new Vikunja release ships
+
+1. `curl -s https://hub.docker.com/v2/repositories/vikunja/vikunja/tags?page_size=100`
+   (or the [releases page](https://github.com/go-vikunja/vikunja/releases))
+   to confirm the new tag exists.
+2. `VIKUNJA_VERSION=X.Y.Z npm run test:matrix` — inspect the verdict; a
+   `FAIL` needs triage (script staleness / real tool bug / new server-drift
+   to document and tolerate the same way the assignees case above is
+   tolerated) before going further.
+3. If it passes (or once triaged failures are addressed), refresh the
+   vendored spec if you also want to re-check spec/tool alignment:
+   `npm run fetch:api-spec && npm run generate:api-types`.
+4. Bump the *default* pin in `docker/e2e/docker-compose.yml` (the
+   `${VIKUNJA_VERSION:-2.3.0}` fallback) and re-run `npm run test:matrix`
+   with no override to confirm the new default is green.
+5. Cut a **minor** release aligned to the new Vikunja version, per
+   `docs/RELEASING.md` §7's Docker compatibility-tag scheme (`X.Y.Z`,
+   `X.Y.Z-vikunja<A.B.C>`, `latest`) — changing the base Vikunja version
+   this project targets is always at least a minor bump (see
+   `docs/RELEASING.md` §1).
+
 ## Sample-page screenshot capture (`npm run capture:samples`)
 
 `scripts/capture-sample-screenshots.ts` drives the real Vikunja *web UI*

@@ -33,6 +33,7 @@
     "version:major": "npm version major",
     "test:mcp": "tsx scripts/test-mcp.ts",
     "test:e2e:mcp": "tsx scripts/mcp-e2e.ts",
+    "test:matrix": "tsx scripts/test-matrix.ts",
     "capture:samples": "tsx scripts/capture-sample-screenshots.ts",
     "fetch:api-spec": "curl -sS https://try.vikunja.io/api/v1/docs.json -o docs/vikunja-openapi.json && jq -e . docs/vikunja-openapi.json > /dev/null",
     "generate:api-types": "node scripts/generate-api-types.mjs",

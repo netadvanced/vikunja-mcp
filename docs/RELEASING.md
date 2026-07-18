@@ -202,6 +202,13 @@ baseline — and its changelog entry and release notes should lead with *"now al
 X.Y.Z"* so deployers notice. Every release's notes state the Vikunja version it's aligned to,
 whether or not it changed.
 
+Before cutting that release, actually validate against the new server version rather than just
+bumping the pin: `VIKUNJA_VERSION=X.Y.Z npm run test:matrix` (see
+[docs/LOCAL-TESTING.md](LOCAL-TESTING.md#version-matrix-testing-npm-run-testmatrix)) runs both
+local e2e harnesses against it in one command and writes a pass/fail verdict, refresh the vendored
+spec if needed (`npm run fetch:api-spec && npm run generate:api-types`), *then* bump the default
+`e2e` pin and proceed with the release scope/checklist above.
+
 ## 8. The one rule that matters most
 
 **`main` is always releasable.** Every PR — release or otherwise — must land with lint, typecheck,

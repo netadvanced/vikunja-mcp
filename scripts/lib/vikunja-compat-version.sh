@@ -51,8 +51,15 @@ fi
 # failure: the vendored spec is the single source of truth for the compat tag (see header comment
 # above); the e2e pin is a separately-maintained decision that should normally agree with it but
 # isn't required to gate a release publish.
+#
+# The compose file's image tag is env-driven (`vikunja/vikunja:${VIKUNJA_VERSION:-2.3.0}`, see
+# docker/e2e/docker-compose.yml) so a version-matrix run can override it without editing the
+# file — this cross-check reads the *default* fallback value, i.e. the baseline pin everyone gets
+# with a plain `npm run e2e:up`, not whatever VIKUNJA_VERSION a given test-matrix run happened to
+# override it to.
 if [[ -f "$COMPOSE_FILE" ]]; then
-  COMPOSE_PIN="$(grep -oE 'vikunja/vikunja:[0-9]+\.[0-9]+\.[0-9]+' "$COMPOSE_FILE" | head -1 | cut -d: -f2 || true)"
+  COMPOSE_PIN="$(grep -oE '\$\{VIKUNJA_VERSION:-[0-9]+\.[0-9]+\.[0-9]+\}' "$COMPOSE_FILE" \
+    | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)"
   if [[ -n "$COMPOSE_PIN" && "$COMPOSE_PIN" != "$BASE_VERSION" ]]; then
     echo "WARNING: vendored spec base version ($BASE_VERSION) does not match the e2e Vikunja pin" >&2
     echo "         ($COMPOSE_PIN) in $COMPOSE_FILE — these should usually agree. If the spec was" >&2

@@ -117,6 +117,18 @@ interface StepResult {
   name: string;
   passed: boolean;
   skipped?: boolean;
+  /**
+   * Set when a check hit a *known, tracked* server-side regression on the
+   * version under test (currently: GET /tasks/{id}/assignees 500ing on
+   * Vikunja 2.3.0, see `driftTolerated` below) rather than a real tool bug.
+   * Tolerated checks are excluded from the failure count / exit code but
+   * still surfaced distinctly (not silently dropped) in both this script's
+   * own [Summary] output and the version-matrix verdict file
+   * (scripts/test-matrix.ts) so nobody mistakes "tolerated" for "fixed".
+   * Remove the corresponding tolerance once a Vikunja release ships the fix
+   * (upstream go-vikunja/vikunja PR #2791) and this starts failing for real.
+   */
+  serverDrift?: boolean;
   error?: string;
 }
 
@@ -151,6 +163,21 @@ function skip(name: string, reason: string): void {
 
 function record(category: Category, summary: string, detail: string): void {
   findings.push({ category, summary, detail });
+}
+
+/**
+ * Records a check that hit a known, tolerated server-drift regression: not
+ * a pass (the request genuinely failed), but explicitly not counted as a
+ * failure either -- surfaced as its own [server-drift] line so a matrix run
+ * against an affected version stays green while still reporting the gap.
+ * Always pair this with a `record('server-drift', ...)`-shaped explanation
+ * (done internally here) of exactly what's tolerated and why, per
+ * docs/LOCAL-TESTING.md's version-matrix section.
+ */
+function driftTolerated(name: string, summary: string, detail: string): void {
+  results.push({ name, passed: false, serverDrift: true, error: summary });
+  record('server-drift', summary, detail);
+  log(`  ⚠ ${name} (server-drift, tolerated: ${summary})`);
 }
 
 // ============================================================================
@@ -687,30 +714,37 @@ async function testAssignees(h: McpHarness, ctx: FlowContext): Promise<void> {
   assertOk('assign self to task', assign);
 
   const list = await h.call('vikunja_task_assignees', { operation: 'list-assignees', id: ctx.taskId });
+  // Known, tracked server-side regression: GET /tasks/{id}/assignees 500s
+  // unconditionally on Vikunja 2.3.0 (fixed upstream on go-vikunja/vikunja's
+  // main via PR #2791, but not in any tagged release yet at the time this
+  // was written). Confirmed independently via raw REST (bypassing this tool
+  // entirely) against a fresh task with zero assignees on the same local
+  // stack — same 500. The MCP tool's request (GET /tasks/{taskID}/assignees,
+  // no body) matches the OpenAPI spec exactly; this is a real server-side
+  // bug on the version under test, not something the tool can work around
+  // by sending a different request, and NOT a reason to skip this check
+  // outright -- it still runs every time, on every version, and only this
+  // exact signature is tolerated. Remove this tolerance once a Vikunja
+  // release ships PR #2791 and re-promote this back to a hard failure.
+  if (list.isError && /HTTP 500/.test(list.text) && /assignees/.test(list.text)) {
+    driftTolerated(
+      'list task assignees',
+      'GET /tasks/{id}/assignees returns HTTP 500 on this Vikunja version, independent of caller',
+      `vikunja_task_assignees {operation:"list-assignees", id:${ctx.taskId}} failed with: ` +
+        `${list.text.slice(0, 300)}. Reproduced with a raw, tool-independent curl GET against ` +
+        'a fresh task with zero assignees on the same local stack — same 500. Tracked upstream ' +
+        'as go-vikunja/vikunja PR #2791 (fixed on main, not in a tagged release yet as of this ' +
+        'writing). Retest against a newer Vikunja tag once one ships the fix, per ' +
+        'docs/LOCAL-TESTING.md\'s "Version pinning and refresh" section -- if this still 500s ' +
+        'there, remove this tolerance and let it fail for real.',
+    );
+    return;
+  }
   if (assertOk('list task assignees', list)) {
     assertStep(
       'assignee list includes self',
       list.text.includes(TEST_USERNAME) || extractAllIds(list.text).includes(ctx.selfUserId),
       list.text.slice(0, 300),
-    );
-  } else if (/HTTP 500/.test(list.text) && /assignees/.test(list.text)) {
-    // Confirmed independently via raw REST (bypassing this tool entirely):
-    // GET /tasks/{id}/assignees 500s unconditionally on the pinned local
-    // Vikunja 2.3.0 — even for a task with zero assignees. The tool's
-    // request is spec-correct (see docs/API-COVERAGE.md's "GET
-    // /tasks/{taskID}/assignees" entry); this is server/spec drift on the
-    // pinned version, not a tool bug.
-    record(
-      'server-drift',
-      'GET /tasks/{id}/assignees returns HTTP 500 on pinned Vikunja 2.3.0, independent of caller',
-      `vikunja_task_assignees {operation:"list-assignees", id:${ctx.taskId}} failed with: ` +
-        `${list.text.slice(0, 300)}. Reproduced with a raw, tool-independent curl GET against ` +
-        'a fresh task with zero assignees on the same local stack — same 500. The MCP tool\'s ' +
-        'request (GET /tasks/{taskID}/assignees, no body) matches the OpenAPI spec exactly; this ' +
-        'is a real server-side regression/bug on the pinned docker/e2e/docker-compose.yml ' +
-        'vikunja/vikunja:2.3.0 image, not something the tool can work around by sending a ' +
-        'different request. Flagging for follow-up (retest against a newer Vikunja tag when the ' +
-        'pin is refreshed, per docs/LOCAL-TESTING.md\'s "Version pinning and refresh" section).',
     );
   }
 }
@@ -975,9 +1009,13 @@ async function main(): Promise<void> {
 
   log('\n[Summary]');
   const passed = results.filter((r) => r.passed).length;
-  const failedResults = results.filter((r) => !r.passed && !r.skipped);
+  const failedResults = results.filter((r) => !r.passed && !r.skipped && !r.serverDrift);
   const skipped = results.filter((r) => r.skipped).length;
-  log(`Passed: ${passed}, Failed: ${failedResults.length}, Skipped: ${skipped}`);
+  const drifted = results.filter((r) => r.serverDrift).length;
+  log(
+    `Passed: ${passed}, Failed: ${failedResults.length}, Skipped: ${skipped}, ` +
+      `Server-drift (tolerated): ${drifted}`,
+  );
 
   if (findings.length > 0) {
     log('\n[Findings]');
