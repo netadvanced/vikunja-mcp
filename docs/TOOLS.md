@@ -110,6 +110,8 @@ interface StandardResponse {
   - `get-by-index` - Look up a task by its human-facing per-project index (e.g. the `42` in `PROJ-42`)
     - Required: `projectId`, `index`
     - Task indexes are reassigned when a task moves between projects — use the returned task's `id` for long-lived references
+  - `create-subtask` - Composite: create a new task as a subtask of an existing task (`parentTaskId`, `title`, optional `description`/`dueDate`/`priority`/`labels`/`assignees`/`bucketId`). Resolves the parent to inherit its project, creates the task, optionally attaches labels/assignees and places it in a Kanban bucket (reuses the `set-bucket` path), relates it to the parent (Vikunja's `subtask`/`parenttask` relation kinds — the parent is always the "base" task of the relation), then re-reads the parent to verify the relation landed. Best-effort by default: a failure after the task was created is reported honestly (including the orphaned task id) rather than silently rolled back; `atomic: true` opts into best-effort rollback (deletes the created task) per `CompositeOperation`'s design — see [ENDPOINT-PLAYBOOK.md §5](ENDPOINT-PLAYBOOK.md)
+  - `list-subtasks` - Read composite: summarizes a task's subtasks (id/title/done/assignees) from the `"subtask"` slice of its `related_tasks`, in one call (`id`)
 
 Several task sub-resources also register as their own standalone tools (same
 handlers, `operation` field instead of `subcommand`, useful when you want a
@@ -204,11 +206,14 @@ narrower tool surface exposed to a client): `vikunja_task_bulk` (`operation`:
 
 ## Project Templates
 
-> **⚠️ Session-only storage:** Templates are stored in memory on the MCP
-> server process, not persisted to Vikunja. They are lost when the server
-> restarts.
+> **⚠️ Never persisted to Vikunja itself; session-only by default:**
+> Templates are stored in memory on the MCP server process by default and
+> are lost when the server restarts. Set the `templates.persistPath` config
+> key (or `VIKUNJA_MCP_TEMPLATES_FILE` env var, which wins) to make them
+> durable across restarts via a JSON file — see
+> [docs/CONFIGURATION.md#templates-persistence](CONFIGURATION.md#templates-persistence).
 
-- `vikunja_templates` - Template operations (session-only persistence — see warning above)
+- `vikunja_templates` - Template operations (session-only by default, opt-in file persistence — see note above)
   - `create` - Create a template from an existing project (required: projectId, name; optional: description, tags)
   - `list` - List all available templates (name, tags, author)
   - `get` - Get template details by ID

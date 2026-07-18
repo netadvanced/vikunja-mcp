@@ -27,6 +27,7 @@ import { logger } from '../utils/logger';
 import { validateAndConvertId } from '../utils/validation';
 import { createAorpResponse } from '../utils/response-factory';
 import { vikunjaRestRequest } from '../utils/vikunja-rest';
+import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../utils/read-only';
 
 /** `models.Subscription` per the spec. */
 interface VikunjaSubscription {
@@ -45,13 +46,17 @@ export function registerSubscriptionsTool(
 ): void {
   server.tool(
     'vikunja_subscriptions',
-    'Subscribe or unsubscribe the current user to/from notifications for a ' +
-      'Vikunja project or task.',
+    withReadOnlyNote(
+      'vikunja_subscriptions',
+      'Subscribe or unsubscribe the current user to/from notifications for a ' +
+        'Vikunja project or task.',
+    ),
     {
       subcommand: z.enum(['subscribe', 'unsubscribe']),
       entity: SubscriptionEntitySchema,
       entityId: z.number().int().positive(),
     },
+    getToolAnnotations('vikunja_subscriptions'),
     async (args) => {
       if (!authManager.isAuthenticated()) {
         throw new MCPError(
@@ -63,6 +68,8 @@ export function registerSubscriptionsTool(
       await getAuthManagerFromContext(); // Ensure the session is initialized
       const subcommand = args.subcommand;
       const entity = args.entity;
+
+      assertWriteAllowed('vikunja_subscriptions', subcommand);
 
       logger.debug('Subscriptions tool called', { subcommand, entity, entityId: args.entityId });
 

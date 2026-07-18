@@ -23,6 +23,8 @@ import * as validationUtils from '../../src/utils/validation';
 import type { MockVikunjaClient, MockAuthManager, MockServer } from '../types/mocks';
 import type { Webhook } from '../../src/types/vikunja';
 import { circuitBreakerRegistry } from '../../src/utils/retry';
+import { ConfigurationManager } from '../../src/config';
+import { callAndCatch, isReadOnlyRejection } from '../utils/read-only-test-helpers';
 
 // Mock the modules
 jest.mock('../../src/client', () => ({
@@ -142,7 +144,7 @@ describe('Webhooks Tool', () => {
     // Get the tool handler
     const calls = (mockServer.tool as jest.Mock).mock.calls;
     if (calls.length > 0) {
-      mockHandler = calls[0][3]; // Handler is the 4th argument (index 3)
+      mockHandler = calls[0][calls[0].length - 1]; // Handler is always the last argument
     } else {
       throw new Error('Tool handler not found');
     }
@@ -954,8 +956,64 @@ describe('Webhooks Tool', () => {
           events: expect.any(Object),
           secret: expect.any(Object),
         }),
+        expect.any(Object), // ToolAnnotations
         expect.any(Function),
       );
+    });
+  });
+
+  describe('global read-only mode', () => {
+    afterEach(() => {
+      ConfigurationManager.reset();
+    });
+
+    it('rejects create/update/delete when readOnly is on', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: true } });
+
+      expect(
+        isReadOnlyRejection(
+          await callAndCatch(mockHandler, { subcommand: 'create', projectId: 1, targetUrl: 'https://x', events: [] }),
+        ),
+      ).toBe(true);
+      expect(
+        isReadOnlyRejection(
+          await callAndCatch(mockHandler, { subcommand: 'update', projectId: 1, webhookId: 1 }),
+        ),
+      ).toBe(true);
+      expect(
+        isReadOnlyRejection(
+          await callAndCatch(mockHandler, { subcommand: 'delete', projectId: 1, webhookId: 1 }),
+        ),
+      ).toBe(true);
+    });
+
+    it('does not raise the read-only error for list/get/list-events when readOnly is on', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: true } });
+
+      expect(
+        isReadOnlyRejection(await callAndCatch(mockHandler, { subcommand: 'list', projectId: 1 })),
+      ).toBe(false);
+      expect(
+        isReadOnlyRejection(
+          await callAndCatch(mockHandler, { subcommand: 'get', projectId: 1, webhookId: 1 }),
+        ),
+      ).toBe(false);
+      expect(
+        isReadOnlyRejection(await callAndCatch(mockHandler, { subcommand: 'list-events' })),
+      ).toBe(false);
+    });
+
+    it('does not raise the read-only error for create when readOnly is off', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: false } });
+
+      expect(
+        isReadOnlyRejection(
+          await callAndCatch(mockHandler, { subcommand: 'create', projectId: 1, targetUrl: 'https://x', events: [] }),
+        ),
+      ).toBe(false);
     });
   });
 });

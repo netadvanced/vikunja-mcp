@@ -16,6 +16,8 @@ import { parseMarkdown } from '../utils/markdown';
 
 // Import the function we're mocking
 import { vikunjaRestRequest } from '../../src/utils/vikunja-rest';
+import { ConfigurationManager } from '../../src/config';
+import { callAndCatch, isReadOnlyRejection } from '../utils/read-only-test-helpers';
 
 jest.mock('../../src/auth/AuthManager');
 jest.mock('../../src/utils/vikunja-rest', () => ({
@@ -96,11 +98,12 @@ describe('Users Tool', () => {
       'vikunja_users',
       expect.any(String),
       expect.any(Object),
+      expect.any(Object), // ToolAnnotations
       expect.any(Function),
     );
     const calls = mockServer.tool.mock.calls;
     if (calls.length > 0 && calls[0] && calls[0].length > 3) {
-      toolHandler = calls[0][3];
+      toolHandler = calls[0][calls[0].length - 1];
     } else {
       throw new Error('Tool handler not found');
     }
@@ -584,6 +587,7 @@ describe('Users Tool', () => {
         'vikunja_users',
         expect.stringContaining('Manage user profiles, search users, and update user settings'),
         expect.any(Object), // Zod schema
+        expect.any(Object), // ToolAnnotations
         expect.any(Function), // Handler function
       );
     });
@@ -591,6 +595,52 @@ describe('Users Tool', () => {
     it('should have the correct tool handler', () => {
       expect(toolHandler).toBeDefined();
       expect(typeof toolHandler).toBe('function');
+    });
+  });
+
+  describe('global read-only mode', () => {
+    afterEach(() => {
+      ConfigurationManager.reset();
+    });
+
+    it('rejects update-settings when readOnly is on', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: true } });
+
+      expect(
+        isReadOnlyRejection(
+          await callAndCatch(toolHandler, { subcommand: 'update-settings', name: 'x' }),
+        ),
+      ).toBe(true);
+    });
+
+    it('does not raise the read-only error for current/search/settings/timezones when readOnly is on', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: true } });
+
+      expect(isReadOnlyRejection(await callAndCatch(toolHandler, { subcommand: 'current' }))).toBe(
+        false,
+      );
+      expect(isReadOnlyRejection(await callAndCatch(toolHandler, { subcommand: 'search' }))).toBe(
+        false,
+      );
+      expect(isReadOnlyRejection(await callAndCatch(toolHandler, { subcommand: 'settings' }))).toBe(
+        false,
+      );
+      expect(
+        isReadOnlyRejection(await callAndCatch(toolHandler, { subcommand: 'timezones' })),
+      ).toBe(false);
+    });
+
+    it('does not raise the read-only error for update-settings when readOnly is off', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: false } });
+
+      expect(
+        isReadOnlyRejection(
+          await callAndCatch(toolHandler, { subcommand: 'update-settings', name: 'x' }),
+        ),
+      ).toBe(false);
     });
   });
 });

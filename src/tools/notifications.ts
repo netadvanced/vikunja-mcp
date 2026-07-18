@@ -18,6 +18,7 @@ import type { VikunjaClientFactory } from '../client/VikunjaClientFactory';
 import { MCPError, ErrorCode } from '../types';
 import { getAuthManagerFromContext } from '../client';
 import { logger } from '../utils/logger';
+import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../utils/read-only';
 import { validateAndConvertId } from '../utils/validation';
 import { createAorpResponse } from '../utils/response-factory';
 import { vikunjaRestRequest } from '../utils/vikunja-rest';
@@ -105,10 +106,13 @@ export function registerNotificationsTool(
 ): void {
   server.tool(
     'vikunja_notifications',
-    "Manage the current user's Vikunja notifications: list (with optional " +
-      "unread filtering and pagination), mark a single notification read " +
-      "(idempotent — safe to call repeatedly), and mark all notifications " +
-      "read at once.",
+    withReadOnlyNote(
+      'vikunja_notifications',
+      "Manage the current user's Vikunja notifications: list (with optional " +
+        "unread filtering and pagination), mark a single notification read " +
+        "(idempotent — safe to call repeatedly), and mark all notifications " +
+        "read at once.",
+    ),
     {
       subcommand: z.enum(['list', 'mark-read', 'mark-all-read']),
 
@@ -120,6 +124,7 @@ export function registerNotificationsTool(
       // mark-read parameter
       notificationId: z.number().int().positive().optional(),
     },
+    getToolAnnotations('vikunja_notifications'),
     async (args) => {
       if (!authManager.isAuthenticated()) {
         throw new MCPError(
@@ -130,6 +135,8 @@ export function registerNotificationsTool(
 
       await getAuthManagerFromContext(); // Ensure the session is initialized
       const subcommand = args.subcommand;
+
+      assertWriteAllowed('vikunja_notifications', subcommand);
 
       logger.debug('Notifications tool called', { subcommand, args });
 

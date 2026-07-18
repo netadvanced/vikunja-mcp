@@ -20,7 +20,8 @@ Plain CRUD create — hierarchy depth is validated server-side up to 10 levels; 
 **Resulting Vikunja UI state:**
 "Q3 Initiatives" appears in the sidebar nested one level under "Product", next to "Q2 Product Launch".
 
-`[SCREENSHOT: Vikunja sidebar showing "Product" expanded with "Q2 Product Launch" and the new "Q3 Initiatives" both listed as children]`
+![Vikunja sidebar showing "sample-Product" expanded with "sample-Q2 Product Launch" and the new "sample-Q3 Initiatives" both listed as children](assets/project-planning-01-sidebar-children.png)
+
 
 ---
 
@@ -38,7 +39,8 @@ Read composite: walks the hierarchy from `id: 5` down (default full depth, or ca
 **Resulting Vikunja UI state:**
 No change — this is a read. The reply mirrors exactly what the sidebar shows: "Product" → ["Q2 Product Launch", "Q3 Initiatives", ...any other existing children].
 
-`[SCREENSHOT: Vikunja sidebar fully expanded under "Product", matching the tree the assistant reported]`
+![Vikunja sidebar fully expanded under "sample-Product", matching the project tree returned by get-tree](assets/project-planning-02-sidebar-tree.png)
+
 
 ---
 
@@ -56,7 +58,34 @@ vikunja_projects({ subcommand: "duplicate", id: 8, parentProjectId: 5, duplicate
 **Resulting Vikunja UI state:**
 A new project appears under "Product" (named by Vikunja's own duplicate-naming convention, based on the source title), fully populated: same Kanban columns with the same cards, same labels attached to the same relative tasks, same comment threads, same collaborators as "Q2 Product Launch" had.
 
-`[SCREENSHOT: Sidebar showing the new duplicated project under "Product"; its Kanban board open, matching the source project's columns and cards]`
+![The duplicated "sample-Q2 Product Launch - duplicate" project's Kanban board, matching the source project's columns and cards](assets/project-planning-03-duplicated-kanban.png)
+
+
+---
+
+### 4. Break a big initiative into subtasks
+
+**User says:**
+> "Break 'Launch marketing site' (task 210) into subtasks: 'Write copy', 'Design hero section', and 'Set up analytics'."
+
+**Tool call:**
+```typescript
+vikunja_tasks({ subcommand: "create-subtask", parentTaskId: 210, title: "Write copy" })
+vikunja_tasks({ subcommand: "create-subtask", parentTaskId: 210, title: "Design hero section" })
+vikunja_tasks({ subcommand: "create-subtask", parentTaskId: 210, title: "Set up analytics" })
+```
+Each call is a composite: it resolves task 210's project (so the new task lands in the same project without you having to pass `projectId`), creates the task, relates it to the parent with Vikunja's `subtask` relation kind, then re-reads the parent to verify the relation actually landed — no numeric relation-kind bookkeeping required from you. Best-effort by default (a failure after the task was created is reported honestly rather than silently rolled back); pass `atomic: true` to have a failed relate/verify step delete the just-created task instead.
+
+**Resulting Vikunja UI state:**
+Task 210 now shows three subtasks nested under it in the task detail view.
+
+`[SCREENSHOT: Vikunja task detail for "Launch marketing site" showing "Write copy", "Design hero section", and "Set up analytics" listed under Subtasks]`
+
+**Follow-up — check what's there:**
+```typescript
+vikunja_tasks({ subcommand: "list-subtasks", id: 210 })
+```
+Read composite: one call summarizes all of task 210's subtasks (id, title, done, assignees) from its relation map, instead of you fetching the task and picking `related_tasks.subtask` apart yourself.
 
 ---
 

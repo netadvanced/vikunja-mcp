@@ -13,6 +13,7 @@ import { getAuthManagerFromContext, setGlobalClientFactory } from '../client';
 import { logger } from '../utils/logger';
 import { createAuthRequiredError } from '../utils/error-handler';
 import { addReminder, removeReminder, listReminders } from '../tools/tasks/reminders';
+import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../utils/read-only';
 
 /**
  * Register task reminders tool
@@ -24,7 +25,7 @@ export function registerTaskRemindersTool(
 ): void {
   server.tool(
     'vikunja_task_reminders',
-    'Manage task reminders: add, remove, list reminders',
+    withReadOnlyNote('vikunja_task_reminders', 'Manage task reminders: add, remove, list reminders'),
     {
       operation: z.enum(['add-reminder', 'remove-reminder', 'list-reminders']),
       // Task and reminder identification
@@ -35,6 +36,7 @@ export function registerTaskRemindersTool(
       // reminderIndex, both shown by list-reminders.
       reminderIndex: z.number().optional(),
     },
+    getToolAnnotations('vikunja_task_reminders'),
     async (args) => {
       try {
         logger.debug('Executing task reminders tool', { operation: args.operation, taskId: args.id, reminderIndex: args.reminderIndex });
@@ -43,6 +45,8 @@ export function registerTaskRemindersTool(
         if (!authManager.isAuthenticated()) {
           throw createAuthRequiredError('access task reminder operations');
         }
+
+        assertWriteAllowed('vikunja_task_reminders', args.operation);
 
         // Set the client factory for this request if provided
         if (clientFactory) {

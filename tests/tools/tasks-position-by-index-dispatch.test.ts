@@ -70,7 +70,7 @@ describe('vikunja_tasks dispatch — set-position / get-by-index', () => {
 
     const calls = mockServer.tool.mock.calls;
     if (calls.length > 0 && calls[0] && calls[0].length > 3) {
-      toolHandler = calls[0][3];
+      toolHandler = calls[0][calls[0].length - 1];
     } else {
       throw new Error('Tool handler not found');
     }

@@ -13,6 +13,7 @@ import { getAuthManagerFromContext, setGlobalClientFactory } from '../client';
 import { logger } from '../utils/logger';
 import { createAuthRequiredError } from '../utils/error-handler';
 import { handleRelationSubcommands } from '../tools/tasks-relations';
+import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../utils/read-only';
 
 /**
  * Register task relations tool
@@ -24,7 +25,10 @@ export function registerTaskRelationsTool(
 ): void {
   server.tool(
     'vikunja_task_relations',
-    'Manage task relationships: relate tasks, unrelate tasks, list relations',
+    withReadOnlyNote(
+      'vikunja_task_relations',
+      'Manage task relationships: relate tasks, unrelate tasks, list relations',
+    ),
     {
       operation: z.enum(['relate', 'unrelate', 'relations']),
       // Task identification
@@ -45,6 +49,7 @@ export function registerTaskRelationsTool(
         'copiedto',
       ]).optional(),
     },
+    getToolAnnotations('vikunja_task_relations'),
     async (args) => {
       try {
         logger.debug('Executing task relations tool', {
@@ -58,6 +63,8 @@ export function registerTaskRelationsTool(
         if (!authManager.isAuthenticated()) {
           throw createAuthRequiredError('access task relation operations');
         }
+
+        assertWriteAllowed('vikunja_task_relations', args.operation);
 
         // Set the client factory for this request if provided
         if (clientFactory) {

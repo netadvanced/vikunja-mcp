@@ -9,6 +9,16 @@ import { z } from 'zod';
 import { MCPError, ErrorCode } from '../types/errors';
 
 /**
+ * Shared prefix for every `MCPError` thrown by `vikunjaRestRequest`/
+ * `vikunjaRestMultipartRequest` (`src/utils/vikunja-rest.ts`) — kept as a
+ * local constant (rather than importing `isRestOriginError` from that
+ * module) so this file doesn't require every test that `jest.mock()`s
+ * `vikunja-rest` wholesale to also stub a new export. Must be kept in sync
+ * with `REST_ERROR_MESSAGE_PREFIX` in `vikunja-rest.ts` if that ever changes.
+ */
+const REST_ERROR_MESSAGE_PREFIX = 'Vikunja REST request failed (';
+
+/**
  * Security-sensitive patterns that should be sanitized from error messages
  * Minimal set of patterns for essential security while maintaining usability
  */
@@ -129,6 +139,35 @@ class SecureErrorHandler {
 
     // If no security patterns detected, return original message
     return message;
+  }
+
+  /**
+   * Restore the conventional "Failed to <operation>: <message>" wrapping on
+   * an MCPError that originated from the direct-REST layer
+   * (`vikunjaRestRequest`, which throws `MCPError` itself now that
+   * node-vikunja is gone — see PR #73), while preserving the original
+   * `code`/`details` (including `.details.statusCode`) so callers can still
+   * branch on the underlying failure type (e.g. `NOT_FOUND`).
+   *
+   * Many call sites re-throw `instanceof MCPError` errors unmodified so
+   * their OWN validation/internal errors (e.g. "Task ID is required") aren't
+   * silently re-wrapped. Before PR #73, a task-refresh/assignee-update REST
+   * failure was a plain `Error`, so it fell through to `handleStatusCode`
+   * and got the friendly wrapping. After PR #73, the same failure is itself
+   * an `MCPError`, so that `instanceof MCPError` guard now short-circuits it
+   * too, leaking the raw "Vikunja REST request failed (...)" string to the
+   * user. REST-origin errors are distinguished from this tool's own
+   * validation/internal `MCPError`s by the message prefix `vikunjaRestRequest`
+   * always uses (`.details.statusCode` alone isn't reliable: network-level
+   * REST failures carry `.details.transient` instead, not a statusCode);
+   * errors that aren't REST-origin pass through unchanged.
+   */
+  wrapIfRestOrigin(error: MCPError, operation: string): MCPError {
+    if (!error.message.startsWith(REST_ERROR_MESSAGE_PREFIX)) {
+      return error;
+    }
+    const sanitized = this.sanitize(error.message);
+    return new MCPError(error.code, `Failed to ${operation}: ${sanitized}`, error.details);
   }
 
   /**
@@ -329,6 +368,9 @@ export const handleStatusCodeError = (
   resourceId?: string | number,
   customMessage?: string
 ): MCPError => errorHandler.handleStatusCode(error, operation, resourceId, customMessage);
+
+export const wrapIfRestOrigin = (error: MCPError, operation: string): MCPError =>
+  errorHandler.wrapIfRestOrigin(error, operation);
 
 export const transformApiError = (error: unknown, context: string): MCPError =>
   errorHandler.transform(error, context);

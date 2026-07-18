@@ -20,7 +20,8 @@ Composite: resolves `"alice"` to a numeric user id via the global user search (`
 **Resulting Vikunja UI state:**
 Opening the project's Share panel in the browser now lists "alice" under "Shared with" with a "Write" permission badge, alongside the existing owner and the "Design" team share.
 
-`[SCREENSHOT: Project share panel showing alice added under direct user shares with a "Write" permission badge]`
+![Project share panel showing sample-alice added under direct user shares with a "Read & write" permission badge](assets/team-sharing-01-alice-added.png)
+
 
 ---
 
@@ -38,7 +39,8 @@ Same resolve → add → verify shape as `share-with-user`, but resolves a team 
 **Resulting Vikunja UI state:**
 The Share panel's "Teams" section now shows "Marketing" with a "Read" badge, next to "Design".
 
-`[SCREENSHOT: Project share panel Teams section with Marketing (Read) added below Design (Write)]`
+![Project share panel Teams section with sample-Marketing (Read only) added below sample-Design (Read & write)](assets/team-sharing-02-marketing-team-added.png)
+
 
 ---
 
@@ -56,7 +58,8 @@ Read composite: assembles direct user shares, direct team shares, and link share
 **Resulting Vikunja UI state:**
 No change — this is a read. The assistant's reply matches the Share panel exactly: owner, alice (write, user), Design (write, team), Marketing (read, team), plus any active link shares.
 
-`[SCREENSHOT: Full project Share panel with users and teams sections both expanded]`
+![Full project Share panel with the Users and Teams sections both expanded, showing every user and team with access](assets/team-sharing-03-full-panel.png)
+
 
 ---
 
@@ -74,7 +77,8 @@ A primitive, not a composite — use these (`add-project-user`, `update-project-
 **Resulting Vikunja UI state:**
 "Marketing" disappears from the Teams section of the Share panel.
 
-`[SCREENSHOT: Project share panel Teams section, Marketing entry removed, Design still present]`
+![Project share panel Teams section with sample-Marketing removed and sample-Design still present](assets/team-sharing-04-marketing-removed.png)
+
 
 ---
 

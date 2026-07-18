@@ -30,6 +30,7 @@ import { logger } from '../utils/logger';
 import { validateAndConvertId } from '../utils/validation';
 import { createAorpResponse } from '../utils/response-factory';
 import { vikunjaRestRequest } from '../utils/vikunja-rest';
+import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../utils/read-only';
 
 /** `shared.AdminUser` per the OpenAPI spec. */
 export interface AdminUser {
@@ -76,7 +77,10 @@ export function registerAdminTool(
 ): void {
   server.tool(
     'vikunja_admin',
-    "Instance-admin operations: overview, list every project, reassign a project's owner, list/create/delete users, and toggle a user's admin flag or status. Reserved/deny-by-default: only registered when the 'admin' module config key is explicitly enabled AND the session is JWT-authenticated (API-token sessions never see this tool, regardless of config). 'delete-user' is irreversible in 'now' mode and requires an explicit confirm: true argument.",
+    withReadOnlyNote(
+      'vikunja_admin',
+      "Instance-admin operations: overview, list every project, reassign a project's owner, list/create/delete users, and toggle a user's admin flag or status. Reserved/deny-by-default: only registered when the 'admin' module config key is explicitly enabled AND the session is JWT-authenticated (API-token sessions never see this tool, regardless of config). 'delete-user' is irreversible in 'now' mode and requires an explicit confirm: true argument.",
+    ),
     {
       subcommand: z.enum([
         'overview',
@@ -118,6 +122,7 @@ export function registerAdminTool(
         .enum(['active', 'email-confirmation-required', 'disabled', 'account-locked'])
         .optional(),
     },
+    getToolAnnotations('vikunja_admin'),
     async (args) => {
       if (!authManager.isAuthenticated()) {
         throw new MCPError(
@@ -133,6 +138,9 @@ export function registerAdminTool(
       }
 
       const subcommand = args.subcommand;
+
+      assertWriteAllowed('vikunja_admin', subcommand);
+
       logger.debug('Admin tool called', { subcommand });
 
       try {

@@ -13,6 +13,7 @@ import { getAuthManagerFromContext, setGlobalClientFactory } from '../client';
 import { logger } from '../utils/logger';
 import { createAuthRequiredError } from '../utils/error-handler';
 import { assignUsers, unassignUsers, listAssignees } from '../tools/tasks/assignees/index';
+import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../utils/read-only';
 
 /**
  * Register task assignees tool
@@ -24,7 +25,10 @@ export function registerTaskAssigneesTool(
 ): void {
   server.tool(
     'vikunja_task_assignees',
-    'Manage task assignments: assign users, unassign users, list assignees',
+    withReadOnlyNote(
+      'vikunja_task_assignees',
+      'Manage task assignments: assign users, unassign users, list assignees',
+    ),
     {
       operation: z.enum(['assign', 'unassign', 'list-assignees']),
       // Task and user identification
@@ -36,6 +40,7 @@ export function registerTaskAssigneesTool(
       page: z.number().optional(),
       perPage: z.number().optional(),
     },
+    getToolAnnotations('vikunja_task_assignees'),
     async (args) => {
       try {
         logger.debug('Executing task assignees tool', { operation: args.operation, taskId: args.id, assigneeCount: args.assignees?.length });
@@ -44,6 +49,8 @@ export function registerTaskAssigneesTool(
         if (!authManager.isAuthenticated()) {
           throw createAuthRequiredError('access task assignment operations');
         }
+
+        assertWriteAllowed('vikunja_task_assignees', args.operation);
 
         // Set the client factory for this request if provided
         if (clientFactory) {

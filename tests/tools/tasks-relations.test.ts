@@ -71,8 +71,10 @@ function createMockServer(): McpServer & { executeTool: (name: string, args: unk
   const registeredTools = new Map<string, any>();
 
   const mockServer = {
-    tool: jest.fn((name: string, description: string, schema: any, handler: any) => {
-      registeredTools.set(name, handler);
+    // The handler is always the last argument (server.tool now optionally
+    // takes a ToolAnnotations object between the schema and the handler).
+    tool: jest.fn((name: string, ...rest: any[]) => {
+      registeredTools.set(name, rest[rest.length - 1]);
     }),
     // Helper to execute a tool
     executeTool: async (name: string, args: unknown) => {
@@ -448,7 +450,9 @@ describe('Task Relations Tool', () => {
     it('should handle API errors', async () => {
       // The 'relations' refresh is GET /tasks/{id} (direct-REST); a non-OK
       // response surfaces as an MCPError carrying the HTTP status and body. A
-      // 404 is not retried, so this resolves without any backoff delay.
+      // 404 is not retried, so this resolves without any backoff delay. The
+      // REST-origin MCPError gets the conventional "Failed to ..." wrapping
+      // restored (wrapIfRestOrigin) rather than leaking its raw message.
       fetchMock.mockResolvedValue({
         ok: false,
         status: 404,
@@ -462,13 +466,14 @@ describe('Task Relations Tool', () => {
           id: 1,
         }),
       ).rejects.toThrow(
-        'Vikunja REST request failed (GET /tasks/1): HTTP 404 Not Found — Task not found',
+        'Failed to get task relations: Vikunja REST request failed (GET /tasks/1): HTTP 404 Not Found — Task not found',
       );
     });
 
     it('should handle non-Error thrown values', async () => {
       // A non-Error rejection from fetch is stringified by the REST helper into
-      // the wrapped MCPError message rather than leaking through raw.
+      // the wrapped MCPError message rather than leaking through raw, and that
+      // MCPError in turn gets the "Failed to ..." wrapping restored.
       fetchMock.mockRejectedValue(12345);
 
       await expect(
@@ -476,7 +481,7 @@ describe('Task Relations Tool', () => {
           subcommand: 'relations',
           id: 1,
         }),
-      ).rejects.toThrow('Vikunja REST request failed (GET /tasks/1): 12345');
+      ).rejects.toThrow('Failed to get task relations: Vikunja REST request failed (GET /tasks/1): 12345');
     });
   });
 

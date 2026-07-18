@@ -27,6 +27,7 @@ jest.mock('../../src/utils/logger', () => ({
 import { getClientFromContext, getAuthManagerFromContext } from '../../src/client';
 import { logger } from '../../src/utils/logger';
 import { circuitBreakerRegistry } from '../../src/utils/retry';
+import { ConfigurationManager } from '../../src/config';
 
 /**
  * TaskCreationService.createBaseTask (`PUT /projects/{id}/tasks`) and
@@ -134,8 +135,10 @@ describe('Batch Import Tool', () => {
 
     // Setup mock server
     mockServer = {
-      tool: jest.fn((name: string, description: string, schema: any, handler: any) => {
-        toolHandler = handler;
+      // The handler is always the last argument (server.tool now optionally
+      // takes a ToolAnnotations object between the schema and the handler).
+      tool: jest.fn((...args: any[]) => {
+        toolHandler = args[args.length - 1];
       }),
     } as any;
 
@@ -285,6 +288,7 @@ describe('Batch Import Tool', () => {
         'vikunja_batch_import',
         'Import tasks in bulk from CSV or JSON formats with error handling and dry-run support',
         expect.any(Object),
+        expect.any(Object), // ToolAnnotations
         expect.any(Function),
       );
     });
@@ -2258,6 +2262,63 @@ Description,1`;
       });
 
       expect(result.content[0].text).toBe('Test MCP error');
+    });
+  });
+
+  describe('global read-only mode', () => {
+    // vikunja_batch_import swallows a thrown MCPError into a text response
+    // (see the outer catch in src/tools/batch-import.ts) rather than
+    // rejecting the promise, so check the response text instead of using
+    // callAndCatch/isReadOnlyRejection here.
+    beforeEach(() => {
+      // Every sibling describe block re-registers the tool against the
+      // freshly-recreated mockAuthManager (see the outer beforeEach) —
+      // without this, `toolHandler` would still close over whichever
+      // mockAuthManager was current the last time some other describe
+      // block registered it (e.g. one that permanently overrode
+      // isAuthenticated via .mockImplementation to throw).
+      registerBatchImportTool(mockServer, mockAuthManager);
+    });
+
+    afterEach(() => {
+      ConfigurationManager.reset();
+    });
+
+    it('rejects an ordinary (non-dry-run) import when readOnly is on', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: true } });
+
+      const result = await toolHandler({
+        projectId: 1,
+        format: 'json',
+        data: JSON.stringify({ title: 'Test' }),
+      });
+      expect(result.content[0].text).toContain('server is in read-only mode');
+    });
+
+    it('does not raise the read-only error for a dryRun import when readOnly is on', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: true } });
+
+      const result = await toolHandler({
+        projectId: 1,
+        format: 'json',
+        data: JSON.stringify({ title: 'Test' }),
+        dryRun: true,
+      });
+      expect(result.content[0].text).not.toContain('server is in read-only mode');
+    });
+
+    it('does not raise the read-only error for a non-dry-run import when readOnly is off', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: false } });
+
+      const result = await toolHandler({
+        projectId: 1,
+        format: 'json',
+        data: JSON.stringify({ title: 'Test' }),
+      });
+      expect(result.content[0].text).not.toContain('server is in read-only mode');
     });
   });
 });

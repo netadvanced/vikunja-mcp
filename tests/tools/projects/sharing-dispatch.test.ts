@@ -45,7 +45,7 @@ describe('vikunja_projects dispatch — direct user/team sharing', () => {
 
     const mockServer = { tool: jest.fn() } as unknown as { tool: jest.Mock };
     registerProjectsTool(mockServer as never, authManager);
-    toolHandler = mockServer.tool.mock.calls[0][3] as ToolHandler;
+    toolHandler = mockServer.tool.mock.calls[0][mockServer.tool.mock.calls[0].length - 1] as ToolHandler;
   });
 
   async function callTool(subcommand: string, args: Record<string, unknown> = {}) {

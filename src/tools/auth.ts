@@ -16,6 +16,7 @@ import { wrapAuthError } from '../utils/error-handler';
 import { createStandardResponse } from '../utils/response-factory';
 import { formatMcpResponse } from '../utils/simple-response';
 import { vikunjaRestRequest } from '../utils/vikunja-rest';
+import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../utils/read-only';
 
 interface AuthArgs {
   subcommand: 'connect' | 'status' | 'refresh' | 'disconnect' | 'info';
@@ -99,14 +100,19 @@ async function verifyConnection(
 export function registerAuthTool(server: McpServer, authManager: AuthManager, _clientFactory?: VikunjaClientFactory): void {
   server.tool(
     'vikunja_auth',
-    'Manage authentication with Vikunja API (connect, status, refresh, disconnect, info)',
+    withReadOnlyNote(
+      'vikunja_auth',
+      'Manage authentication with Vikunja API (connect, status, refresh, disconnect, info)',
+    ),
     {
       subcommand: z.enum(['connect', 'status', 'refresh', 'disconnect', 'info']),
       apiUrl: z.string().url().optional(),
       apiToken: z.string().optional(),
     },
+    getToolAnnotations('vikunja_auth'),
     applyRateLimiting('vikunja_auth', async (args: AuthArgs) => {
       try {
+        assertWriteAllowed('vikunja_auth', args.subcommand);
         switch (args.subcommand) {
           case 'connect': {
             if (!args.apiUrl || !args.apiToken) {

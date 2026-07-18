@@ -19,6 +19,8 @@ import { getAuthManagerFromContext } from '../../src/client';
 import * as validationUtils from '../../src/utils/validation';
 import type { MockVikunjaClient, MockAuthManager, MockServer } from '../types/mocks';
 import { circuitBreakerRegistry } from '../../src/utils/retry';
+import { ConfigurationManager } from '../../src/config';
+import { callAndCatch, isReadOnlyRejection } from '../utils/read-only-test-helpers';
 
 jest.mock('../../src/client', () => ({
   getAuthManagerFromContext: jest.fn(),
@@ -86,7 +88,7 @@ describe('Subscriptions Tool', () => {
 
     const calls = (mockServer.tool as jest.Mock).mock.calls;
     if (calls.length > 0) {
-      mockHandler = calls[0][3];
+      mockHandler = calls[0][calls[0].length - 1];
     } else {
       throw new Error('Tool handler not found');
     }
@@ -298,6 +300,39 @@ describe('Subscriptions Tool', () => {
           ),
         );
       });
+    });
+  });
+
+  describe('global read-only mode', () => {
+    afterEach(() => {
+      ConfigurationManager.reset();
+    });
+
+    it('rejects subscribe/unsubscribe when readOnly is on', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: true } });
+
+      expect(
+        isReadOnlyRejection(
+          await callAndCatch(mockHandler, { subcommand: 'subscribe', entity: 'task', entityId: 1 }),
+        ),
+      ).toBe(true);
+      expect(
+        isReadOnlyRejection(
+          await callAndCatch(mockHandler, { subcommand: 'unsubscribe', entity: 'task', entityId: 1 }),
+        ),
+      ).toBe(true);
+    });
+
+    it('does not raise the read-only error for subscribe when readOnly is off', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: false } });
+
+      expect(
+        isReadOnlyRejection(
+          await callAndCatch(mockHandler, { subcommand: 'subscribe', entity: 'task', entityId: 1 }),
+        ),
+      ).toBe(false);
     });
   });
 });

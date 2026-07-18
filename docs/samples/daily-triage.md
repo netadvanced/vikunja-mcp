@@ -25,7 +25,8 @@ No `projectId` and `allProjects: true` route this to the documented `GET /tasks`
 **Resulting Vikunja UI state:**
 No change — this is a read. The assistant's reply lists tasks from all three projects together, ranked, e.g.: "Fix login redirect bug" (Website Relaunch, priority 4, due today), "Renew TLS cert" (Infra, priority 5, due tomorrow), "Finalize Q3 OKRs" (Q3 Planning, priority 3, due this week). Opening each project's own list view individually and manually cross-referencing priorities would show the same tasks, just without the ranking done for you.
 
-`[SCREENSHOT: Vikunja "Upcoming"/filtered task list showing tasks from multiple projects, project name badge visible on each row, sorted by urgency]`
+![Vikunja's "Upcoming" cross-project task list showing tasks from multiple sample projects with due dates and priorities, sorted by urgency](assets/daily-triage-01-upcoming.png)
+
 
 ---
 
@@ -43,7 +44,8 @@ Supplying `projectId` switches this to the single-project `GET /projects/{id}/ta
 **Resulting Vikunja UI state:**
 No change — this is also a read, equivalent to opening the "Website Relaunch" project's list view in the browser with the "hide done tasks" toggle on.
 
-`[SCREENSHOT: "Website Relaunch" project list view, done-tasks filter toggled off, open tasks visible]`
+![Sample "Website Relaunch" project list view with the done-tasks filter toggled off, showing only open tasks](assets/daily-triage-02-website-list.png)
+
 
 ---
 

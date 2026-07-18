@@ -17,6 +17,7 @@ import { formatAorpAsMarkdown } from '../utils/response-factory';
 import { logger } from '../utils/logger';
 import { validateId as validateSharedId } from '../utils/validation';
 import { vikunjaRestRequest } from '../utils/vikunja-rest';
+import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../utils/read-only';
 import type { components } from '../types/generated/vikunja-openapi';
 
 // Sourced from the vendored OpenAPI spec (docs/vikunja-openapi.json).
@@ -166,11 +167,15 @@ export function registerExportTool(server: McpServer, authManager: AuthManager, 
   // Export project data
   server.tool(
     'vikunja_export_project',
-    'Export project data including tasks, labels, and metadata in structured format',
+    withReadOnlyNote(
+      'vikunja_export_project',
+      'Export project data including tasks, labels, and metadata in structured format',
+    ),
     {
       projectId: z.number().int().positive(),
       includeChildren: z.boolean().optional().default(false),
     },
+    getToolAnnotations('vikunja_export_project'),
     async (args) => {
       if (!authManager.isAuthenticated()) {
         throw new MCPError(
@@ -186,6 +191,10 @@ export function registerExportTool(server: McpServer, authManager: AuthManager, 
           'Export operations require JWT authentication. Please reconnect using vikunja_auth.connect with JWT authentication.',
         );
       }
+
+      // No subcommand field on this single-purpose tool — 'export' is its
+      // fixed classification-table key (GET-only, always 'read').
+      assertWriteAllowed('vikunja_export_project', 'export');
 
       try {
         const { projectId, includeChildren } = args;
@@ -239,10 +248,14 @@ export function registerExportTool(server: McpServer, authManager: AuthManager, 
   // Request user data export
   server.tool(
     'vikunja_request_user_export',
-    'Request a complete export of user data for privacy and backup purposes. This calls POST /user/export/request, which asks the Vikunja server to start preparing the export; it returns only a confirmation message, not the export itself. Use vikunja_download_user_export afterwards to confirm the export is ready.',
+    withReadOnlyNote(
+      'vikunja_request_user_export',
+      'Request a complete export of user data for privacy and backup purposes. This calls POST /user/export/request, which asks the Vikunja server to start preparing the export; it returns only a confirmation message, not the export itself. Use vikunja_download_user_export afterwards to confirm the export is ready.',
+    ),
     {
       password: z.string().min(1),
     },
+    getToolAnnotations('vikunja_request_user_export'),
     async (args) => {
       try {
         const { password } = args;
@@ -250,6 +263,10 @@ export function registerExportTool(server: McpServer, authManager: AuthManager, 
         if (!authManager.getSession().apiToken) {
           throw new MCPError(ErrorCode.AUTH_REQUIRED, 'No authentication token available');
         }
+
+        // No subcommand field on this single-purpose tool — 'request' is
+        // its fixed classification-table key.
+        assertWriteAllowed('vikunja_request_user_export', 'request');
 
         const result = await vikunjaRestRequest<VikunjaMessageResponse>(
           authManager,
@@ -290,10 +307,14 @@ export function registerExportTool(server: McpServer, authManager: AuthManager, 
   // Confirm delivery of a previously requested user data export
   server.tool(
     'vikunja_download_user_export',
-    "Confirm that a previously requested user data export is ready on the server. IMPORTANT: per the Vikunja API spec, POST /user/export/download returns only a confirmation message (models.Message: { message }) — it does NOT return the export archive's contents, and there is no separate JSON endpoint that does. The MCP protocol also has no binary/file-attachment support, so the exported .zip cannot be retrieved through this tool under any circumstances. To obtain the actual file, download it directly from the Vikunja web UI (Settings > Export Data) or with a direct HTTP client using the same credentials.",
+    withReadOnlyNote(
+      'vikunja_download_user_export',
+      "Confirm that a previously requested user data export is ready on the server. IMPORTANT: per the Vikunja API spec, POST /user/export/download returns only a confirmation message (models.Message: { message }) — it does NOT return the export archive's contents, and there is no separate JSON endpoint that does. The MCP protocol also has no binary/file-attachment support, so the exported .zip cannot be retrieved through this tool under any circumstances. To obtain the actual file, download it directly from the Vikunja web UI (Settings > Export Data) or with a direct HTTP client using the same credentials.",
+    ),
     {
       password: z.string().min(1),
     },
+    getToolAnnotations('vikunja_download_user_export'),
     async (args) => {
       try {
         const { password } = args;
@@ -301,6 +322,12 @@ export function registerExportTool(server: McpServer, authManager: AuthManager, 
         if (!authManager.getSession().apiToken) {
           throw new MCPError(ErrorCode.AUTH_REQUIRED, 'No authentication token available');
         }
+
+        // No subcommand field on this single-purpose tool — 'download' is
+        // its fixed classification-table key (confirmation-only, no new
+        // state created — see DOWNLOAD_USER_EXPORT's rationale comment in
+        // src/utils/read-only.ts).
+        assertWriteAllowed('vikunja_download_user_export', 'download');
 
         const result = await vikunjaRestRequest<VikunjaMessageResponse>(
           authManager,

@@ -16,6 +16,8 @@ import { registerProjectsTool } from '../../src/tools/projects';
 import type { MockAuthManager, MockServer } from '../types/mocks';
 import { parseMarkdown } from '../utils/markdown';
 import { circuitBreakerRegistry } from '../../src/utils/retry';
+import { ConfigurationManager } from '../../src/config';
+import { callAndCatch, isReadOnlyRejection } from '../utils/read-only-test-helpers';
 
 const mockFetch = jest.fn();
 global.fetch = mockFetch as unknown as typeof fetch;
@@ -133,11 +135,12 @@ describe('Projects Tool', () => {
       'vikunja_projects',
       expect.any(String),
       expect.any(Object),
+      expect.any(Object), // ToolAnnotations
       expect.any(Function),
     );
     const calls = mockServer.tool.mock.calls;
     if (calls.length > 0 && calls[0] && calls[0].length > 3) {
-      toolHandler = calls[0][3];
+      toolHandler = calls[0][calls[0].length - 1];
     } else {
       throw new Error('Tool handler not found');
     }
@@ -1379,6 +1382,64 @@ describe('Projects Tool', () => {
         ...projects[0],
         parent_project_id: 2,
       });
+    });
+  });
+
+  describe('global read-only mode', () => {
+    afterEach(() => {
+      ConfigurationManager.reset();
+    });
+
+    it('rejects create/update/delete/duplicate/share-with-user when readOnly is on', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: true } });
+
+      expect(
+        isReadOnlyRejection(await callAndCatch(toolHandler, { subcommand: 'create', title: 'x' })),
+      ).toBe(true);
+      expect(
+        isReadOnlyRejection(await callAndCatch(toolHandler, { subcommand: 'update', id: 1 })),
+      ).toBe(true);
+      expect(
+        isReadOnlyRejection(await callAndCatch(toolHandler, { subcommand: 'delete', id: 1 })),
+      ).toBe(true);
+      expect(
+        isReadOnlyRejection(await callAndCatch(toolHandler, { subcommand: 'duplicate', id: 1 })),
+      ).toBe(true);
+      expect(
+        isReadOnlyRejection(
+          await callAndCatch(toolHandler, {
+            subcommand: 'share-with-user',
+            projectId: 1,
+            username: 'bob',
+            right: 'read',
+          }),
+        ),
+      ).toBe(true);
+    });
+
+    it('does not raise the read-only error for list/get/get-tree when readOnly is on', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: true } });
+
+      expect(isReadOnlyRejection(await callAndCatch(toolHandler, { subcommand: 'list' }))).toBe(
+        false,
+      );
+      expect(
+        isReadOnlyRejection(await callAndCatch(toolHandler, { subcommand: 'get', id: 1 })),
+      ).toBe(false);
+      expect(
+        isReadOnlyRejection(await callAndCatch(toolHandler, { subcommand: 'get-tree' })),
+      ).toBe(false);
+    });
+
+    it('does not raise the read-only error for create when readOnly is off', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: false } });
+
+      expect(
+        isReadOnlyRejection(await callAndCatch(toolHandler, { subcommand: 'create', title: 'x' })),
+      ).toBe(false);
     });
   });
 });

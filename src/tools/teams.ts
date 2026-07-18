@@ -12,6 +12,7 @@ import { wrapToolError } from '../utils/error-handler';
 import { vikunjaRestRequest } from '../utils/vikunja-rest';
 import { validateAndConvertId } from '../utils/validation';
 import { formatAorpAsMarkdown } from '../utils/response-factory';
+import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../utils/read-only';
 import type { components } from '../types/generated/vikunja-openapi';
 
 // Sourced from the vendored OpenAPI spec (docs/vikunja-openapi.json) — see
@@ -73,7 +74,10 @@ interface VikunjaMessage {
 export function registerTeamsTool(server: McpServer, authManager: AuthManager, _clientFactory?: VikunjaClientFactory): void {
   server.tool(
     'vikunja_teams',
-    'Manage teams and team memberships for collaborative project management',
+    withReadOnlyNote(
+      'vikunja_teams',
+      'Manage teams and team memberships for collaborative project management',
+    ),
     {
       // List all teams
       subcommand: z.enum(['list', 'create', 'get', 'update', 'delete', 'members']),
@@ -98,6 +102,7 @@ export function registerTeamsTool(server: McpServer, authManager: AuthManager, _
       username: z.string().min(1).optional(),
       admin: z.boolean().optional(),
     },
+    getToolAnnotations('vikunja_teams'),
     async (args) => {
       if (!authManager.isAuthenticated()) {
         throw new MCPError(
@@ -107,6 +112,13 @@ export function registerTeamsTool(server: McpServer, authManager: AuthManager, _
       }
 
       const subcommand = args.subcommand;
+
+      // 'members' fans out to a second enum (memberSubcommand) — that case
+      // below calls assertWriteAllowed again with the composite
+      // 'members:<memberSubcommand>' key once memberSubcommand is resolved.
+      if (subcommand !== 'members') {
+        assertWriteAllowed('vikunja_teams', subcommand);
+      }
 
       try {
 
@@ -290,6 +302,8 @@ export function registerTeamsTool(server: McpServer, authManager: AuthManager, _
 
             const teamId = validateAndConvertId(args.id, 'id');
             const memberSubcommand = args.memberSubcommand || 'list';
+
+            assertWriteAllowed('vikunja_teams', `members:${memberSubcommand}`);
 
             switch (memberSubcommand) {
               case 'list': {

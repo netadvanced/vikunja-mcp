@@ -29,6 +29,7 @@ import { logger } from '../utils/logger';
 import { validateAndConvertId } from '../utils/validation';
 import { createAorpResponse } from '../utils/response-factory';
 import { vikunjaRestRequest } from '../utils/vikunja-rest';
+import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../utils/read-only';
 
 /** `models.Reaction` per the spec: the request/response body for add/remove. */
 interface VikunjaReaction {
@@ -56,7 +57,10 @@ export function registerReactionsTool(
 ): void {
   server.tool(
     'vikunja_reactions',
-    'Add, remove, or list emoji/text reactions on a Vikunja task or task comment.',
+    withReadOnlyNote(
+      'vikunja_reactions',
+      'Add, remove, or list emoji/text reactions on a Vikunja task or task comment.',
+    ),
     {
       subcommand: z.enum(['list', 'add', 'remove']),
       kind: ReactionKindSchema,
@@ -65,6 +69,7 @@ export function registerReactionsTool(
       // short text, up to 20 characters per the spec).
       value: z.string().min(1).max(20).optional(),
     },
+    getToolAnnotations('vikunja_reactions'),
     async (args) => {
       if (!authManager.isAuthenticated()) {
         throw new MCPError(
@@ -76,6 +81,8 @@ export function registerReactionsTool(
       await getAuthManagerFromContext(); // Ensure the session is initialized
       const subcommand = args.subcommand;
       const kind = args.kind;
+
+      assertWriteAllowed('vikunja_reactions', subcommand);
 
       logger.debug('Reactions tool called', { subcommand, kind, entityId: args.entityId });
 

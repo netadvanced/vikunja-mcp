@@ -12,6 +12,7 @@ import type { User, ExtendedUserSettings } from '../types/vikunja';
 import { handleAuthError } from '../utils/auth-error-handler';
 import { formatAorpAsMarkdown } from '../utils/response-factory';
 import { vikunjaRestRequest } from '../utils/vikunja-rest';
+import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../utils/read-only';
 import type { components } from '../types/generated/vikunja-openapi';
 
 // Sourced from the vendored OpenAPI spec (docs/vikunja-openapi.json) — see
@@ -101,7 +102,10 @@ function transformUser(rawUser: unknown): User {
 export function registerUsersTool(server: McpServer, authManager: AuthManager, _clientFactory?: VikunjaClientFactory): void {
   server.tool(
     'vikunja_users',
-    "Manage user profiles, search users, and update user settings. Use the 'timezones' subcommand to fetch this Vikunja instance's list of valid IANA time zone names before calling 'update-settings' with a timezone value — the server rejects unrecognized zone names, and the valid set is instance-dependent (depends on the OS Vikunja runs on).",
+    withReadOnlyNote(
+      'vikunja_users',
+      "Manage user profiles, search users, and update user settings. Use the 'timezones' subcommand to fetch this Vikunja instance's list of valid IANA time zone names before calling 'update-settings' with a timezone value — the server rejects unrecognized zone names, and the valid set is instance-dependent (depends on the OS Vikunja runs on).",
+    ),
     {
       // Operation type
       subcommand: z.enum(['current', 'search', 'settings', 'update-settings', 'timezones']),
@@ -123,6 +127,7 @@ export function registerUsersTool(server: McpServer, authManager: AuthManager, _
       overdueTasksRemindersEnabled: z.boolean().optional(),
       overdueTasksRemindersTime: z.string().optional(),
     },
+    getToolAnnotations('vikunja_users'),
     async (args) => {
       if (!authManager.isAuthenticated()) {
         throw new MCPError(
@@ -138,6 +143,8 @@ export function registerUsersTool(server: McpServer, authManager: AuthManager, _
           'User operations require JWT authentication. Please reconnect using vikunja_auth.connect with JWT authentication.',
         );
       }
+
+      assertWriteAllowed('vikunja_users', args.subcommand);
 
       try {
         const subcommand = args.subcommand;

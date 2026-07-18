@@ -27,6 +27,7 @@ import { logger } from '../utils/logger';
 import { validateAndConvertId } from '../utils/validation';
 import { createAorpResponse } from '../utils/response-factory';
 import { vikunjaRestRequest } from '../utils/vikunja-rest';
+import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../utils/read-only';
 
 /**
  * `models.APIToken` per the OpenAPI spec. `token` (the actual secret key) is
@@ -49,7 +50,10 @@ export function registerTokensTool(
 ): void {
   server.tool(
     'vikunja_tokens',
-    "Manage the current user's Vikunja API tokens (list, create, delete). Reserved/deny-by-default: only registered when the 'tokenManagement' module config key is explicitly enabled, since it is credential-adjacent. A newly-created token's secret value is only ever returned once, in the 'create' response — it cannot be retrieved again afterwards.",
+    withReadOnlyNote(
+      'vikunja_tokens',
+      "Manage the current user's Vikunja API tokens (list, create, delete). Reserved/deny-by-default: only registered when the 'tokenManagement' module config key is explicitly enabled, since it is credential-adjacent. A newly-created token's secret value is only ever returned once, in the 'create' response — it cannot be retrieved again afterwards.",
+    ),
     {
       subcommand: z.enum(['list', 'create', 'delete']),
 
@@ -77,6 +81,7 @@ export function registerTokensTool(
       // delete
       tokenId: z.number().int().positive().optional(),
     },
+    getToolAnnotations('vikunja_tokens'),
     async (args) => {
       if (!authManager.isAuthenticated()) {
         throw new MCPError(
@@ -86,6 +91,9 @@ export function registerTokensTool(
       }
 
       const subcommand = args.subcommand;
+
+      assertWriteAllowed('vikunja_tokens', subcommand);
+
       logger.debug('Tokens tool called', { subcommand, args: { ...args, permissions: undefined } });
 
       try {

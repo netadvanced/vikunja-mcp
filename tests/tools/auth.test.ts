@@ -8,6 +8,8 @@ import { registerAuthTool } from '../../src/tools/auth';
 import { MCPError, ErrorCode } from '../../src/types';
 import type { MockServer, MockAuthManager } from '../types/mocks';
 import { parseMarkdown } from '../utils/markdown';
+import { ConfigurationManager } from '../../src/config';
+import { callAndCatch, isReadOnlyRejection } from '../utils/read-only-test-helpers';
 
 // Mock the clearGlobalClientFactory function
 jest.mock('../../src/client', () => ({
@@ -96,9 +98,10 @@ describe('Auth Tool', () => {
       'vikunja_auth',
       'Manage authentication with Vikunja API (connect, status, refresh, disconnect, info)',
       expect.any(Object),
+      expect.any(Object), // ToolAnnotations
       expect.any(Function),
     );
-    toolHandler = mockServer.tool.mock.calls[0][3];
+    toolHandler = mockServer.tool.mock.calls[0][mockServer.tool.mock.calls[0].length - 1];
   });
 
   describe('connect subcommand', () => {
@@ -872,6 +875,21 @@ describe('Auth Tool', () => {
             });
           }
         }
+      }
+    });
+  });
+
+  describe('global read-only mode', () => {
+    afterEach(() => {
+      ConfigurationManager.reset();
+    });
+
+    it('never rejects any vikunja_auth subcommand — session management only, not Vikunja data', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: true } });
+
+      for (const subcommand of ['status', 'refresh', 'disconnect', 'info']) {
+        expect(isReadOnlyRejection(await callAndCatch(toolHandler, { subcommand }))).toBe(false);
       }
     });
   });

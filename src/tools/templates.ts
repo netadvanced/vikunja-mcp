@@ -9,10 +9,22 @@ import type { AuthManager } from '../auth/AuthManager';
 import type { VikunjaClientFactory } from '../client/VikunjaClientFactory';
 import { MCPError, ErrorCode, createStandardResponse } from '../types';
 import { storageManager } from '../storage';
+// Imported directly from the module (not the `../storage` barrel) so that
+// tests mocking `../../src/storage` wholesale (to stub `storageManager`)
+// don't also need to stub these — they're a separate, self-contained
+// concern (see templateFileStore.ts's header).
+import {
+  loadTemplatesFile,
+  writeTemplatesFileAtomic,
+  resolveTemplatesPersistPath,
+} from '../storage/templateFileStore';
+import type { PersistedTemplateRecord } from '../storage/templateFileStore';
+import { ConfigurationManager } from '../config';
 import { logger } from '../utils/logger';
 import { setTaskLabels } from '../utils/label-bulk';
 import { formatAorpAsMarkdown } from '../utils/response-factory';
 import { vikunjaRestRequest } from '../utils/vikunja-rest';
+import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../utils/read-only';
 import type { components } from '../types/generated/vikunja-openapi';
 
 // Sourced from the vendored OpenAPI spec (docs/vikunja-openapi.json).
@@ -20,12 +32,96 @@ type VikunjaProject = components['schemas']['models.Project'];
 type VikunjaTask = components['schemas']['models.Task'];
 
 /**
- * Get session-scoped storage instance
+ * Get session-scoped storage instance, hydrated from the templates
+ * persistence file (if configured) on first touch for that session.
  */
 async function getSessionStorage(authManager: AuthManager): ReturnType<typeof storageManager.getStorage> {
   const session = authManager.getSession();
   const sessionId = session.apiToken ? `${session.apiUrl}:${session.apiToken.substring(0, 8)}` : 'anonymous';
-  return storageManager.getStorage(sessionId, session.userId, session.apiUrl);
+  const storage = await storageManager.getStorage(sessionId, session.userId, session.apiUrl);
+
+  const persistPath = getTemplatesPersistPath();
+  if (persistPath) {
+    await hydrateTemplatesFromDiskIfNeeded(storage, persistPath);
+  }
+
+  return storage;
+}
+
+/**
+ * Resolve the effective templates persistence path (env var wins over
+ * config — see docs/CONFIGURATION.md). Returns `undefined` when persistence
+ * isn't configured, in which case templates stay in-memory-only, exactly as
+ * before this file-backed persistence support was added.
+ */
+function getTemplatesPersistPath(): string | undefined {
+  const configuredPath = ConfigurationManager.getInstance().loadConfiguration().templates.persistPath;
+  return resolveTemplatesPersistPath(configuredPath);
+}
+
+/**
+ * Templates already hydrated from disk in this process, keyed by
+ * `${persistPath}:${sessionId}` — hydration happens once per session per
+ * configured path, not on every call, so repeated tool invocations don't
+ * re-read the file or attempt to re-create already-loaded templates.
+ */
+const hydratedPersistenceKeys = new Set<string>();
+
+async function hydrateTemplatesFromDiskIfNeeded(
+  storage: Awaited<ReturnType<typeof storageManager.getStorage>>,
+  persistPath: string,
+): Promise<void> {
+  const sessionId = storage.getSession().id;
+  const key = `${persistPath}:${sessionId}`;
+  if (hydratedPersistenceKeys.has(key)) {
+    return;
+  }
+  hydratedPersistenceKeys.add(key);
+
+  const records = loadTemplatesFile(persistPath);
+  for (const record of records) {
+    try {
+      const existing = await storage.findByName(record.name);
+      if (!existing) {
+        await storage.create({ name: record.name, filter: record.data, isGlobal: true });
+      }
+    } catch (error) {
+      logger.warn('Failed to hydrate a template from the persistence file, skipping it', {
+        persistPath,
+        templateId: record.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+}
+
+/**
+ * Write-through: persist the full current template set for this session to
+ * disk, atomically, when persistence is configured. A write failure is
+ * logged but never surfaced as a tool error — the in-memory mutation the
+ * caller just made already succeeded, and durability is a best-effort
+ * bonus, not a correctness requirement (per the "in memory by default"
+ * contract templates.ts documents).
+ */
+async function persistTemplatesIfConfigured(
+  storage: Awaited<ReturnType<typeof storageManager.getStorage>>,
+): Promise<void> {
+  const persistPath = getTemplatesPersistPath();
+  if (!persistPath) {
+    return;
+  }
+  try {
+    const all = await storage.list();
+    const records: PersistedTemplateRecord[] = all
+      .filter((filter) => filter.name.startsWith('template_'))
+      .map((filter) => ({ id: filter.name, name: filter.name, data: filter.filter }));
+    writeTemplatesFileAtomic(persistPath, records);
+  } catch (error) {
+    logger.error('Failed to persist templates to disk', {
+      persistPath,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 interface TemplateData {
@@ -54,10 +150,15 @@ interface TemplateData {
 export function registerTemplatesTool(server: McpServer, authManager: AuthManager, _clientFactory?: VikunjaClientFactory): void {
   server.tool(
     'vikunja_templates',
-    'Manage task templates for creating consistent tasks and project structures. ' +
-      'IMPORTANT: templates are stored in memory only, scoped to this server process — ' +
-      'they are not persisted to Vikunja and are lost on server restart. Durable ' +
-      'storage is tracked as future work.',
+    withReadOnlyNote(
+      'vikunja_templates',
+      'Manage task templates for creating consistent tasks and project structures. ' +
+        'IMPORTANT: templates are never persisted to Vikunja itself. By default they ' +
+        "are session-only — kept in this server process's memory and lost on restart. " +
+        'Set the templates.persistPath config key (or VIKUNJA_MCP_TEMPLATES_FILE env ' +
+        'var, which wins) to make them durable across restarts via a JSON file on disk ' +
+        '— see docs/CONFIGURATION.md.',
+    ),
     {
       subcommand: z.enum(['create', 'list', 'get', 'update', 'delete', 'instantiate']),
       // Template fields
@@ -71,6 +172,7 @@ export function registerTemplatesTool(server: McpServer, authManager: AuthManage
       parentProjectId: z.number().optional(),
       variables: z.record(z.string(), z.string()).optional(),
     },
+    getToolAnnotations('vikunja_templates'),
     async (args) => {
       try {
         // Check authentication
@@ -80,6 +182,8 @@ export function registerTemplatesTool(server: McpServer, authManager: AuthManage
             'Authentication required. Please use vikunja_auth.connect first.',
           );
         }
+
+        assertWriteAllowed('vikunja_templates', args.subcommand);
 
         const storage = await getSessionStorage(authManager);
 
@@ -159,6 +263,7 @@ export function registerTemplatesTool(server: McpServer, authManager: AuthManage
                 filter: JSON.stringify(templateData),
                 isGlobal: true,
               });
+              await persistTemplatesIfConfigured(storage);
 
               const response = createStandardResponse(
                 'create-template',
@@ -279,6 +384,7 @@ export function registerTemplatesTool(server: McpServer, authManager: AuthManage
                 await storage.update(existingFilter.id, {
                   filter: JSON.stringify(template),
                 });
+                await persistTemplatesIfConfigured(storage);
               }
 
               const response = createStandardResponse(
@@ -317,6 +423,7 @@ export function registerTemplatesTool(server: McpServer, authManager: AuthManage
               const template = JSON.parse(savedFilter.filter) as TemplateData;
 
               await storage.delete(savedFilter.id);
+              await persistTemplatesIfConfigured(storage);
 
               const response = createStandardResponse(
                 'delete-template',
