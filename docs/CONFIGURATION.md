@@ -310,7 +310,7 @@ version: "3.8"
 
 services:
   vikunja-mcp:
-    image: democratize-technology/vikunja-mcp:latest
+    image: ghcr.io/netadvanced/vikunja-mcp-ng:latest
     environment:
       VIKUNJA_URL: "https://vikunja.example.com/api/v1"
       VIKUNJA_API_TOKEN_FILE: /run/secrets/vikunja_api_token

@@ -19,8 +19,8 @@ import { readSecretEnv } from './config/secrets';
 dotenv.config({ quiet: true });
 
 const server = new McpServer({
-  name: 'vikunja-mcp',
-  version: '0.2.0',
+  name: 'vikunja-mcp-ng',
+  version: '0.3.0',
 });
 
 const authManager = new AuthManager();

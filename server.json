@@ -1,29 +1,36 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
-  "name": "io.github.democratize-technology/vikunja-mcp",
+  "name": "io.github.netadvanced/vikunja-mcp-ng",
   "description": "Model Context Protocol server for Vikunja task management",
   "status": "active",
   "repository": {
-    "url": "https://github.com/democratize-technology/vikunja-mcp",
+    "url": "https://github.com/netadvanced/vikunja-mcp",
     "source": "github"
   },
-  "version": "1.0.0",
+  "version": "0.3.0",
   "packages": [
     {
       "registry_type": "npm",
       "registry_base_url": "https://registry.npmjs.org",
-      "identifier": "vikunja-mcp",
-      "version": "1.0.4",
+      "identifier": "vikunja-mcp-ng",
+      "version": "0.3.0",
       "transport": {
         "type": "stdio"
       },
       "environment_variables": [
         {
-          "description": "Your API key for the service",
+          "description": "Base URL of your Vikunja instance's API (e.g. https://vikunja.example.com/api/v1)",
+          "is_required": true,
+          "format": "string",
+          "is_secret": false,
+          "name": "VIKUNJA_URL"
+        },
+        {
+          "description": "Vikunja API token (tk_...) or JWT (eyJ...) for authentication. See VIKUNJA_API_TOKEN_FILE for the Docker-secrets variant.",
           "is_required": true,
           "format": "string",
           "is_secret": true,
-          "name": "YOUR_API_KEY"
+          "name": "VIKUNJA_API_TOKEN"
         }
       ]
     }

@@ -136,8 +136,8 @@ describe('Main Server Entry Point (index.ts)', () => {
       
       expect(MockMcpServer).toHaveBeenCalledTimes(1);
       expect(MockMcpServer).toHaveBeenCalledWith({
-        name: 'vikunja-mcp',
-        version: '0.2.0',
+        name: 'vikunja-mcp-ng',
+        version: '0.3.0',
       });
     });
 

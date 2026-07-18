@@ -91,7 +91,7 @@ If no database path is specified for SQLite, the following default locations are
 ### Programmatic Configuration
 
 ```typescript
-import { createStorageConfig, createFilterStorage } from '@democratize-technology/vikunja-mcp/storage';
+import { createStorageConfig, createFilterStorage } from 'vikunja-mcp-ng/storage';
 
 // Create custom configuration
 const config = createStorageConfig({
@@ -211,7 +211,7 @@ CREATE INDEX idx_saved_filters_updated ON saved_filters(session_id, updated DESC
 The system supports automatic schema migrations:
 
 ```typescript
-import { MigrationRunner } from '@democratize-technology/vikunja-mcp/storage';
+import { MigrationRunner } from 'vikunja-mcp-ng/storage';
 
 const migrationRunner = new MigrationRunner(database);
 
@@ -231,7 +231,7 @@ console.log(`Current: ${status.currentVersion}, Latest: ${status.latestVersion}`
 ### Basic Usage
 
 ```typescript
-import { createFilterStorage } from '@democratize-technology/vikunja-mcp/storage';
+import { createFilterStorage } from 'vikunja-mcp-ng/storage';
 
 // Create storage instance
 const storage = await createFilterStorage('my-session');
@@ -274,7 +274,7 @@ import {
   getAllStorageStats,
   healthCheckAllStorage,
   migrateMemoryToPersistent,
-} from '@democratize-technology/vikunja-mcp/storage';
+} from 'vikunja-mcp-ng/storage';
 
 // Get statistics for all storage sessions
 const stats = await getAllStorageStats();
@@ -298,7 +298,7 @@ if (migration.success) {
 ### Custom Storage Adapter
 
 ```typescript
-import { StorageAdapter, StorageSession, SavedFilter } from '@democratize-technology/vikunja-mcp/storage';
+import { StorageAdapter, StorageSession, SavedFilter } from 'vikunja-mcp-ng/storage';
 
 class CustomStorageAdapter implements StorageAdapter {
   async initialize(session: StorageSession): Promise<void> {
@@ -313,7 +313,7 @@ class CustomStorageAdapter implements StorageAdapter {
 }
 
 // Register with factory
-import { storageAdapterFactory } from '@democratize-technology/vikunja-mcp/storage';
+import { storageAdapterFactory } from 'vikunja-mcp-ng/storage';
 // Custom registration would require extending the factory
 ```
 
@@ -481,7 +481,7 @@ npm run test:coverage
 Use the debug utilities:
 
 ```typescript
-import { createFilterStorage } from '@democratize-technology/vikunja-mcp/storage';
+import { createFilterStorage } from 'vikunja-mcp-ng/storage';
 
 const storage = await createFilterStorage('debug-session');
 const stats = await storage.getStats();

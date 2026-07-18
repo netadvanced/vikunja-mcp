@@ -1,0 +1,65 @@
+# Sample: Planning
+
+Scenario from the [README](../../README.md#planning): standing up a new quarter's project structure from an existing one, and understanding the resulting hierarchy, without manually recreating dozens of tasks and columns.
+
+**Setup for this walkthrough:** "Q2 Product Launch" (`id: 8`) is a fully-built-out project with tasks, labels, comments, attachments, task relations, and a Kanban layout under parent project "Product" (`id: 5`).
+
+---
+
+### 1. Build the new project hierarchically
+
+**User says:**
+> "Create a new 'Q3 Initiatives' project under Product."
+
+**Tool call:**
+```typescript
+vikunja_projects({ subcommand: "create", title: "Q3 Initiatives", parentProjectId: 5 })
+```
+Plain CRUD create — hierarchy depth is validated server-side up to 10 levels; a `parentProjectId` that would exceed that, or doesn't exist, is rejected with a clear error rather than silently creating an orphan.
+
+**Resulting Vikunja UI state:**
+"Q3 Initiatives" appears in the sidebar nested one level under "Product", next to "Q2 Product Launch".
+
+`[SCREENSHOT: Vikunja sidebar showing "Product" expanded with "Q2 Product Launch" and the new "Q3 Initiatives" both listed as children]`
+
+---
+
+### 2. Check the hierarchy landed where expected
+
+**User says:**
+> "Show me the full Product project tree."
+
+**Tool call:**
+```typescript
+vikunja_projects({ subcommand: "get-tree", id: 5 })
+```
+Read composite: walks the hierarchy from `id: 5` down (default full depth, or capped with `maxDepth`) and returns it as a nested tree in one call, instead of you having to call `get-children` repeatedly and stitch the levels together yourself.
+
+**Resulting Vikunja UI state:**
+No change — this is a read. The reply mirrors exactly what the sidebar shows: "Product" → ["Q2 Product Launch", "Q3 Initiatives", ...any other existing children].
+
+`[SCREENSHOT: Vikunja sidebar fully expanded under "Product", matching the tree the assistant reported]`
+
+---
+
+### 3. Duplicate last quarter's project as a starting point
+
+**User says:**
+> "Duplicate last quarter's launch project as the starting point for Q3."
+
+**Tool call:**
+```typescript
+vikunja_projects({ subcommand: "duplicate", id: 8, parentProjectId: 5, duplicateShares: true })
+```
+`PUT /projects/{id}/duplicate` under the hood. Tasks, files, Kanban data, assignees, comments, attachments, labels, relations, and backgrounds all come with the copy. `duplicateShares` defaults to `false` (Vikunja's own default) — copying access grants silently would be a security-relevant surprise, so it's opt-in; here it's set explicitly because the new project should have the same collaborators as the old one.
+
+**Resulting Vikunja UI state:**
+A new project appears under "Product" (named by Vikunja's own duplicate-naming convention, based on the source title), fully populated: same Kanban columns with the same cards, same labels attached to the same relative tasks, same comment threads, same collaborators as "Q2 Product Launch" had.
+
+`[SCREENSHOT: Sidebar showing the new duplicated project under "Product"; its Kanban board open, matching the source project's columns and cards]`
+
+---
+
+## Try it on the local stack
+
+See [docs/LOCAL-TESTING.md](../LOCAL-TESTING.md) to bring up `docker/e2e/docker-compose.yml`, build out a small project with a few tasks and a Kanban board, and try duplicating it yourself.

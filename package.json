@@ -1,16 +1,19 @@
 {
-  "name": "@democratize-technology/vikunja-mcp",
-  "version": "0.2.2",
-  "description": "Model Context Protocol server for Vikunja task management - Simplified architecture with enterprise-grade security and reliability",
+  "name": "vikunja-mcp-ng",
+  "version": "0.3.0",
+  "description": "Model Context Protocol server for Vikunja task management - direct-REST, composite-first tools, enterprise-grade security and reliability",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "vikunja-mcp": "dist/index.js"
+    "vikunja-mcp-ng": "dist/index.js"
   },
   "files": [
     "dist/**/*",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "docs/CONFIGURATION.md",
+    "docs/TOOLS.md",
+    "docs/DOCKER-DESKTOP-MCP.md"
   ],
   "scripts": {
     "dev": "tsx watch src/index.ts",
@@ -49,12 +52,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/democratize-technology/vikunja-mcp.git"
+    "url": "git+https://github.com/netadvanced/vikunja-mcp.git"
   },
   "bugs": {
-    "url": "https://github.com/democratize-technology/vikunja-mcp/issues"
+    "url": "https://github.com/netadvanced/vikunja-mcp/issues"
   },
-  "homepage": "https://github.com/democratize-technology/vikunja-mcp#readme",
+  "homepage": "https://github.com/netadvanced/vikunja-mcp#readme",
   "publishConfig": {
     "access": "public"
   },

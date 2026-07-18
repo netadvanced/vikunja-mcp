@@ -1,0 +1,43 @@
+# Example plain docker-compose usage for vikunja-mcp-ng.
+#
+# The server speaks MCP over stdio, not a network port, so this compose file
+# doesn't define a long-running network service — it defines a runnable
+# service your MCP client (or you, by hand) starts per-session:
+#
+#   docker compose -f docker-compose.example.yml run --rm -T vikunja-mcp
+#
+# `-T` disables pseudo-TTY allocation so stdin/stdout stay clean JSON-RPC —
+# required for MCP clients that pipe requests in and read responses out.
+# Point your MCP client's `command`/`args` at that same `docker compose run`
+# invocation (or the equivalent `docker run -i` form in the README) instead
+# of a network address.
+#
+# Copy this file (`cp docker-compose.example.yml docker-compose.yml`),
+# adjust the image tag / paths, and fill in secrets/ and
+# vikunja-mcp.config.json before using it.
+#
+# For a Docker Swarm deployment with `configs:`/`secrets:` instead of bind
+# mounts, see docs/CONFIGURATION.md#docker-swarm-example — the module-gating
+# config file shape is identical either way.
+
+services:
+  vikunja-mcp:
+    image: ghcr.io/netadvanced/vikunja-mcp-ng:latest
+    # Build locally instead of pulling, until the image is first published:
+    # build: .
+    stdin_open: true # keep stdin open for MCP JSON-RPC over stdio
+    tty: false
+    environment:
+      VIKUNJA_URL: "https://vikunja.example.com/api/v1"
+      # Prefer the _FILE variant over a plain VIKUNJA_API_TOKEN so the token
+      # never ends up in `docker inspect` / compose config output. Setting
+      # both VIKUNJA_API_TOKEN and VIKUNJA_API_TOKEN_FILE is a hard startup
+      # error (see docs/CONFIGURATION.md#secrets-management).
+      VIKUNJA_API_TOKEN_FILE: /run/secrets/vikunja_api_token
+      VIKUNJA_MCP_CONFIG: /etc/vikunja-mcp/vikunja-mcp.config.json
+    volumes:
+      # Non-sensitive module-gating config — safe to bind-mount read-only.
+      # See vikunja-mcp.config.example.json for the shape.
+      - ./vikunja-mcp.config.json:/etc/vikunja-mcp/vikunja-mcp.config.json:ro
+      # Token file — keep this out of source control (see .gitignore).
+      - ./secrets/vikunja_api_token.txt:/run/secrets/vikunja_api_token:ro
