@@ -4,7 +4,7 @@ This document is the durable record of **where this project is going, where it s
 
 Companion documents:
 - **[Tracking issue #28](https://github.com/netadvanced/vikunja-mcp/issues/28)** — the live working checklist (waves, PRs, checkboxes). This roadmap explains *why*; #28 tracks *progress*.
-- **[docs/API-COVERAGE.md](API-COVERAGE.md)** — the raw endpoint-by-endpoint audit (2026-07-17 snapshot, Wave D update notes inline) this plan was built from. Its summary counts were re-verified by direct row count on 2026-07-18 (see §4) and match — no drift.
+- **[docs/API-COVERAGE.md](API-COVERAGE.md)** — the raw endpoint-by-endpoint audit this plan was built from, fully re-verified row-by-row on 2026-07-18 against `main` @ `ce81bd7` (post node-vikunja removal, Waves A–F). Its summary counts were recounted directly from the row markers on the same date (see §4) and match — no drift.
 - **[docs/API_NOTES.md](API_NOTES.md)** / **[docs/VIKUNJA_API_ISSUES.md](VIKUNJA_API_ISSUES.md)** — hard-won implementation gotchas and known upstream API quirks. Read before touching endpoint code.
 - **[docs/ENDPOINT-PLAYBOOK.md](ENDPOINT-PLAYBOOK.md)** — the how-to conventions for implementing new capabilities.
 - **[docs/history/2026-07-18-competitive-review.md](history/2026-07-18-competitive-review.md)** — redacted snapshot of the 2026-07-18 competitive analysis against `@eargollo/vikunja-mcp`, the source for §3a's positioning notes.
@@ -45,7 +45,7 @@ An **AI-first MCP server for Vikunja**: not a 1:1 REST proxy, but a set of task-
 | Tests | 2,900 passed / 2,900 total, 0 failing |
 | Coverage (stmts / branches / funcs / lines) | 89.44% / 80.22% / 78% / 89.72% vs. ratcheted gate 87/78/76/87 |
 | Registered top-level tools | 22 (`src/tools/index.ts`), ~150 subcommands across them |
-| API operations covered | 73 ✅ implemented + 9 ⚠️ implemented-with-bug + 3 🟡 partial + 84 ❌ not implemented = 169 total (43% clean-implemented) — recounted row-by-row from `docs/API-COVERAGE.md` on 2026-07-18; matches its own summary table exactly, no drift found |
+| API operations covered | 102 ✅ implemented + 1 ⚠️ implemented-with-bug + 2 🟡 partial + 64 ❌ not implemented = 169 total (60% clean-implemented) — recounted row-by-row from `docs/API-COVERAGE.md` on 2026-07-18 (full re-verification pass, not just a marker recount); matches its own summary table exactly, no drift found |
 | Live verification | `npm run test:mcp` 23/23 against the local Docker e2e stack; MCP-layer e2e harness 50/51 (single failure is a documented Vikunja 2.3.0 server bug, not ours) |
 
 **Known-limited today (deliberate, tracked):**
@@ -105,17 +105,17 @@ Correctness specifics found in the competitor's code during the review are not c
 
 ## 4. Coverage: implemented / planned / won't-implement
 
-Vikunja documents **169 API operations**. Re-verified 2026-07-18 by counting every status marker row in `docs/API-COVERAGE.md` directly (not trusting its own summary table) — the two matched exactly:
+Vikunja documents **169 API operations**. Fully re-verified row-by-row on 2026-07-18 against current `main` (not just a marker recount of the existing table — every row's status was checked against `src/tools/**`/`src/utils/vikunja-rest.ts`, see `docs/API-COVERAGE.md`'s "Updated as of" line):
 
 | Status | Count | % |
 |---|---|---|
-| ✅ Implemented | 73 | 43% |
-| ⚠️ Implemented (bug) | 9 | 5% |
-| 🟡 Partial | 3 | 2% |
-| ❌ Not implemented | 84 | 50% |
+| ✅ Implemented | 102 | 60% |
+| ⚠️ Implemented (bug) | 1 | 1% |
+| 🟡 Partial | 2 | 1% |
+| ❌ Not implemented | 64 | 38% |
 | **Total** | **169** | 100% |
 
-The 9 "implemented (bug)" and 3 "partial" rows are a mix of genuinely-open findings and stale audit-snapshot artifacts already resolved by later Wave D items but not yet re-graded in the coverage table itself (see the update notes at the top of `docs/API-COVERAGE.md` for the ones that moved). A pass to re-grade those rows against current `main` is tracked in the post-removal polish queue (issue #28).
+This re-verification found that most of the "implemented (bug)"/"partial" rows from the original audit had already been fixed by Wave B/C/D code changes but never re-graded in the coverage table — 8 of the 9 "implemented (bug)" rows and 1 of the 3 "partial" rows moved to ✅ on this pass, alongside 20 rows moving straight from ❌ to ✅ (project duplication, project views CRUD, Kanban bucket CRUD, direct user/team project sharing, and the export request/download tools, all of which existed in code but were undercounted). Only 1 ⚠️ row and 2 by-design 🟡 rows remain; see `docs/API-COVERAGE.md`'s Issues table and Correctness Issues section for what's still genuinely open. This closes the "post-removal polish queue" re-grading item previously tracked here and in issue #28.
 
 **Won't implement (and why):**
 - **Binary/blob endpoints** (project backgrounds, Unsplash, avatars, TOTP QR codes): MCP has no binary content channel; nothing useful to expose.
@@ -128,7 +128,7 @@ The 9 "implemented (bug)" and 3 "partial" rows are a mix of genuinely-open findi
 
 **22 registered top-level tools today** (`src/tools/index.ts`), ~148 subcommands across them (`vikunja_auth`, `vikunja_tasks` + 6 task sub-resource tools, `vikunja_projects`, `vikunja_labels`, `vikunja_teams`, `vikunja_users`, `vikunja_filters`, `vikunja_templates`, `vikunja_webhooks`, `vikunja_batch_import`, `vikunja_export`, `vikunja_notifications`, `vikunja_subscriptions`, `vikunja_reactions`, `vikunja_tokens`, `vikunja_admin`). Most new capability arrives as *subcommands on existing tools*, not new tools — consolidation is deliberate: fewer, smarter tools cost less AI context and make module toggles meaningful (see §3b: this is the same axis the competitive review flagged as our clearest structural advantage over a flat 1:1-endpoint design).
 
-Remaining target surface (from the original ~55–60-operation Wave D plan, now delivered): saved filters, project sharing, project views/Kanban CRUD, task extras (position/by-index/direct listing), attachments read-side, tokens/admin/info — **all landed**. What's left of the 84 not-implemented operations is mostly the explicit won't-implement list (§4) plus genuinely deferred items tracked in issue #28's post-removal capability queue (`create-subtask`/`list-subtasks` composites, etc.).
+Remaining target surface (from the original ~55–60-operation Wave D plan, now delivered): saved filters, project sharing (link shares plus direct user/team sharing), project views/Kanban CRUD, project duplication, task extras (position/by-index/direct listing/subtask composites), attachments read-side, tokens/admin/info — **all landed**. What's left of the 64 not-implemented operations (§4) is overwhelmingly the explicit won't-implement list; any remaining genuinely-deferred items are tracked in issue #28.
 
 ## 6. Plan of record (waves)
 
