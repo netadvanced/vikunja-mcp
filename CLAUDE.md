@@ -103,10 +103,10 @@ server.tool('vikunja_tasks', {
 ```json
 "coverageThreshold": {
   "global": {
-    "branches": 78,        // Current honest coverage: 80.0%
-    "functions": 76,       // Current honest coverage: 76.75%
-    "lines": 87,           // Current honest coverage: 88.86%
-    "statements": 87       // Current honest coverage: 88.64%
+    "branches": 79,        // Current honest coverage: 80.22%
+    "functions": 77,       // Current honest coverage: 78.00%
+    "lines": 88,           // Current honest coverage: 89.72%
+    "statements": 88       // Current honest coverage: 89.44%
   }
 }
 ```
