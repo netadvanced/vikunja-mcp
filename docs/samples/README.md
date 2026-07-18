@@ -1,6 +1,6 @@
 # Sample pages
 
-Full worked examples for each scenario card in the main [README](../../README.md#what-your-assistant-can-do): what you'd say, the exact tool call (verified against `src/tools/`), and the resulting Vikunja UI state.
+Full worked examples for each scenario below — building on the one hero example in the main [README](../../README.md#see-it-in-action): what you'd say, the exact tool call (verified against `src/tools/`), and the resulting Vikunja UI state.
 
 | Page | Scenario | Tools covered |
 |---|---|---|

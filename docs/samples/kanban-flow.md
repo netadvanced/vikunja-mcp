@@ -1,6 +1,6 @@
 # Sample: Kanban flow
 
-Scenario from the [README](../../README.md#kanban-flow): driving a project's Kanban board — reading its columns, moving a card, adding a column, and marking a "done" column — entirely through conversation.
+Scenario from the [README](../../README.md#see-it-in-action): driving a project's Kanban board — reading its columns, moving a card, adding a column, and marking a "done" column — entirely through conversation.
 
 **Setup for this walkthrough:** project **"Website Relaunch"** (`id: 12`) has a Kanban view (`viewId: 4`) with four buckets: `Backlog` (id 41), `Doing` (id 42), `In Review` (id 43), `Done` (id 46). Task `342`, "Fix login redirect bug", currently sits in `Doing`.
 

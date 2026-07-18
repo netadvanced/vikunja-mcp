@@ -1,6 +1,6 @@
 # Sample: Power moves
 
-Scenario from the [README](../../README.md#power-moves): bulk operations done safely — importing a batch of tasks with validation up front, then bulk-editing a subset of them, without either step risking a half-broken project or wiping fields Vikunja's own native bulk endpoint would silently clear.
+Scenario from the [samples index](README.md): bulk operations done safely — importing a batch of tasks with validation up front, then bulk-editing a subset of them, without either step risking a half-broken project or wiping fields Vikunja's own native bulk endpoint would silently clear.
 
 **Setup for this walkthrough:** project "Backlog Intake" (`id: 1`) is empty. `csvData` is a 40-row CSV with a header row (`title,description,priority,dueDate,labels,assignees`); several rows are tagged with a label named `urgent`.
 

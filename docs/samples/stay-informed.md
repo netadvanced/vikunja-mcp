@@ -1,6 +1,6 @@
 # Sample: Stay informed
 
-Scenario from the [README](../../README.md#stay-informed): keeping up with a project you don't work in every day — subscribing to it, catching up on what changed, and reacting to a comment — as one conversation instead of hopping between three separate tools yourself.
+Scenario from the [samples index](README.md): keeping up with a project you don't work in every day — subscribing to it, catching up on what changed, and reacting to a comment — as one conversation instead of hopping between three separate tools yourself.
 
 **Setup for this walkthrough:** project "Infra" (`id: 4`) is not one the user actively works in, but they want to keep an eye on it. Task `501` in Infra has a comment (`id: 88`) worth a quick emoji acknowledgement instead of a full reply.
 

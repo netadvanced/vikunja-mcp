@@ -1,6 +1,6 @@
 # Sample: Admin & ops
 
-Scenario from the [README](../../README.md#admin--ops): instance-administrator visibility and control — but only once an operator has deliberately opted in, since this is the one tool family that touches every user and project on the instance, not just the connected account's own data.
+Scenario from the [samples index](README.md): instance-administrator visibility and control — but only once an operator has deliberately opted in, since this is the one tool family that touches every user and project on the instance, not just the connected account's own data.
 
 **Setup for this walkthrough:** the connected session is a **JWT** session (`vikunja_admin` is JWT-only — an API-token session never sees this tool, regardless of config) belonging to an instance admin, and the operator has set `"admin": true` in `vikunja-mcp.config.json` (it ships **off** by default).
 

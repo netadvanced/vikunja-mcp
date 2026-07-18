@@ -37,8 +37,9 @@ the real tool list — this was confirmed against the live local Vikunja stack
 If neither of those suit your client, the **closest, simplest workaround** is
 skipping the Toolkit/gateway layer entirely and pointing your MCP client
 straight at `docker run -i` — see [Fallback](#fallback-plain-docker-run-no-toolkit)
-below. That's also what the main [README](../README.md#quick-start) leads
-with, since it needs no Docker Desktop MCP Toolkit knowledge at all.
+below. That's also the Docker path documented in the main
+[README](../README.md#docker), since it needs no Docker Desktop MCP Toolkit
+knowledge at all.
 
 ## Prerequisites
 
@@ -46,7 +47,7 @@ with, since it needs no Docker Desktop MCP Toolkit knowledge at all.
   print a command list, not "unknown command").
 - The image built locally (`docker build -t
   ghcr.io/netadvanced/vikunja-mcp-ng:dev .` from the repo root — see the
-  [README](../README.md#docker-image)) or pulled from `ghcr.io` once it's
+  [README](../README.md#docker)) or pulled from `ghcr.io` once it's
   published.
 - A Vikunja API token or JWT (see [CONFIGURATION.md](CONFIGURATION.md)).
 
