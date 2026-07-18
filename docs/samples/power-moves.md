@@ -20,7 +20,8 @@ Validates every row before creating anything (dry-run it first with `dryRun: tru
 **Resulting Vikunja UI state:**
 Opening "Backlog Intake"'s list view shows all successfully-imported tasks (up to 40, fewer if any rows were skipped), each with its title, description, priority, due date, and resolved labels/assignees exactly as the CSV specified. The assistant's reply lists which rows (if any) failed and why.
 
-`[SCREENSHOT: "Backlog Intake" list view populated with ~40 tasks, varying priority badges and label chips visible]`
+![Sample "Backlog Intake" list view populated with 40 tasks, showing varying priority badges and "sample-urgent" label chips](assets/power-moves-01-backlog-imported.png)
+
 
 ---
 
@@ -44,7 +45,8 @@ vikunja_tasks({ subcommand: "bulk-update", taskIds: [123, 124, 125], field: "pri
 **Resulting Vikunja UI state:**
 Every task that had the `urgent` label now shows a priority-5 ("DO NOW") badge in the list view; nothing else about those tasks changed. The assistant's reply confirms which task ids were updated and reports any that failed individually (partial success, not an all-or-nothing transaction — see [ENDPOINT-PLAYBOOK.md §5](../ENDPOINT-PLAYBOOK.md)).
 
-`[SCREENSHOT: "Backlog Intake" list view, the previously "urgent"-labeled tasks now showing a red "DO NOW" priority badge]`
+![Sample "Backlog Intake" list view, the previously "sample-urgent"-labeled tasks now showing a priority-5 ("DO NOW") badge](assets/power-moves-02-backlog-bulk-updated.png)
+
 
 ---
 
@@ -62,7 +64,8 @@ Calls Vikunja's real server-side saved-filter API (`PUT /filters`) — this pers
 **Resulting Vikunja UI state:**
 "Urgent backlog" appears in the sidebar under Favorites (and in the full saved-filters list), clicking it shows the same live-filtered task set the `labels in 17` query would return at any given moment — not a frozen snapshot.
 
-`[SCREENSHOT: Vikunja sidebar Favorites section showing "Urgent backlog" as a saved filter entry]`
+![Vikunja sidebar showing "sample-Urgent backlog" listed as a saved-filter entry](assets/power-moves-03-saved-filter-favorite.png)
+
 
 ---
 

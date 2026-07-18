@@ -20,7 +20,8 @@ Plain CRUD create — hierarchy depth is validated server-side up to 10 levels; 
 **Resulting Vikunja UI state:**
 "Q3 Initiatives" appears in the sidebar nested one level under "Product", next to "Q2 Product Launch".
 
-`[SCREENSHOT: Vikunja sidebar showing "Product" expanded with "Q2 Product Launch" and the new "Q3 Initiatives" both listed as children]`
+![Vikunja sidebar showing "sample-Product" expanded with "sample-Q2 Product Launch" and the new "sample-Q3 Initiatives" both listed as children](assets/project-planning-01-sidebar-children.png)
+
 
 ---
 
@@ -38,7 +39,8 @@ Read composite: walks the hierarchy from `id: 5` down (default full depth, or ca
 **Resulting Vikunja UI state:**
 No change — this is a read. The reply mirrors exactly what the sidebar shows: "Product" → ["Q2 Product Launch", "Q3 Initiatives", ...any other existing children].
 
-`[SCREENSHOT: Vikunja sidebar fully expanded under "Product", matching the tree the assistant reported]`
+![Vikunja sidebar fully expanded under "sample-Product", matching the project tree returned by get-tree](assets/project-planning-02-sidebar-tree.png)
+
 
 ---
 
@@ -56,7 +58,8 @@ vikunja_projects({ subcommand: "duplicate", id: 8, parentProjectId: 5, duplicate
 **Resulting Vikunja UI state:**
 A new project appears under "Product" (named by Vikunja's own duplicate-naming convention, based on the source title), fully populated: same Kanban columns with the same cards, same labels attached to the same relative tasks, same comment threads, same collaborators as "Q2 Product Launch" had.
 
-`[SCREENSHOT: Sidebar showing the new duplicated project under "Product"; its Kanban board open, matching the source project's columns and cards]`
+![The duplicated "sample-Q2 Product Launch - duplicate" project's Kanban board, matching the source project's columns and cards](assets/project-planning-03-duplicated-kanban.png)
+
 
 ---
 

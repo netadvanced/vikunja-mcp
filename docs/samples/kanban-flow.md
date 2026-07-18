@@ -20,7 +20,8 @@ vikunja_projects({ subcommand: "list-buckets", id: 12 })
 **Resulting Vikunja UI state:**
 The assistant reports four columns in board order — Backlog (6 cards), Doing (3 cards), In Review (1 card), Done (14 cards) — mirroring exactly what's rendered if you opened the project's Kanban view in the browser at `https://your-vikunja-instance.com/projects/12/4`.
 
-`[SCREENSHOT: Vikunja Kanban view for "Website Relaunch" showing four columns — Backlog, Doing, In Review, Done — with card counts in each column header]`
+![Vikunja Kanban view for the sample Website Relaunch project, showing four columns -- Backlog, Doing, In Review, Done -- with card counts in each column header](assets/kanban-flow-01-board-columns.png)
+
 
 ---
 
@@ -38,7 +39,8 @@ Returns tasks in real server-side (Kanban card) order for the auto-resolved Kanb
 **Resulting Vikunja UI state:**
 No change — this is a read. In the browser, the `Doing` column shows three cards top to bottom: "Fix login redirect bug" (id 342), "Update pricing copy", "Add dark-mode toggle" — same order the tool returned.
 
-`[SCREENSHOT: Doing column expanded, three task cards visible with titles, in top-to-bottom order]`
+![The Doing column on the sample Website Relaunch board, expanded, showing three task cards -- "Fix login redirect bug", "Update pricing copy", "Add dark-mode toggle" -- top to bottom](assets/kanban-flow-02-doing-column.png)
+
 
 ---
 
@@ -56,7 +58,10 @@ vikunja_tasks({ subcommand: "set-bucket", id: 342, bucketId: 43 })
 **Resulting Vikunja UI state:**
 The card for task 342 disappears from the bottom of `Doing` (now 2 cards) and appears at the bottom of `In Review` (now 2 cards). If a browser tab is open on the board, this happens live via Vikunja's own polling/refresh — the MCP call and the UI both talk to the same `POST /projects/{id}/views/{viewId}/buckets/{bucketId}/tasks` endpoint underneath.
 
-`[SCREENSHOT: Kanban board mid-transition — "Fix login redirect bug" card now under the In Review column header, Doing column one card shorter]`
+!["Fix login redirect bug" now under the In Review column header on the sample board, with Doing one card shorter than before](assets/kanban-flow-03-card-moved.png)
+
+_Captured as the completed post-move state (Playwright can't honestly capture a mid-drag animation frame); caption adjusted from "mid-transition" to describe the resulting state instead._
+
 
 ---
 
@@ -73,7 +78,8 @@ vikunja_projects({ subcommand: "create-bucket", id: 12, title: "Blocked", limit:
 **Resulting Vikunja UI state:**
 A fifth, empty column titled "Blocked" appears at the right edge of the board, with a small "0 / 3" indicator in its header reflecting the WIP limit.
 
-`[SCREENSHOT: Kanban board with a new empty "Blocked" column added after Done, header showing "0 / 3"]`
+![A new, empty "Blocked" column added after Done on the sample board, its header showing a "0 / 3" work-in-progress limit indicator](assets/kanban-flow-04-blocked-column.png)
+
 
 ---
 
@@ -91,7 +97,8 @@ Composite: resolves the view, updates it, and verifies the change took effect �
 **Resulting Vikunja UI state:**
 The `Done` column header gains a small checkmark badge. Dragging any card into that column in the browser now flips the task's `done` status automatically — same behavior a human would get by setting this in the view's settings panel.
 
-`[SCREENSHOT: Done column header with a checkmark icon next to the title, board settings panel showing "Done bucket: Done" selected]`
+![The Done column's options menu on the sample board, showing "Done bucket" checked -- the real board-settings control for the view's done bucket](assets/kanban-flow-05-done-bucket.png)
+
 
 ---
 

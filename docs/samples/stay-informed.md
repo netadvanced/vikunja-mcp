@@ -20,7 +20,10 @@ vikunja_subscriptions({ subcommand: "subscribe", entity: "project", entityId: 4 
 **Resulting Vikunja UI state:**
 The bell/subscribe icon on the "Infra" project page switches from outline to filled, matching what clicking "Subscribe" in the browser does.
 
-`[SCREENSHOT: "Infra" project header with the subscribe bell icon shown filled/active]`
+![Sample "Infra" project menu showing "Unsubscribe", confirming the project is now subscribed (this Vikunja version has no separate bell icon in the project header)](assets/stay-informed-01-subscribed.png)
+
+_The doc placeholder describes a "subscribe bell icon" in the project header; this UI version has no such icon -- captured the project's "..." menu (Subscribe/Unsubscribe toggle) as the nearest honest evidence of subscription state instead._
+
 
 ---
 
@@ -38,7 +41,8 @@ vikunja_notifications({ subcommand: "list", unreadOnly: true })
 **Resulting Vikunja UI state:**
 No change — this is a read. The assistant's reply summarizes what the notification bell in the top bar would show if opened: e.g. "3 unread: task 501 assigned to you, a comment on task 501, project Infra archived-then-restored."
 
-`[SCREENSHOT: Vikunja notification dropdown open, three unread items listed with bold/highlighted styling]`
+![Vikunja notification dropdown open, showing three unread notifications from the sample Infra activity (an assignment and two comments) with bold styling](assets/stay-informed-02-notifications-unread.png)
+
 
 ---
 
@@ -56,7 +60,8 @@ Idempotent: the underlying endpoint is a pure toggle server-side (no request bod
 **Resulting Vikunja UI state:**
 That notification loses its bold/unread styling in the dropdown; the unread badge count on the bell icon decrements by one.
 
-`[SCREENSHOT: Notification dropdown, the assignment notification now shown unbolded/read, badge count reduced]`
+![Notification dropdown, the assignment notification now shown without bold styling, badge count reduced](assets/stay-informed-03-notification-read.png)
+
 
 ---
 
@@ -74,7 +79,8 @@ vikunja_reactions({ subcommand: "add", kind: "comments", entityId: 88, value: "�
 **Resulting Vikunja UI state:**
 A 👍 reaction chip with a count of 1 appears under that comment in the task's activity feed, the same as clicking the reaction picker in the browser.
 
-`[SCREENSHOT: Task 501 comment thread, a comment with a 👍 reaction chip (count 1) shown beneath it]`
+![Task comment thread on the sample Infra task, showing a comment with a thumbs-up reaction chip (count 1) beneath it](assets/stay-informed-04-reaction.png)
+
 
 ---
 

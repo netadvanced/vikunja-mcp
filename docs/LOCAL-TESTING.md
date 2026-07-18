@@ -276,3 +276,81 @@ Every mismatch the harness finds is reported as one of:
   version's behavior isn't (e.g. an endpoint 500s regardless of what's sent
   — reproduced with a raw, tool-independent request to confirm it isn't
   this codebase's fault before filing it here).
+
+## Sample-page screenshot capture (`npm run capture:samples`)
+
+`scripts/capture-sample-screenshots.ts` drives the real Vikunja *web UI*
+(not just the API) with [Playwright](https://playwright.dev/) to capture
+the screenshots embedded in `docs/samples/*.md` — the worked-example pages
+linked from the main README. Unlike `test:mcp` / `test:e2e:mcp`, its output
+isn't pass/fail assertions; it's PNGs written to `docs/samples/assets/` and
+the corresponding `![...]  (assets/...)` embeds spliced into the sample
+pages in place of `` `[SCREENSHOT: ...]` `` placeholder lines.
+
+Playwright itself (the `playwright` npm package and its bundled Chromium)
+is a devDependency, used only by this script — nothing under `src/` depends
+on it, and it's not part of the published package (see `files` in
+`package.json`).
+
+Run it against the local stack:
+
+```bash
+npm run e2e:up   # if not already running
+npx playwright install chromium   # first run only, or after bumping the playwright version
+npm run capture:samples
+```
+
+It requires no environment variables — like `test:e2e:mcp`, it's hard-coded
+to the local stack's fixed port and refuses to run against anything that
+doesn't resolve to `localhost`/`127.0.0.1`/`::1`. It logs in as the
+bootstrap-created `e2e-test` user via the real login form, and creates a
+second CLI user (`sample-alice`, via the container's `vikunja user`
+subcommand — there's no `/admin/users` API on the pinned stack version) to
+demonstrate multi-user flows (sharing, assignment notifications).
+
+### Idempotency / re-runnability
+
+All seeded data — projects, labels, teams, and saved filters — is named
+with a `sample-` prefix. Every run sweeps for and deletes any leftover
+`sample-*` data (and the `sample-alice` CLI user) at startup, and deletes
+everything it created in a `finally` block at the end, so the Vikunja UI is
+left clean for a human to inspect between runs, the same convention
+`test:e2e:mcp` uses for `mcp-e2e-*` data.
+
+### When a described shot can't be honestly captured
+
+A couple of the placeholders in `docs/samples/*.md` describe UI states this
+script can't produce faithfully:
+
+- **Mid-drag/mid-transition animations** (e.g. kanban-flow.md's card-move
+  step) — Playwright can't capture an in-progress CSS transition frame on
+  demand. The script performs the real move via the same REST endpoint the
+  MCP tool uses, then captures the completed state, with a short note
+  appended under the image explaining the substitution.
+- **UI elements the pinned Vikunja version doesn't have** (e.g.
+  stay-informed.md's "subscribe bell icon in the project header" — this
+  version only exposes subscribe state via the project's "..." menu) — the
+  script captures the nearest honest equivalent and notes the substitution.
+- **The admin panel** (all three placeholders in admin-ops.md) — the pinned
+  stack (`vikunja/vikunja:2.3.0`) doesn't implement the `/admin/*` API or
+  its frontend at all (`GET /admin/overview` 404s; no `admin` group appears
+  in `GET /routes`). This is the same documented spec/pinned-version gap
+  described in "Version pinning and refresh" above — the vendored OpenAPI
+  spec is captured from an `unstable` build ~1000 commits ahead of the
+  pinned stable tag. Rather than fabricate a screenshot of a UI that isn't
+  actually running, the script replaces those three placeholders with an
+  explanatory note instead of an image. Re-run the script once the pin
+  moves to a release that ships the admin panel.
+
+### A note on `POST /notifications/{id}`
+
+While building the "mark one read" capture, sending an empty body (as
+`docs/vikunja-openapi.json` documents — "no request body") verifiably did
+**not** persist a read state on the pinned server version, even after
+repeated calls; sniffing the real frontend's own request showed it sends
+`{"read": true}` explicitly, which does persist. The capture script does
+the same. This is a capture-script-only workaround, not a change to
+`src/tools/notifications.ts` (out of scope for the item that added this
+script) — worth checking if `vikunja_notifications`'s `mark-read`
+subcommand is ever reported as silently not sticking against a real
+server.
