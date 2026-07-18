@@ -87,6 +87,7 @@ interface StandardResponse {
     - Can update title, description, dueDate, priority, done status
     - Can move tasks between projects with `projectId` (verified after update)
     - Can update labels and assignees (uses efficient diff-based approach)
+    - Can move the task into a Kanban bucket with `bucketId` (optional `viewId`) — applied via the same view/bucket resolution `set-bucket` uses, and reported in the response's `affectedFields` alongside any other changed fields in the same call. Previously `bucketId` was accepted by the schema but silently ignored here; it is now either applied and honestly reported, or the whole update fails loudly (no silent partial success)
   - `delete` - Delete a task by ID
   - `assign` - Bulk assign users to tasks
   - `unassign` - Remove users from tasks
@@ -179,12 +180,13 @@ narrower tool surface exposed to a client): `vikunja_task_bulk` (`operation`:
     - `list-views` / `get-view` / `create-view` / `update-view` / `delete-view`
     - `set-done-bucket` - Composite: set a Kanban view's done bucket (resolves the view, updates it, and verifies the change took effect)
   - **Kanban Buckets**
-    - `list-buckets` - List the Kanban buckets (columns) of a project (`id` is the project id)
+    - `list-buckets` - List the Kanban buckets (columns) of a project (`id` is the project id; `projectId` is accepted as an alias for `id` — see note below)
     - `create-bucket` - Create a new bucket (`id`, `title`, optional `limit`)
     - `update-bucket` - Rename/reconfigure a bucket, referenced by `bucketId` or `bucketTitle`
     - `delete-bucket` - Delete a bucket (dissociates its tasks, does not delete them), referenced by `bucketId` or `bucketTitle`
     - `list-view-tasks` - List a view's tasks in real server-side (Kanban card) order, with pagination
     - All Kanban operations auto-resolve `viewId` to the project's Kanban view when omitted
+  - **`id` vs `projectId`**: every CRUD/hierarchy/Kanban-bucket/view/duplicate/backgrounds subcommand (`get`, `update`, `delete`, `archive`, `unarchive`, `get-children`, `get-tree`, `get-breadcrumb`, `move`, `list-buckets`, `create-bucket`, `update-bucket`, `delete-bucket`, `list-view-tasks`, `list-views`, `get-view`, `create-view`, `update-view`, `delete-view`, `set-done-bucket`, `duplicate`, and the backgrounds subcommands) identifies its target project via `id`, with `projectId` accepted as an alias when `id` is omitted. The sharing-domain subcommands (`create-share`, `share-with-user`, `list-project-users`, etc.) use `projectId` directly instead — both fields are flat siblings on the same schema, so this alias avoids a first-guess footgun (an agent reaching for whichever field it used most recently)
   - **Duplicate**
     - `duplicate` - Duplicate a project (`id`, optional `parentProjectId`, optional `duplicateShares`). Tasks, files, Kanban data, assignees, comments, attachments, labels, relations, and backgrounds are copied; shares only when `duplicateShares: true` (Vikunja's own default is `false` — shares are access grants, so copying them silently would be a security-relevant surprise)
   - **Sharing — direct user & team access**

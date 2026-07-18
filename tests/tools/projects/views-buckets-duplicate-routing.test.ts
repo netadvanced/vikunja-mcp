@@ -46,7 +46,7 @@ import {
   deleteView,
   setDoneBucket,
 } from '../../../src/tools/projects/views';
-import { createBucket, updateBucket, deleteBucket, listViewTasks } from '../../../src/tools/projects/buckets';
+import { listBuckets, createBucket, updateBucket, deleteBucket, listViewTasks } from '../../../src/tools/projects/buckets';
 import { duplicateProject } from '../../../src/tools/projects/duplicate';
 
 const okResult = { content: [{ type: 'text' as const, text: 'ok' }] };
@@ -86,6 +86,7 @@ describe('vikunja_projects routing: views, buckets, duplicate', () => {
     (updateView as jest.Mock).mockResolvedValue(okResult);
     (deleteView as jest.Mock).mockResolvedValue(okResult);
     (setDoneBucket as jest.Mock).mockResolvedValue(okResult);
+    (listBuckets as jest.Mock).mockResolvedValue(okResult);
     (createBucket as jest.Mock).mockResolvedValue(okResult);
     (updateBucket as jest.Mock).mockResolvedValue(okResult);
     (deleteBucket as jest.Mock).mockResolvedValue(okResult);
@@ -129,6 +130,12 @@ describe('vikunja_projects routing: views, buckets, duplicate', () => {
       args: { id: 5, bucketId: 101 },
       fn: setDoneBucket as jest.Mock,
       missingIdMessage: 'set-done-bucket',
+    },
+    {
+      subcommand: 'list-buckets',
+      args: { id: 5, viewId: 11 },
+      fn: listBuckets as jest.Mock,
+      missingIdMessage: 'list-buckets',
     },
     {
       subcommand: 'create-bucket',
@@ -184,5 +191,32 @@ describe('vikunja_projects routing: views, buckets, duplicate', () => {
       );
       expect(fn).not.toHaveBeenCalled();
     });
+
+    // Item E1 (battle-tested friction #3): agents reach for the sibling
+    // `projectId` field first on these subcommands (it's a flat field on the
+    // same schema, used elsewhere for sharing ops) — `list-buckets` was
+    // called with `projectId` and failed before succeeding on retry with
+    // `id`. `projectId` is now accepted as an alias for `id` on every
+    // subcommand in this table, not just `list-buckets`.
+    it(`routes '${subcommand}' when the project id is passed as \`projectId\` instead of \`id\``, async () => {
+      const { id, ...rest } = args;
+      const result = await toolHandler({ subcommand, projectId: id, ...rest });
+
+      expect(fn).toHaveBeenCalledTimes(1);
+      expect(fn).toHaveBeenCalledWith(
+        expect.objectContaining({ ...rest, id, projectId: id }),
+        mockAuthManager,
+      );
+      expect(result).toBe(okResult);
+    });
   }
+
+  it('prefers an explicit `id` over `projectId` when both are supplied', async () => {
+    await toolHandler({ subcommand: 'list-buckets', id: 5, projectId: 999, viewId: 11 });
+
+    expect(listBuckets as jest.Mock).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 5, projectId: 999 }),
+      mockAuthManager,
+    );
+  });
 });

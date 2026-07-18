@@ -920,12 +920,42 @@ async function testKanban(h: McpHarness, ctx: FlowContext): Promise<void> {
   }
   ctx.bucketId = bucketIds[0];
 
+  // Item E1 / friction #3: `projectId` must work as an alias for `id` on
+  // list-buckets (agents reach for it first — it's a sibling field used
+  // elsewhere for sharing ops).
+  const bucketsByProjectId = await h.call('vikunja_projects', {
+    subcommand: 'list-buckets',
+    projectId: ctx.projectId,
+  });
+  assertOk('list-buckets (projectId alias for id)', bucketsByProjectId);
+
   const setBucket = await h.call('vikunja_tasks', {
     subcommand: 'set-bucket',
     id: ctx.taskId,
     bucketId: ctx.bucketId,
   });
   assertOk('set-bucket', setBucket);
+
+  // Item E1 / friction #1: `update`'s `bucketId` must actually be applied
+  // (via the same view/bucket resolution set-bucket uses) rather than
+  // silently dropped, and honestly reported in `affectedFields` alongside
+  // another field changed in the same call.
+  const updateWithBucket = await h.call('vikunja_tasks', {
+    subcommand: 'update',
+    id: ctx.taskId,
+    priority: 3,
+    bucketId: ctx.bucketId,
+  });
+  if (assertOk('update with bucketId', updateWithBucket)) {
+    if (!updateWithBucket.text.includes('bucketId')) {
+      fail(
+        'update with bucketId (honestly reported in affectedFields)',
+        `expected "bucketId" in affectedFields, got: ${updateWithBucket.text.slice(0, 300)}`,
+      );
+    } else {
+      pass('update with bucketId (honestly reported in affectedFields)');
+    }
+  }
 }
 
 async function testNotifications(h: McpHarness): Promise<void> {

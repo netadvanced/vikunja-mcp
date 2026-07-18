@@ -15,9 +15,15 @@ import type { MockVikunjaClient } from '../types/mocks';
 import type { AuthManager } from '../../src/auth/AuthManager';
 import { parseMarkdown } from '../utils/markdown';
 
-// Mock the direct-REST helper used by the migrated CRUD services
+// Mock the direct-REST helper used by the migrated CRUD services.
+// resolveKanbanViewId (used by moveTaskToBucket, see ../buckets) is mocked
+// separately rather than left to its real implementation: it internally
+// calls this same module's vikunjaRestRequest via a same-module reference
+// that bypasses the mock override below, so it must be driven directly by
+// each bucketId test instead of through the GET-routing fixtures.
 jest.mock('../../src/utils/vikunja-rest', () => ({
   vikunjaRestRequest: jest.fn(),
+  resolveKanbanViewId: jest.fn(),
 }));
 
 // Mock the client module (still used for labels/assignees sub-resource calls)
@@ -35,13 +41,14 @@ jest.mock('../../src/utils/logger', () => ({
   },
 }));
 
-import { vikunjaRestRequest } from '../../src/utils/vikunja-rest';
+import { vikunjaRestRequest, resolveKanbanViewId } from '../../src/utils/vikunja-rest';
 
 describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
   let mockClient: MockVikunjaClient;
   const { getClientFromContext } = require('../../src/client');
   const mockAuthManager = {} as AuthManager;
   const mockRest = vikunjaRestRequest as jest.Mock;
+  const mockResolveKanbanViewId = resolveKanbanViewId as jest.Mock;
 
   /** Sentinel wrapper marking a routeRest handler value as a rejection. */
   const REJECT = (value: unknown): { __reject: true; value: unknown } => ({ __reject: true, value });
@@ -382,6 +389,151 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
       const parsed = parseMarkdown(markdown);
       const aorpStatus = parsed.getAorpStatus();
       expect(aorpStatus.type).toBe('success');
+    });
+  });
+
+  // Item E1 (battle-tested friction #1): `update`'s `bucketId` field was
+  // previously accepted by the tool schema but never read here, so a Kanban
+  // move requested alongside other field updates was silently dropped.
+  describe('updateTask bucketId (Kanban bucket move)', () => {
+    const bucketTask = {
+      id: 1,
+      title: 'Original Title',
+      description: 'Original Description',
+      due_date: '2024-01-01T00:00:00Z',
+      priority: 1,
+      done: false,
+      repeat_after: 0,
+      repeat_mode: 0,
+      project_id: 5,
+      assignees: [],
+    };
+
+    it('applies bucketId via the same view/bucket resolution set-bucket uses, and honestly reports it', async () => {
+      routeRest({
+        GET: bucketTask,
+        POST: (path: string) => {
+          if (path === '/tasks/1') return bucketTask;
+          if (path === '/projects/5/views/11/buckets/7/tasks') return {};
+          return undefined;
+        },
+      });
+      mockResolveKanbanViewId.mockResolvedValue(11);
+
+      const result = await updateTask(
+        { id: 1, dueDate: '2024-06-01T00:00:00Z', bucketId: 7 },
+        mockAuthManager,
+      );
+
+      // Same resolution helper set-bucket uses (see ../buckets.ts), given
+      // the project id resolved from the task itself (project_id: 5)
+      expect(mockResolveKanbanViewId).toHaveBeenCalledWith(mockAuthManager, 5);
+      // The dedicated bucket-move endpoint was called with the TaskBucket payload
+      expect(mockRest).toHaveBeenCalledWith(
+        mockAuthManager,
+        'POST',
+        '/projects/5/views/11/buckets/7/tasks',
+        { task_id: 1, bucket_id: 7 },
+      );
+
+      const markdown = result.content[0].text;
+      const parsed = parseMarkdown(markdown);
+      const aorpStatus = parsed.getAorpStatus();
+      expect(aorpStatus.type).toBe('success');
+      // affectedFields must honestly include bucketId alongside the other
+      // changed field, not silently drop it (the friction this item fixes).
+      expect(markdown).toContain('bucketId');
+      expect(markdown).toContain('dueDate');
+    });
+
+    it('resolves project and view the same way set-bucket does when both are omitted', async () => {
+      let bucketPostCalled = false;
+      routeRest({
+        GET: bucketTask,
+        POST: (path: string) => {
+          if (path === '/tasks/1') return bucketTask;
+          if (path === '/projects/5/views/11/buckets/9/tasks') {
+            bucketPostCalled = true;
+            return {};
+          }
+          return undefined;
+        },
+      });
+      mockResolveKanbanViewId.mockResolvedValue(11);
+
+      await updateTask({ id: 1, bucketId: 9 }, mockAuthManager);
+
+      expect(bucketPostCalled).toBe(true);
+    });
+
+    it('uses an explicit viewId without calling resolveKanbanViewId', async () => {
+      routeRest({
+        GET: bucketTask,
+        POST: (path: string) => {
+          if (path === '/tasks/1') return bucketTask;
+          if (path === '/projects/5/views/22/buckets/9/tasks') return {};
+          return undefined;
+        },
+      });
+
+      await updateTask({ id: 1, bucketId: 9, viewId: 22 }, mockAuthManager);
+
+      expect(mockResolveKanbanViewId).not.toHaveBeenCalled();
+      expect(mockRest).toHaveBeenCalledWith(
+        mockAuthManager,
+        'POST',
+        '/projects/5/views/22/buckets/9/tasks',
+        { task_id: 1, bucket_id: 9 },
+      );
+    });
+
+    it('does not call the bucket-move endpoint when bucketId is omitted (unchanged behavior)', async () => {
+      routeRest({ GET: bucketTask, POST: bucketTask });
+
+      const result = await updateTask({ id: 1, title: 'New Title' }, mockAuthManager);
+
+      expect(mockRest).not.toHaveBeenCalledWith(
+        mockAuthManager,
+        'POST',
+        expect.stringContaining('/buckets/'),
+        expect.anything(),
+      );
+
+      const markdown = result.content[0].text;
+      const parsed = parseMarkdown(markdown);
+      expect(parsed.getAorpStatus().type).toBe('success');
+      expect(markdown).not.toContain('bucketId');
+    });
+
+    it('rejects a non-positive bucketId before making any REST calls', async () => {
+      await expect(
+        updateTask({ id: 1, bucketId: 0 }, mockAuthManager),
+      ).rejects.toThrow('bucketId must be a positive integer');
+      expect(mockRest).not.toHaveBeenCalled();
+    });
+
+    it('rejects a non-positive viewId before making any REST calls', async () => {
+      await expect(
+        updateTask({ id: 1, bucketId: 7, viewId: -1 }, mockAuthManager),
+      ).rejects.toThrow('viewId must be a positive integer');
+      expect(mockRest).not.toHaveBeenCalled();
+    });
+
+    it('propagates a bucket-move failure as the update failure (no partial silent success)', async () => {
+      routeRest({
+        GET: bucketTask,
+        POST: (path: string) => {
+          if (path === '/tasks/1') return bucketTask;
+          return undefined;
+        },
+      });
+      mockResolveKanbanViewId.mockRejectedValue(
+        new MCPError(ErrorCode.NOT_FOUND, 'Project 5 has no Kanban view, so it has no buckets'),
+      );
+
+      await expect(
+        updateTask({ id: 1, bucketId: 7 }, mockAuthManager),
+      ).rejects.toThrow('Project 5 has no Kanban view, so it has no buckets');
     });
   });
 

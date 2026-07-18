@@ -83,6 +83,19 @@ The `/user` endpoint fails with authentication errors despite using a valid toke
    fetched — `isDoneBucket` falls back to `false` in that case rather than
    spending an extra request on it.
 
+4. **`id` vs `projectId` on `vikunja_projects`**: the flat args schema has
+   both `id` (used by CRUD/hierarchy/Kanban-bucket/view/duplicate/backgrounds
+   subcommands) and `projectId` (used by the sharing-domain subcommands —
+   `create-share`, `share-with-user`, `list-project-users`, etc.) as sibling
+   fields, which is a first-guess footgun: an agent reaching for `projectId`
+   on e.g. `list-buckets` gets `Project ID is required`. `registerProjectsTool`
+   (`src/tools/projects/index.ts`) now accepts `projectId` as an alias for
+   `id` on every subcommand in the `id`-domain group (`PROJECT_ID_ALIAS_SUBCOMMANDS`),
+   applied once up front before the switch dispatch; an explicit `id` always
+   wins when both are supplied. The sharing-domain subcommands are
+   deliberately excluded from this alias — they already use `projectId` for
+   this purpose.
+
 ### Project Sharing
 
 Project sharing allows creating public or private links to share projects with external users.
@@ -165,6 +178,25 @@ Project sharing allows creating public or private links to share projects with e
    codebase, a bucket's `limit` field means "unlimited" at `0`, so bucket
    create/update validate it as a non-negative integer rather than using
    the shared `validateId` helper (which rejects `0`).
+
+4. **`vikunja_tasks update`'s `bucketId` Is Not a `models.Task` Field**:
+   moving a task into a bucket is a dedicated action endpoint (`POST
+   /projects/{project}/views/{view}/buckets/{bucket}/tasks`), not a field on
+   the full-model task update payload — `models.Task.bucket_id` exists in the
+   spec but is documented as populated only "when the task is accessed via a
+   view with buckets", so it can't be diffed the way `due_date`/`priority`
+   are. `TaskUpdateService.updateTask` therefore calls the shared
+   `moveTaskToBucket` helper (`src/tools/tasks/buckets.ts`, factored out of
+   `setTaskBucket`) as a side effect after the core POST, rather than folding
+   `bucket_id` into `buildUpdateData`'s merge. It runs after any same-call
+   `projectId` move, so bucket resolution (when `projectId`/`viewId` are
+   omitted) sees the task's new project, not its old one. `bucketId` is
+   reported in `affectedFields` unconditionally like `labels`/`assignees` —
+   if the move itself fails, the whole `update` call throws before that
+   response is ever returned, so the field list stays honest. Before this
+   fix, `update`'s schema accepted `bucketId` but nothing read it, so it was
+   silently dropped (battle-tested friction — see tracking issue #28, item
+   E1).
 
 ## Operation Patterns
 

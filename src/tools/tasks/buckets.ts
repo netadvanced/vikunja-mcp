@@ -34,6 +34,80 @@ interface VikunjaTaskSummary {
   title?: string;
 }
 
+/** Inputs shared by every caller that needs to place a task into a bucket. */
+export interface MoveTaskToBucketArgs {
+  taskId: number;
+  bucketId: number;
+  /** Optional Kanban view id. Auto-resolved from the project when omitted. */
+  viewId?: number | undefined;
+  /** Optional project id. Auto-resolved from the task when omitted. */
+  projectId?: number | undefined;
+}
+
+/** Resolved ids the move was actually performed against. */
+export interface MoveTaskToBucketResult {
+  viewId: number;
+  projectId: number;
+}
+
+/**
+ * Moves a task into a Kanban bucket via the dedicated view/bucket endpoint.
+ *
+ * This is the single implementation behind both the `set-bucket` subcommand
+ * and `update`'s `bucketId` field (see `TaskUpdateService.ts`) — both need
+ * identical project/view resolution and must call the same endpoint so that
+ * `update` doesn't silently drop `bucketId` (battle-tested friction: the
+ * schema accepted `bucketId` on update but nothing ever read it, forcing
+ * agents to redo the work via `set-bucket`).
+ *
+ * Resolution order when optional ids are omitted:
+ *  - projectId: fetched from the task itself
+ *  - viewId: resolved to the project's Kanban view
+ *
+ * @param authManager - Active auth manager holding session credentials
+ * @param args - Task id, destination bucket id, and optional view/project ids
+ * @returns The resolved view/project ids the move was applied against
+ * @throws MCPError when the task, project, or Kanban view cannot be resolved,
+ *   or when the bucket-move request itself fails
+ */
+export async function moveTaskToBucket(
+  authManager: AuthManager,
+  args: MoveTaskToBucketArgs,
+): Promise<MoveTaskToBucketResult> {
+  // Resolve the project id from the task when the caller did not supply it.
+  let projectId = args.projectId;
+  if (projectId === undefined) {
+    const task = await vikunjaRestRequest<VikunjaTaskSummary>(
+      authManager,
+      'GET',
+      `/tasks/${args.taskId}`,
+    );
+    if (!task || typeof task.project_id !== 'number') {
+      throw new MCPError(
+        ErrorCode.NOT_FOUND,
+        `Could not resolve the project of task ${args.taskId}`,
+      );
+    }
+    projectId = task.project_id;
+  }
+
+  // Resolve the Kanban view id when the caller did not supply it.
+  const viewId =
+    args.viewId !== undefined ? args.viewId : await resolveKanbanViewId(authManager, projectId);
+
+  // Place the task into the bucket. Vikunja's bucket-task endpoint expects the
+  // TaskBucket payload; bucket_id is also part of the URL but is sent in the
+  // body as the API model requires it.
+  await vikunjaRestRequest(
+    authManager,
+    'POST',
+    `/projects/${projectId}/views/${viewId}/buckets/${args.bucketId}/tasks`,
+    { task_id: args.taskId, bucket_id: args.bucketId },
+  );
+
+  return { viewId, projectId };
+}
+
 /**
  * Moves a task into a Kanban bucket.
  *
@@ -63,36 +137,12 @@ export async function setTaskBucket(
   if (args.viewId !== undefined) validateId(args.viewId, 'viewId');
   if (args.projectId !== undefined) validateId(args.projectId, 'projectId');
 
-  // Resolve the project id from the task when the caller did not supply it.
-  let projectId = args.projectId;
-  if (projectId === undefined) {
-    const task = await vikunjaRestRequest<VikunjaTaskSummary>(
-      authManager,
-      'GET',
-      `/tasks/${args.id}`,
-    );
-    if (!task || typeof task.project_id !== 'number') {
-      throw new MCPError(
-        ErrorCode.NOT_FOUND,
-        `Could not resolve the project of task ${args.id}`,
-      );
-    }
-    projectId = task.project_id;
-  }
-
-  // Resolve the Kanban view id when the caller did not supply it.
-  const viewId =
-    args.viewId !== undefined ? args.viewId : await resolveKanbanViewId(authManager, projectId);
-
-  // Place the task into the bucket. Vikunja's bucket-task endpoint expects the
-  // TaskBucket payload; bucket_id is also part of the URL but is sent in the
-  // body as the API model requires it.
-  await vikunjaRestRequest(
-    authManager,
-    'POST',
-    `/projects/${projectId}/views/${viewId}/buckets/${args.bucketId}/tasks`,
-    { task_id: args.id, bucket_id: args.bucketId },
-  );
+  const { viewId, projectId } = await moveTaskToBucket(authManager, {
+    taskId: args.id,
+    bucketId: args.bucketId,
+    viewId: args.viewId,
+    projectId: args.projectId,
+  });
 
   const response = createStandardResponse(
     'set-task-bucket',

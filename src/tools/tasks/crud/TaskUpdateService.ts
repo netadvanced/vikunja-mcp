@@ -21,6 +21,7 @@ import { extractHttpErrorDetail } from '../../../utils/http-error-detail';
 import { AUTH_ERROR_MESSAGES } from '../constants';
 import { createTaskResponse } from './TaskResponseFormatter';
 import { formatAorpAsMarkdown } from '../../../utils/response-factory';
+import { moveTaskToBucket } from '../buckets';
 import type { components } from '../../../types/generated/vikunja-openapi';
 
 /** `models.Task` per the OpenAPI spec — request/response shape for the task endpoints. */
@@ -42,6 +43,16 @@ export interface UpdateTaskArgs {
   assignees?: number[];
   repeatAfter?: number;
   repeatMode?: 'day' | 'week' | 'month' | 'year';
+  /**
+   * Move the task into a Kanban bucket. Applied via the same view/bucket
+   * resolution `set-bucket` uses (see `moveTaskToBucket` in `../buckets`) —
+   * previously this field was accepted by the tool schema but silently
+   * dropped here (battle-tested friction: agents had to notice the loss and
+   * redo the work via `set-bucket`).
+   */
+  bucketId?: number;
+  /** Optional Kanban view id, used with `bucketId`. Auto-resolved when omitted. */
+  viewId?: number;
   // Session ID for AORP response tracking
   sessionId?: string;
 }
@@ -84,6 +95,14 @@ export async function updateTask(
       validateId(args.projectId, 'projectId');
     }
 
+    // Validate Kanban bucket move target if provided
+    if (args.bucketId !== undefined) {
+      validateId(args.bucketId, 'bucketId');
+    }
+    if (args.viewId !== undefined) {
+      validateId(args.viewId, 'viewId');
+    }
+
     // Analyze current state and track changes
     const updateState = await analyzeUpdateState(authManager, args.id, args);
 
@@ -99,6 +118,20 @@ export async function updateTask(
     // Update assignees if provided
     if (args.assignees !== undefined) {
       await updateTaskAssignees(authManager, args.id, args.assignees);
+    }
+
+    // Move the task into a Kanban bucket if requested. Runs after the
+    // full-model update above so that a same-call project move (args.projectId)
+    // has already landed — moveTaskToBucket resolves the project from
+    // args.projectId when given, otherwise re-fetches the task's (now
+    // possibly new) project itself.
+    if (args.bucketId !== undefined) {
+      await moveTaskToBucket(authManager, {
+        taskId: args.id,
+        bucketId: args.bucketId,
+        viewId: args.viewId,
+        projectId: args.projectId,
+      });
     }
 
     // Fetch the complete updated task
@@ -220,6 +253,13 @@ async function analyzeUpdateState(
   if (args.repeatMode !== undefined && (args.repeatMode as unknown) !== currentTask.repeat_mode) affectedFields.push('repeatMode');
   if (args.labels !== undefined) affectedFields.push('labels');
   if (args.assignees !== undefined) affectedFields.push('assignees');
+  // bucketId has no comparable "current" representation here (models.Task's
+  // bucket_id is only populated when the task is fetched via a view with
+  // buckets — see docs/API_NOTES.md), so it's reported unconditionally like
+  // labels/assignees above. If the actual move (moveTaskToBucket, called
+  // later in updateTask) fails, the whole request throws before this
+  // affectedFields list is ever returned to the caller, so it stays honest.
+  if (args.bucketId !== undefined) affectedFields.push('bucketId');
 
   return {
     currentTask,

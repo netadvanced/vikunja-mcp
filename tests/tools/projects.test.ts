@@ -266,6 +266,23 @@ describe('Projects Tool', () => {
       await expect(callTool('get', { id: 1.5 })).rejects.toThrow('id must be a positive integer');
     });
 
+    // Item E1 (battle-tested friction #3): projectId is a sibling field on
+    // the same flat schema (used by the sharing subcommands) — accept it as
+    // an alias for `id` here too, consistent with list-buckets and the rest
+    // of the CRUD/hierarchy/Kanban/view/duplicate subcommand family.
+    it('accepts projectId as an alias for id', async () => {
+      routeFetch({ 'GET /projects/1': mockResponse({ body: mockProject }) });
+
+      const result = await callTool('get', { projectId: 1 });
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://vikunja.example.com/api/v1/projects/1',
+        expect.objectContaining({ method: 'GET' }),
+      );
+      const parsed = parseMarkdown(result.content[0].text);
+      expect(parsed.getAorpStatus().type).toBe('success');
+    });
+
     it('should handle 404 errors', async () => {
       routeFetch({
         'GET /projects/999': mockResponse({ ok: false, status: 404, statusText: 'Not Found', text: 'Not found' }),

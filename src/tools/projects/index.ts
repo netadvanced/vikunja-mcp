@@ -142,6 +142,48 @@ const BACKGROUND_SUBCOMMANDS = [
 ] as const;
 
 /**
+ * Subcommands that identify their target project via the flat `id` field
+ * (every CRUD/hierarchy/Kanban-bucket/view/duplicate/backgrounds operation).
+ * The sharing-domain subcommands (create-share, share-with-user, etc.) are
+ * deliberately excluded — they already use the sibling `projectId` field for
+ * this purpose, so aliasing there would be redundant, not a fix.
+ *
+ * Both `id` and `projectId` are flat sibling fields on the same Zod schema
+ * object (`projectId` exists for the sharing subcommands), so an agent
+ * reasonably reaches for `projectId` first when targeting one of these
+ * id-domain subcommands too — a real, reproduced friction (battle-tested:
+ * `list-buckets` was first called with `projectId`, only succeeding on a
+ * retry with `id`). Rather than patch `list-buckets` alone, `projectId` is
+ * accepted as an alias for `id` across every subcommand in this set.
+ */
+const PROJECT_ID_ALIAS_SUBCOMMANDS = new Set<string>([
+  'get',
+  'update',
+  'delete',
+  'archive',
+  'unarchive',
+  'get-children',
+  'get-tree',
+  'get-breadcrumb',
+  'move',
+  'list-buckets',
+  'create-bucket',
+  'update-bucket',
+  'delete-bucket',
+  'list-view-tasks',
+  'list-views',
+  'get-view',
+  'create-view',
+  'update-view',
+  'delete-view',
+  'set-done-bucket',
+  'duplicate',
+  'remove-background',
+  'set-unsplash-background',
+  'search-unsplash',
+]);
+
+/**
  * Resolves whether the `backgrounds` module is enabled, failing safe to
  * disabled (matching the schema default and the "opt-in" contract) rather
  * than fatal — same fail-safe rationale as `resolveModulesConfig` in
@@ -201,14 +243,22 @@ export function registerProjectsTool(
     'vikunja_projects',
     withReadOnlyNote(
       'vikunja_projects',
-      'Manage projects with full CRUD operations, hierarchy management, sharing capabilities, project views, Kanban buckets, and duplication'
+      'Manage projects with full CRUD operations, hierarchy management, sharing capabilities, project views, Kanban buckets, and duplication. '
+      + 'CRUD/hierarchy/Kanban-bucket/view/duplicate/backgrounds subcommands (get, update, delete, archive, unarchive, get-children, get-tree, '
+      + 'get-breadcrumb, move, list-buckets, create-bucket, update-bucket, delete-bucket, list-view-tasks, list-views, get-view, create-view, '
+      + 'update-view, delete-view, set-done-bucket, duplicate, and the backgrounds subcommands) identify the target project via `id` — `projectId` '
+      + 'is accepted there too as an alias for `id`. Sharing subcommands (create-share, share-with-user, list-project-users, etc.) use `projectId` only.'
       + (backgroundsEnabled
-        ? '. The opt-in backgrounds module adds remove-background/set-unsplash-background/search-unsplash'
+        ? ' The opt-in backgrounds module adds remove-background/set-unsplash-background/search-unsplash'
         : ''),
     ),
     {
       subcommand: z.enum(subcommandValues),
-      // CRUD arguments
+      // CRUD arguments. `id` is the project id used by CRUD/hierarchy/
+      // Kanban-bucket/view/duplicate/backgrounds subcommands — `projectId`
+      // (below, under Sharing arguments) is accepted as an alias for `id` on
+      // those subcommands (see PROJECT_ID_ALIAS_SUBCOMMANDS); the sharing
+      // subcommands use `projectId` directly instead.
       id: z.number().positive().optional(),
       title: z.string().optional(),
       description: z.string().optional(),
@@ -263,7 +313,15 @@ export function registerProjectsTool(
       sessionId: z.string().optional(),
     },
     getToolAnnotations('vikunja_projects'),
-    async (args, context) => {
+    async (rawArgs, context) => {
+      // Ergonomic id/projectId alias — see PROJECT_ID_ALIAS_SUBCOMMANDS above.
+      const args =
+        PROJECT_ID_ALIAS_SUBCOMMANDS.has(rawArgs.subcommand) &&
+        (rawArgs.id === undefined || rawArgs.id === null) &&
+        rawArgs.projectId !== undefined &&
+        rawArgs.projectId !== null
+          ? { ...rawArgs, id: rawArgs.projectId }
+          : rawArgs;
       try {
         // Check authentication with enhanced error message
         if (!authManager.isAuthenticated()) {
