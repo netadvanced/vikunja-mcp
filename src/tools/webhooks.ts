@@ -14,6 +14,7 @@ import { logger } from '../utils/logger';
 import { validateAndConvertId } from '../utils/validation';
 import { createAorpResponse } from '../utils/response-factory';
 import { vikunjaRestRequest } from '../utils/vikunja-rest';
+import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../utils/read-only';
 
 // Event cache for validation
 let cachedEvents: string[] | null = null;
@@ -121,7 +122,10 @@ async function validateWebhookEvents(authManager: AuthManager, events: string[])
 export function registerWebhooksTool(server: McpServer, authManager: AuthManager, _clientFactory?: VikunjaClientFactory): void {
   server.tool(
     'vikunja_webhooks',
-    'Manage webhooks for integrating Vikunja events with external services',
+    withReadOnlyNote(
+      'vikunja_webhooks',
+      'Manage webhooks for integrating Vikunja events with external services',
+    ),
     {
       // Operation type
       subcommand: z.enum(['list', 'get', 'create', 'update', 'delete', 'list-events']),
@@ -135,6 +139,7 @@ export function registerWebhooksTool(server: McpServer, authManager: AuthManager
       events: z.array(z.string()).optional(),
       secret: z.string().optional(),
     },
+    getToolAnnotations('vikunja_webhooks'),
     async (args) => {
       if (!authManager.isAuthenticated()) {
         throw new MCPError(
@@ -145,6 +150,8 @@ export function registerWebhooksTool(server: McpServer, authManager: AuthManager
 
       await getAuthManagerFromContext(); // Ensure the session is initialized
       const subcommand = args.subcommand;
+
+      assertWriteAllowed('vikunja_webhooks', subcommand);
 
       logger.debug('Webhooks tool called', { subcommand, args });
 

@@ -17,5 +17,6 @@
   },
   "logging": {
     "level": "info"
-  }
+  },
+  "readOnly": false
 }

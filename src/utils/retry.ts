@@ -65,6 +65,31 @@ class CircuitBreakerRegistry {
 export const circuitBreakerRegistry = new CircuitBreakerRegistry();
 
 /**
+ * Resolves after `ms` milliseconds, via a `setTimeout` that is `.unref()`d
+ * (mirrors the pattern opossum itself uses for its own internal timers — see
+ * `node_modules/opossum/lib/circuit.js`/`status.js`). `withRetry`'s
+ * exponential backoff (below) is the only place this module schedules a
+ * real (non-breaker-owned) timer; without `.unref()` a pending backoff delay
+ * (up to `maxDelay`, 30s by default) counts as an active handle keeping the
+ * process — or a `jest --runInBand` run — alive even though nothing is
+ * actually waiting on it to fire. `.unref()` only affects whether the timer
+ * alone can keep the event loop alive; it still fires normally and this
+ * function still resolves at the same time either way.
+ */
+function sleepUnref(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    // Guards environments where `setTimeout` doesn't return an unref-able
+    // handle (e.g. a DOM/browser global returning a plain number) — not
+    // expected here (`testEnvironment: 'node'`), but matches opossum's own
+    // defensive check rather than assuming Node's timer shape.
+    if (typeof timer.unref === 'function') {
+      timer.unref();
+    }
+  });
+}
+
+/**
  * Interface for errors that have code properties (like Node.js system errors)
  */
 interface ErrorWithCode extends Error {
@@ -186,7 +211,7 @@ export async function withRetry<T>(
       logger.debug(`Retry attempt ${attempt + 1}/${maxRetries} after ${delay}ms`);
 
       // Wait before retrying with exponential backoff
-      await new Promise(resolve => setTimeout(resolve, delay));
+      await sleepUnref(delay);
       delay = Math.min(delay * (opts.backoffFactor || 2), opts.maxDelay || 30000);
     }
   }

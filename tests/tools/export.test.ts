@@ -12,6 +12,8 @@ import type { MockVikunjaClient, MockAuthManager, MockServer } from '../types/mo
 import { getClientFromContext } from '../../src/client';
 import { parseMarkdown } from '../utils/markdown';
 import { circuitBreakerRegistry } from '../../src/utils/retry';
+import { ConfigurationManager } from '../../src/config';
+import { callAndCatch, isReadOnlyRejection } from '../utils/read-only-test-helpers';
 
 // Mock the MCP server
 const mockServer = {
@@ -73,6 +75,7 @@ describe('Export Tool', () => {
           projectId: expect.any(Object),
           includeChildren: expect.any(Object),
         }),
+        expect.any(Object), // ToolAnnotations
         expect.any(Function),
       );
     });
@@ -88,7 +91,7 @@ describe('Export Tool', () => {
 
         const handler = mockServer.tool.mock.calls.find(
           (call) => call[0] === 'vikunja_export_project',
-        )?.[3];
+        )?.at(-1);
 
         await expect(handler?.({ projectId: 1 })).rejects.toThrow(
           'Authentication required. Please use vikunja_auth.connect first.',
@@ -106,7 +109,7 @@ describe('Export Tool', () => {
 
         const handler = mockServer.tool.mock.calls.find(
           (call) => call[0] === 'vikunja_export_project',
-        )?.[3];
+        )?.at(-1);
 
         await expect(handler?.({ projectId: 1 })).rejects.toThrow(
           'Export operations require JWT authentication. Please reconnect using vikunja_auth.connect with JWT authentication.',
@@ -142,7 +145,7 @@ describe('Export Tool', () => {
 
         const handler = mockServer.tool.mock.calls.find(
           (call) => call[0] === 'vikunja_export_project',
-        )?.[3];
+        )?.at(-1);
 
         const result = await handler?.({ projectId: 1, includeChildren: false });
 
@@ -210,7 +213,7 @@ describe('Export Tool', () => {
 
       const handler = mockServer.tool.mock.calls.find(
         (call) => call[0] === 'vikunja_export_project',
-      )?.[3];
+      )?.at(-1);
 
       const result = await handler?.({ projectId: 1, includeChildren: false });
 
@@ -271,7 +274,7 @@ describe('Export Tool', () => {
 
       const handler = mockServer.tool.mock.calls.find(
         (call) => call[0] === 'vikunja_export_project',
-      )?.[3];
+      )?.at(-1);
 
       const result = await handler?.({ projectId: 1, includeChildren: true });
 
@@ -313,7 +316,7 @@ describe('Export Tool', () => {
 
       const handler = mockServer.tool.mock.calls.find(
         (call) => call[0] === 'vikunja_export_project',
-      )?.[3];
+      )?.at(-1);
 
       await expect(handler?.({ projectId: 1, includeChildren: true })).rejects.toThrow(
         'Circular reference detected in project hierarchy',
@@ -323,7 +326,7 @@ describe('Export Tool', () => {
     it('should validate project ID', async () => {
       const handler = mockServer.tool.mock.calls.find(
         (call) => call[0] === 'vikunja_export_project',
-      )?.[3];
+      )?.at(-1);
 
       await expect(handler?.({ projectId: 0 })).rejects.toThrow(
         'projectId must be a positive integer',
@@ -346,7 +349,7 @@ describe('Export Tool', () => {
 
       const handler = mockServer.tool.mock.calls.find(
         (call) => call[0] === 'vikunja_export_project',
-      )?.[3];
+      )?.at(-1);
 
       await expect(handler?.({ projectId: 999 })).rejects.toThrow('Project with ID 999 not found');
     });
@@ -383,7 +386,7 @@ describe('Export Tool', () => {
 
       const handler = mockServer.tool.mock.calls.find(
         (call) => call[0] === 'vikunja_export_project',
-      )?.[3];
+      )?.at(-1);
 
       const result = await handler?.({ projectId: 1 });
 
@@ -410,6 +413,7 @@ describe('Export Tool', () => {
         expect.objectContaining({
           password: expect.any(Object),
         }),
+        expect.any(Object), // ToolAnnotations
         expect.any(Function),
       );
     });
@@ -423,7 +427,7 @@ describe('Export Tool', () => {
 
       const handler = mockServer.tool.mock.calls.find(
         (call) => call[0] === 'vikunja_request_user_export',
-      )?.[3];
+      )?.at(-1);
 
       const result = await handler?.({ password: 'test-password' });
 
@@ -466,7 +470,7 @@ describe('Export Tool', () => {
 
       const handler = mockServer.tool.mock.calls.find(
         (call) => call[0] === 'vikunja_request_user_export',
-      )?.[3];
+      )?.at(-1);
 
       await expect(handler?.({ password: 'wrong-password' })).rejects.toThrow('Invalid password');
     });
@@ -480,7 +484,7 @@ describe('Export Tool', () => {
 
       const handler = mockServer.tool.mock.calls.find(
         (call) => call[0] === 'vikunja_request_user_export',
-      )?.[3];
+      )?.at(-1);
 
       const result = await handler?.({ password: 'test-password' });
 
@@ -497,7 +501,7 @@ describe('Export Tool', () => {
 
       const handler = mockServer.tool.mock.calls.find(
         (call) => call[0] === 'vikunja_request_user_export',
-      )?.[3];
+      )?.at(-1);
 
       await expect(handler?.({ password: 'test-password' })).rejects.toThrow(
         'No authentication token available',
@@ -533,7 +537,7 @@ describe('Export Tool', () => {
 
       const handler = mockServer.tool.mock.calls.find(
         (call) => call[0] === 'vikunja_request_user_export',
-      )?.[3];
+      )?.at(-1);
 
       await expect(handler?.({ password: 'test-password' })).rejects.toThrow(
         'HTTP 502 Bad Gateway',
@@ -547,7 +551,7 @@ describe('Export Tool', () => {
 
       const handler = mockServer.tool.mock.calls.find(
         (call) => call[0] === 'vikunja_request_user_export',
-      )?.[3];
+      )?.at(-1);
 
       await expect(handler?.({ password: 'test-password' })).rejects.toThrow('Request timeout');
     });
@@ -576,7 +580,7 @@ describe('Export Tool', () => {
 
       const handler = mockServer.tool.mock.calls.find(
         (call) => call[0] === 'vikunja_download_user_export',
-      )?.[3];
+      )?.at(-1);
 
       await expect(handler?.({ password: 'test-password' })).rejects.toThrow(
         'No authentication token available',
@@ -593,7 +597,7 @@ describe('Export Tool', () => {
 
       const handler = mockServer.tool.mock.calls.find(
         (call) => call[0] === 'vikunja_download_user_export',
-      )?.[3];
+      )?.at(-1);
 
       const result = await handler?.({ password: 'test-password' });
 
@@ -637,7 +641,7 @@ describe('Export Tool', () => {
 
       const handler = mockServer.tool.mock.calls.find(
         (call) => call[0] === 'vikunja_download_user_export',
-      )?.[3];
+      )?.at(-1);
 
       const result = await handler?.({ password: 'test-password' });
 
@@ -656,7 +660,7 @@ describe('Export Tool', () => {
 
       const handler = mockServer.tool.mock.calls.find(
         (call) => call[0] === 'vikunja_download_user_export',
-      )?.[3];
+      )?.at(-1);
 
       await expect(handler?.({ password: 'test-password' })).rejects.toThrow('Export not ready');
     });
@@ -673,7 +677,7 @@ describe('Export Tool', () => {
 
       const handler = mockServer.tool.mock.calls.find(
         (call) => call[0] === 'vikunja_download_user_export',
-      )?.[3];
+      )?.at(-1);
 
       await expect(handler?.({ password: 'test-password' })).rejects.toThrow(
         'HTTP 500 Server Error',
@@ -687,11 +691,68 @@ describe('Export Tool', () => {
 
       const handler = mockServer.tool.mock.calls.find(
         (call) => call[0] === 'vikunja_download_user_export',
-      )?.[3];
+      )?.at(-1);
 
       await expect(handler?.({ password: 'test-password' })).rejects.toThrow(
         'Network request failed',
       );
+    });
+  });
+
+  describe('global read-only mode', () => {
+    function getHandler(toolName: string): (args: Record<string, unknown>) => Promise<unknown> {
+      const handler = mockServer.tool.mock.calls.find((call) => call[0] === toolName)?.at(-1);
+      if (!handler) {
+        throw new Error(`handler for ${toolName} not found`);
+      }
+      return handler as (args: Record<string, unknown>) => Promise<unknown>;
+    }
+
+    afterEach(() => {
+      ConfigurationManager.reset();
+    });
+
+    it('vikunja_export_project (read-only tool, GET-only) is never rejected', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: true } });
+
+      expect(
+        isReadOnlyRejection(await callAndCatch(getHandler('vikunja_export_project'), { projectId: 1 })),
+      ).toBe(false);
+    });
+
+    it('vikunja_request_user_export (write) is rejected when readOnly is on', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: true } });
+
+      expect(
+        isReadOnlyRejection(
+          await callAndCatch(getHandler('vikunja_request_user_export'), { password: 'pw' }),
+        ),
+      ).toBe(true);
+    });
+
+    it('vikunja_request_user_export is not rejected when readOnly is off', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: false } });
+      fetchOkOnce({ message: 'ok' });
+
+      expect(
+        isReadOnlyRejection(
+          await callAndCatch(getHandler('vikunja_request_user_export'), { password: 'pw' }),
+        ),
+      ).toBe(false);
+    });
+
+    it('vikunja_download_user_export (classified read — confirmation only) is never rejected', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: true } });
+
+      expect(
+        isReadOnlyRejection(
+          await callAndCatch(getHandler('vikunja_download_user_export'), { password: 'pw' }),
+        ),
+      ).toBe(false);
     });
   });
 });

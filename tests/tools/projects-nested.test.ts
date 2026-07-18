@@ -131,9 +131,10 @@ describe('Projects Tool - Nested Project Features', () => {
     } as unknown as MockAuthManager;
 
     mockServer = {
-      tool: jest.fn((name, param2, param3, param4) => {
-        const handler = param4 || param3;
-        toolHandler = handler;
+      // The handler is always the last argument (server.tool now optionally
+      // takes a ToolAnnotations object between the schema and the handler).
+      tool: jest.fn((...args: unknown[]) => {
+        toolHandler = args[args.length - 1];
       }) as jest.MockedFunction<any>,
     } as MockServer;
 

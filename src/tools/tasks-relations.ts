@@ -10,7 +10,7 @@ import { vikunjaRestRequest } from '../utils/vikunja-rest';
 import { getTaskViaRest } from '../utils/task-rest-transport';
 import { logger } from '../utils/logger';
 import { validateId as validateSharedId } from '../utils/validation';
-import { handleStatusCodeError } from '../utils/error-handler';
+import { handleStatusCodeError, wrapIfRestOrigin } from '../utils/error-handler';
 import { formatAorpAsMarkdown, createStandardResponse } from '../utils/response-factory';
 
 // Use shared validateId from utils/validation
@@ -140,9 +140,12 @@ export async function handleRelationSubcommands(
           ],
         };
       } catch (error) {
-        // Re-throw MCPError instances (e.g. our own validation errors) without modification
+        // This tool's own validation errors pass through unmodified; a
+        // REST-origin MCPError (e.g. the task-refresh GET failing) gets the
+        // conventional "Failed to ..." wrapping restored (see
+        // wrapIfRestOrigin's doc comment for why this distinction matters).
         if (error instanceof MCPError) {
-          throw error;
+          throw wrapIfRestOrigin(error, 'create task relation');
         }
         throw handleStatusCodeError(error, 'create task relation', `${args.id}-${args.otherTaskId}`);
       }
@@ -231,9 +234,12 @@ export async function handleRelationSubcommands(
           ],
         };
       } catch (error) {
-        // Re-throw MCPError instances (e.g. our own validation errors) without modification
+        // This tool's own validation errors pass through unmodified; a
+        // REST-origin MCPError (e.g. the task-refresh GET failing) gets the
+        // conventional "Failed to ..." wrapping restored (see
+        // wrapIfRestOrigin's doc comment for why this distinction matters).
         if (error instanceof MCPError) {
-          throw error;
+          throw wrapIfRestOrigin(error, 'remove task relation');
         }
         throw handleStatusCodeError(error, 'remove task relation', `${args.id}-${args.otherTaskId}`);
       }
@@ -310,9 +316,12 @@ export async function handleRelationSubcommands(
           ],
         };
       } catch (error) {
-        // Re-throw MCPError instances (e.g. our own validation errors) without modification
+        // This tool's own validation errors pass through unmodified; a
+        // REST-origin MCPError (e.g. the task-refresh GET failing) gets the
+        // conventional "Failed to ..." wrapping restored (see
+        // wrapIfRestOrigin's doc comment for why this distinction matters).
         if (error instanceof MCPError) {
-          throw error;
+          throw wrapIfRestOrigin(error, 'get task relations');
         }
         throw handleStatusCodeError(error, 'get task relations', args.id);
       }

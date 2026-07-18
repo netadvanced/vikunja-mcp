@@ -60,6 +60,32 @@ A new project appears under "Product" (named by Vikunja's own duplicate-naming c
 
 ---
 
+### 4. Break a big initiative into subtasks
+
+**User says:**
+> "Break 'Launch marketing site' (task 210) into subtasks: 'Write copy', 'Design hero section', and 'Set up analytics'."
+
+**Tool call:**
+```typescript
+vikunja_tasks({ subcommand: "create-subtask", parentTaskId: 210, title: "Write copy" })
+vikunja_tasks({ subcommand: "create-subtask", parentTaskId: 210, title: "Design hero section" })
+vikunja_tasks({ subcommand: "create-subtask", parentTaskId: 210, title: "Set up analytics" })
+```
+Each call is a composite: it resolves task 210's project (so the new task lands in the same project without you having to pass `projectId`), creates the task, relates it to the parent with Vikunja's `subtask` relation kind, then re-reads the parent to verify the relation actually landed — no numeric relation-kind bookkeeping required from you. Best-effort by default (a failure after the task was created is reported honestly rather than silently rolled back); pass `atomic: true` to have a failed relate/verify step delete the just-created task instead.
+
+**Resulting Vikunja UI state:**
+Task 210 now shows three subtasks nested under it in the task detail view.
+
+`[SCREENSHOT: Vikunja task detail for "Launch marketing site" showing "Write copy", "Design hero section", and "Set up analytics" listed under Subtasks]`
+
+**Follow-up — check what's there:**
+```typescript
+vikunja_tasks({ subcommand: "list-subtasks", id: 210 })
+```
+Read composite: one call summarizes all of task 210's subtasks (id, title, done, assignees) from its relation map, instead of you fetching the task and picking `related_tasks.subtask` apart yourself.
+
+---
+
 ## Try it on the local stack
 
 See [docs/LOCAL-TESTING.md](../LOCAL-TESTING.md) to bring up `docker/e2e/docker-compose.yml`, build out a small project with a few tasks and a Kanban board, and try duplicating it yourself.

@@ -58,6 +58,7 @@ import { ErrorCode, MCPError } from '../types';
 import { createValidationError } from '../utils/error-handler';
 import { formatAorpAsMarkdown, createAorpErrorResponse } from '../utils/response-factory';
 import { vikunjaRestRequest } from '../utils/vikunja-rest';
+import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../utils/read-only';
 import type { components } from '../types/generated/vikunja-openapi';
 
 type SavedFilterApi = components['schemas']['models.SavedFilter'];
@@ -364,24 +365,28 @@ async function listSavedFilters(
 export function registerFiltersTool(server: McpServer, authManager: AuthManager, _clientFactory?: VikunjaClientFactory): void {
   server.tool(
     'vikunja_filters',
-    'Manage Vikunja saved filters and build/validate ad-hoc filter query strings. ' +
-      "'create'/'get'/'update'/'delete' operate on Vikunja's real server-side " +
-      'saved filters (PUT /filters, GET/POST/DELETE /filters/{id}) - changes ' +
-      'persist on the server and are visible in the Vikunja UI and to other ' +
-      "clients. Saved filters are NOT project-scoped (the API's SavedFilter " +
-      'model has no project_id field); Vikunja instead surfaces each one as a ' +
-      "pseudo-project with a negative id, and 'isFavorite' controls whether it " +
-      "also shows in the favorites parent. The API has no dedicated list-all " +
-      "endpoint, so 'list' is a best-effort derivation from GET /projects' " +
-      'pseudo-project entries, verified per-item against GET /filters/{id}; ' +
-      "entries that could not be verified are still returned (title only) " +
-      "with hydrated:false rather than silently dropped. 'build'/'validate' " +
-      'remain pure local utilities - they construct or check a filter query ' +
-      'string without contacting the server or touching any saved filter.',
+    withReadOnlyNote(
+      'vikunja_filters',
+      'Manage Vikunja saved filters and build/validate ad-hoc filter query strings. ' +
+        "'create'/'get'/'update'/'delete' operate on Vikunja's real server-side " +
+        'saved filters (PUT /filters, GET/POST/DELETE /filters/{id}) - changes ' +
+        'persist on the server and are visible in the Vikunja UI and to other ' +
+        "clients. Saved filters are NOT project-scoped (the API's SavedFilter " +
+        'model has no project_id field); Vikunja instead surfaces each one as a ' +
+        "pseudo-project with a negative id, and 'isFavorite' controls whether it " +
+        "also shows in the favorites parent. The API has no dedicated list-all " +
+        "endpoint, so 'list' is a best-effort derivation from GET /projects' " +
+        'pseudo-project entries, verified per-item against GET /filters/{id}; ' +
+        "entries that could not be verified are still returned (title only) " +
+        "with hydrated:false rather than silently dropped. 'build'/'validate' " +
+        'remain pure local utilities - they construct or check a filter query ' +
+        'string without contacting the server or touching any saved filter.',
+    ),
     {
       action: z.enum(['list', 'get', 'create', 'update', 'delete', 'build', 'validate']),
       parameters: z.record(z.string(), z.unknown()),
     },
+    getToolAnnotations('vikunja_filters'),
     async ({ action, parameters }) => {
       logger.info(`Executing vikunja_filters action: ${action}`);
 
@@ -392,6 +397,8 @@ export function registerFiltersTool(server: McpServer, authManager: AuthManager,
           'Authentication required. Please use vikunja_auth.connect first.',
         );
       }
+
+      assertWriteAllowed('vikunja_filters', action);
 
       try {
         switch (action) {

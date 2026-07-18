@@ -12,6 +12,8 @@ import { MCPError, ErrorCode } from '../../src/types';
 import { AuthManager } from '../../src/auth/AuthManager';
 import { parseMarkdown } from '../utils/markdown';
 import { circuitBreakerRegistry } from '../../src/utils/retry';
+import { ConfigurationManager } from '../../src/config';
+import { callAndCatch, isReadOnlyRejection } from '../utils/read-only-test-helpers';
 
 // Mock modules. getAuthManagerFromContext is used by setTaskLabels
 // (src/utils/label-bulk.ts, migrated to direct REST) — any test here that
@@ -184,7 +186,7 @@ describe('Templates Tool', () => {
     // Get the tool handler
     const calls = (mockServer.tool as jest.Mock).mock.calls;
     if (calls.length > 0) {
-      toolHandler = calls[0][3]; // Handler is the 4th argument (index 3)
+      toolHandler = calls[0][calls[0].length - 1]; // Handler is always the last argument
     } else {
       throw new Error('Tool handler not found');
     }
@@ -1707,6 +1709,57 @@ describe('Templates Tool', () => {
           subcommand: 'list',
         }),
       ).rejects.toThrow('Unexpected error: Unknown error');
+    });
+  });
+
+  describe('global read-only mode', () => {
+    afterEach(() => {
+      ConfigurationManager.reset();
+    });
+
+    it('rejects create/update/delete/instantiate when readOnly is on', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: true } });
+
+      expect(
+        isReadOnlyRejection(
+          await callAndCatch(toolHandler, { subcommand: 'create', projectId: 1, name: 'x' }),
+        ),
+      ).toBe(true);
+      expect(
+        isReadOnlyRejection(await callAndCatch(toolHandler, { subcommand: 'update', id: '1' })),
+      ).toBe(true);
+      expect(
+        isReadOnlyRejection(await callAndCatch(toolHandler, { subcommand: 'delete', id: '1' })),
+      ).toBe(true);
+      expect(
+        isReadOnlyRejection(
+          await callAndCatch(toolHandler, { subcommand: 'instantiate', id: '1', projectName: 'x' }),
+        ),
+      ).toBe(true);
+    });
+
+    it('does not raise the read-only error for list/get when readOnly is on', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: true } });
+
+      expect(isReadOnlyRejection(await callAndCatch(toolHandler, { subcommand: 'list' }))).toBe(
+        false,
+      );
+      expect(
+        isReadOnlyRejection(await callAndCatch(toolHandler, { subcommand: 'get', id: '1' })),
+      ).toBe(false);
+    });
+
+    it('does not raise the read-only error for create when readOnly is off', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: false } });
+
+      expect(
+        isReadOnlyRejection(
+          await callAndCatch(toolHandler, { subcommand: 'create', projectId: 1, name: 'x' }),
+        ),
+      ).toBe(false);
     });
   });
 });

@@ -142,9 +142,10 @@ describe('Tasks Tool - Race Condition Fix', () => {
       'vikunja_tasks',
       expect.any(String),  // description parameter
       expect.any(Object),  // schema parameter
+      expect.any(Object), // ToolAnnotations
       expect.any(Function), // handler parameter
     );
-    toolHandler = mockServer.tool.mock.calls[0][3];  // Handler is 4th param (index 3)
+    toolHandler = mockServer.tool.mock.calls[0][mockServer.tool.mock.calls[0].length - 1];  // Handler is always the last argument
   });
 
   afterEach(() => {

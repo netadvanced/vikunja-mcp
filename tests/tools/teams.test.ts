@@ -6,6 +6,8 @@ import { MCPError, ErrorCode } from '../../src/types';
 import type { MockAuthManager, MockServer } from '../types/mocks';
 import { parseMarkdown } from '../utils/markdown';
 import { circuitBreakerRegistry } from '../../src/utils/retry';
+import { ConfigurationManager } from '../../src/config';
+import { callAndCatch, isReadOnlyRejection } from '../utils/read-only-test-helpers';
 
 interface Team {
   id?: number;
@@ -91,11 +93,12 @@ describe('Teams Tool', () => {
       'vikunja_teams',
       expect.any(String),
       expect.any(Object),
+      expect.any(Object), // ToolAnnotations
       expect.any(Function),
     );
     const calls = mockServer.tool.mock.calls;
     if (calls.length > 0 && calls[0] && calls[0].length > 3) {
-      toolHandler = calls[0][3];
+      toolHandler = calls[0][calls[0].length - 1];
     } else {
       throw new Error('Tool handler not found');
     }
@@ -699,6 +702,7 @@ describe('Teams Tool', () => {
         'vikunja_teams',
         'Manage teams and team memberships for collaborative project management',
         expect.any(Object), // Zod schema
+        expect.any(Object), // ToolAnnotations
         expect.any(Function), // Handler function
       );
     });
@@ -706,6 +710,52 @@ describe('Teams Tool', () => {
     it('should have the correct tool handler', () => {
       expect(toolHandler).toBeDefined();
       expect(typeof toolHandler).toBe('function');
+    });
+  });
+
+  describe('global read-only mode', () => {
+    afterEach(() => {
+      ConfigurationManager.reset();
+    });
+
+    it('rejects create/delete and the members:add/remove composite keys when readOnly is on', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: true } });
+
+      expect(isReadOnlyRejection(await callAndCatch(toolHandler, { subcommand: 'create', name: 'x' }))).toBe(true);
+      expect(isReadOnlyRejection(await callAndCatch(toolHandler, { subcommand: 'delete', id: 1 }))).toBe(true);
+      expect(
+        isReadOnlyRejection(
+          await callAndCatch(toolHandler, { subcommand: 'members', id: 1, memberSubcommand: 'add', username: 'bob' }),
+        ),
+      ).toBe(true);
+      expect(
+        isReadOnlyRejection(
+          await callAndCatch(toolHandler, { subcommand: 'members', id: 1, memberSubcommand: 'remove', username: 'bob' }),
+        ),
+      ).toBe(true);
+    });
+
+    it('does not raise the read-only error for list/get and members:list when readOnly is on', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: true } });
+
+      expect(isReadOnlyRejection(await callAndCatch(toolHandler, { subcommand: 'list' }))).toBe(false);
+      expect(isReadOnlyRejection(await callAndCatch(toolHandler, { subcommand: 'get', id: 1 }))).toBe(false);
+      expect(
+        isReadOnlyRejection(
+          await callAndCatch(toolHandler, { subcommand: 'members', id: 1, memberSubcommand: 'list' }),
+        ),
+      ).toBe(false);
+    });
+
+    it('does not raise the read-only error for create when readOnly is off', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: false } });
+
+      expect(
+        isReadOnlyRejection(await callAndCatch(toolHandler, { subcommand: 'create', name: 'x' })),
+      ).toBe(false);
     });
   });
 });

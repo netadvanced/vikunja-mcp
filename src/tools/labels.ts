@@ -25,6 +25,7 @@ import { validateAndConvertId } from '../utils/validation';
 import { wrapToolError } from '../utils/error-handler';
 import { vikunjaRestRequest } from '../utils/vikunja-rest';
 import { formatAorpAsMarkdown } from '../utils/response-factory';
+import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../utils/read-only';
 import type { components } from '../types/generated/vikunja-openapi';
 // `ResponseData.labels` (src/utils/simple-response.ts) is still typed
 // against this simplified local shape (`title: string`, not optional) — the
@@ -57,7 +58,10 @@ function rethrowLabelNotFound(error: unknown, id: number): never {
 export function registerLabelsTool(server: McpServer, authManager: AuthManager, _clientFactory?: VikunjaClientFactory): void {
   server.tool(
     'vikunja_labels',
-    'Manage task labels with full CRUD operations for organizing and categorizing tasks',
+    withReadOnlyNote(
+      'vikunja_labels',
+      'Manage task labels with full CRUD operations for organizing and categorizing tasks',
+    ),
     {
       // Operation type
       subcommand: z.enum(['list', 'get', 'create', 'update', 'delete']),
@@ -78,6 +82,7 @@ export function registerLabelsTool(server: McpServer, authManager: AuthManager, 
         .regex(/^#[0-9A-Fa-f]{6}$/, 'Invalid hex color format')
         .optional(),
     },
+    getToolAnnotations('vikunja_labels'),
     async (args) => {
       if (!authManager.isAuthenticated()) {
         throw new MCPError(
@@ -87,6 +92,8 @@ export function registerLabelsTool(server: McpServer, authManager: AuthManager, 
       }
 
       const subcommand = args.subcommand;
+
+      assertWriteAllowed('vikunja_labels', subcommand);
 
       try {
 

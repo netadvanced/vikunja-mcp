@@ -71,8 +71,10 @@ describe('vikunja_projects routing: views, buckets, duplicate', () => {
     } as unknown as MockAuthManager;
 
     mockServer = {
-      tool: jest.fn((_name, _description, _schema, handler) => {
-        toolHandler = handler as ToolHandler;
+      // The handler is always the last argument (server.tool now optionally
+      // takes a ToolAnnotations object between the schema and the handler).
+      tool: jest.fn((...args: unknown[]) => {
+        toolHandler = args[args.length - 1] as ToolHandler;
       }),
     } as unknown as MockServer;
 

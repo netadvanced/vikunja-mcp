@@ -11,6 +11,7 @@ import { MCPError, ErrorCode } from '../../types';
 import type { McpResponse } from './crud';
 import { createAuthRequiredError, wrapToolError } from '../../utils/error-handler';
 import { validateId } from './validation';
+import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../../utils/read-only';
 
 // Import all submodule operations
 import {
@@ -121,7 +122,10 @@ export function registerProjectsTool(
 ): void {
   server.tool(
     'vikunja_projects',
-    'Manage projects with full CRUD operations, hierarchy management, sharing capabilities, project views, Kanban buckets, and duplication',
+    withReadOnlyNote(
+      'vikunja_projects',
+      'Manage projects with full CRUD operations, hierarchy management, sharing capabilities, project views, Kanban buckets, and duplication',
+    ),
     {
       subcommand: z.enum(['list', 'get', 'create', 'update', 'delete', 'archive', 'unarchive',
         'get-children', 'get-tree', 'get-breadcrumb', 'move',
@@ -185,12 +189,15 @@ export function registerProjectsTool(
       // Session ID for AORP response tracking
       sessionId: z.string().optional(),
     },
+    getToolAnnotations('vikunja_projects'),
     async (args, context) => {
       try {
         // Check authentication with enhanced error message
         if (!authManager.isAuthenticated()) {
           throw createAuthRequiredError('access project management features');
         }
+
+        assertWriteAllowed('vikunja_projects', args.subcommand);
 
         // Set the client factory for this request if provided
         if (clientFactory) {

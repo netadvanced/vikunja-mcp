@@ -11,6 +11,7 @@ import { MCPError, ErrorCode } from '../types';
 import { getAuthManagerFromContext, setGlobalClientFactory } from '../client';
 import { logger } from '../utils/logger';
 import { createAuthRequiredError } from '../utils/error-handler';
+import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../utils/read-only';
 import {
   handleComment,
   listComments,
@@ -29,7 +30,10 @@ export function registerTaskCommentsTool(
 ): void {
   server.tool(
     'vikunja_task_comments',
-    'Manage task comments: create, list, get, update, delete comments on tasks',
+    withReadOnlyNote(
+      'vikunja_task_comments',
+      'Manage task comments: create, list, get, update, delete comments on tasks',
+    ),
     {
       operation: z.enum(['comment', 'list', 'get', 'update', 'delete']),
       // Task and comment identification
@@ -37,6 +41,7 @@ export function registerTaskCommentsTool(
       comment: z.string().optional(),
       commentId: z.number().optional(),
     },
+    getToolAnnotations('vikunja_task_comments'),
     async (args) => {
       try {
         logger.debug('Executing task comments tool', { operation: args.operation, taskId: args.id });
@@ -45,6 +50,15 @@ export function registerTaskCommentsTool(
         if (!authManager.isAuthenticated()) {
           throw createAuthRequiredError('access task comment operations');
         }
+
+        // 'comment' is dual-purpose (creates when text is supplied,
+        // otherwise lists — see handleComment), so its effective
+        // classification depends on whether `comment` text was provided.
+        assertWriteAllowed(
+          'vikunja_task_comments',
+          args.operation,
+          args.operation === 'comment' ? (args.comment ? 'write' : 'read') : undefined,
+        );
 
         // Set the client factory for this request if provided
         if (clientFactory) {

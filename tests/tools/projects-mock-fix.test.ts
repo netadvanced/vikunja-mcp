@@ -92,8 +92,10 @@ describe('Projects Tool Mock Fixes', () => {
     } as MockAuthManager;
 
     mockServer = {
-      tool: jest.fn((name, description, schema, handler) => {
-        toolHandler = handler;
+      // The handler is always the last argument (server.tool now optionally
+      // takes a ToolAnnotations object between the schema and the handler).
+      tool: jest.fn((...args: unknown[]) => {
+        toolHandler = args[args.length - 1];
       }),
     } as MockServer;
 

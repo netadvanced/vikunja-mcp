@@ -8,6 +8,7 @@ import { parseInputData } from '../parsers/InputParserFactory';
 import { EntityResolver } from '../services/EntityResolver';
 import { TaskCreationService } from '../services/TaskCreationService';
 import { BatchImportResponseFormatter, type ImportResult } from '../formatters/BatchImportResponseFormatter';
+import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../utils/read-only';
 
 const MAX_BATCH_SIZE = 100;
 
@@ -19,7 +20,10 @@ const MAX_BATCH_SIZE = 100;
 export function registerBatchImportTool(server: McpServer, authManager: AuthManager, _clientFactory?: VikunjaClientFactory): void {
   server.tool(
     'vikunja_batch_import',
-    'Import tasks in bulk from CSV or JSON formats with error handling and dry-run support',
+    withReadOnlyNote(
+      'vikunja_batch_import',
+      'Import tasks in bulk from CSV or JSON formats with error handling and dry-run support',
+    ),
     {
       projectId: z.number(),
       format: z.enum(['csv', 'json']),
@@ -27,6 +31,7 @@ export function registerBatchImportTool(server: McpServer, authManager: AuthMana
       skipErrors: z.boolean().optional(),
       dryRun: z.boolean().optional(),
     },
+    getToolAnnotations('vikunja_batch_import'),
     async (args) => {
       try {
         logger.debug('Executing batch import', {
@@ -43,6 +48,11 @@ export function registerBatchImportTool(server: McpServer, authManager: AuthMana
             'Authentication required. Please use vikunja_auth.connect first.',
           );
         }
+
+        // No subcommand field on this single-purpose tool — 'import' is
+        // its fixed classification-table key. dryRun never writes to
+        // Vikunja, so it is exempt from read-only mode.
+        assertWriteAllowed('vikunja_batch_import', 'import', args.dryRun ? 'read' : undefined);
 
         const responseFormatter = new BatchImportResponseFormatter();
 

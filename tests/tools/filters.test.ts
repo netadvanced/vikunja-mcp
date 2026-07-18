@@ -19,6 +19,8 @@ import { AuthManager } from '../../src/auth/AuthManager';
 import { circuitBreakerRegistry } from '../../src/utils/retry';
 import type { MockServer } from '../types/mocks';
 import { parseMarkdown } from '../utils/markdown';
+import { ConfigurationManager } from '../../src/config';
+import { callAndCatch, isReadOnlyRejection } from '../utils/read-only-test-helpers';
 
 jest.mock('../../src/utils/logger');
 
@@ -58,7 +60,7 @@ describe('vikunja_filters tool', () => {
 
     const calls = (mockServer.tool as jest.Mock).mock.calls;
     if (calls.length > 0) {
-      toolHandler = calls[0][3];
+      toolHandler = calls[0][calls[0].length - 1];
     } else {
       throw new Error('Tool handler not found');
     }
@@ -81,7 +83,8 @@ describe('vikunja_filters tool', () => {
       const unauth = new AuthManager();
       const server = { tool: jest.fn() } as unknown as MockServer;
       registerFiltersTool(server, unauth);
-      const handler = (server.tool as jest.Mock).mock.calls[0][3];
+      const call = (server.tool as jest.Mock).mock.calls[0];
+      const handler = call[call.length - 1];
 
       for (const action of ['list', 'get', 'create', 'update', 'delete']) {
         await expect(handler({ action, parameters: {} })).rejects.toThrow('Authentication required');
@@ -92,7 +95,8 @@ describe('vikunja_filters tool', () => {
       const unauth = new AuthManager();
       const server = { tool: jest.fn() } as unknown as MockServer;
       registerFiltersTool(server, unauth);
-      const handler = (server.tool as jest.Mock).mock.calls[0][3];
+      const call = (server.tool as jest.Mock).mock.calls[0];
+      const handler = call[call.length - 1];
 
       const buildResult = await handler({
         action: 'build',
@@ -587,5 +591,73 @@ describe('vikunja_filters tool', () => {
       const markdown = result.content[0].text;
       expect(parseMarkdown(markdown).hasHeading(2, /Error/)).toBe(true);
     }, 15000);
+  });
+
+  describe('global read-only mode', () => {
+    afterEach(() => {
+      ConfigurationManager.reset();
+    });
+
+    it('rejects create/update/delete when readOnly is on', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: true } });
+
+      expect(
+        isReadOnlyRejection(
+          await callAndCatch(toolHandler, { action: 'create', parameters: { title: 'x' } }),
+        ),
+      ).toBe(true);
+      expect(
+        isReadOnlyRejection(
+          await callAndCatch(toolHandler, { action: 'update', parameters: { id: 1 } }),
+        ),
+      ).toBe(true);
+      expect(
+        isReadOnlyRejection(
+          await callAndCatch(toolHandler, { action: 'delete', parameters: { id: 1 } }),
+        ),
+      ).toBe(true);
+    });
+
+    it('does not raise the read-only error for list/get/build/validate when readOnly is on', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: true } });
+
+      expect(
+        isReadOnlyRejection(await callAndCatch(toolHandler, { action: 'list', parameters: {} })),
+      ).toBe(false);
+      expect(
+        isReadOnlyRejection(
+          await callAndCatch(toolHandler, { action: 'get', parameters: { id: 1 } }),
+        ),
+      ).toBe(false);
+      expect(
+        isReadOnlyRejection(
+          await callAndCatch(toolHandler, {
+            action: 'build',
+            parameters: { conditions: [{ field: 'done', operator: '=', value: false }] },
+          }),
+        ),
+      ).toBe(false);
+      expect(
+        isReadOnlyRejection(
+          await callAndCatch(toolHandler, {
+            action: 'validate',
+            parameters: { filter: 'done = false' },
+          }),
+        ),
+      ).toBe(false);
+    });
+
+    it('does not raise the read-only error for create when readOnly is off', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: false } });
+
+      expect(
+        isReadOnlyRejection(
+          await callAndCatch(toolHandler, { action: 'create', parameters: { title: 'x' } }),
+        ),
+      ).toBe(false);
+    });
   });
 });

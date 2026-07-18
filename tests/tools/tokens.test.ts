@@ -16,6 +16,8 @@ import type { MockAuthManager, MockServer } from '../types/mocks';
 import { circuitBreakerRegistry } from '../../src/utils/retry';
 import type { ApiToken } from '../../src/tools/tokens';
 import * as validationUtils from '../../src/utils/validation';
+import { ConfigurationManager } from '../../src/config';
+import { callAndCatch, isReadOnlyRejection } from '../utils/read-only-test-helpers';
 
 jest.mock('../../src/auth/AuthManager');
 
@@ -75,7 +77,7 @@ describe('Tokens Tool', () => {
     if (calls.length === 0) {
       throw new Error('Tool handler not found');
     }
-    mockHandler = calls[0][3];
+    mockHandler = calls[0][calls[0].length - 1];
   });
 
   describe('Authentication', () => {
@@ -263,6 +265,42 @@ describe('Tokens Tool', () => {
           new MCPError(ErrorCode.INTERNAL_ERROR, 'An unexpected error occurred during token operation'),
         );
       });
+    });
+  });
+
+  describe('global read-only mode', () => {
+    afterEach(() => {
+      ConfigurationManager.reset();
+    });
+
+    it('rejects create/delete when readOnly is on', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: true } });
+
+      expect(
+        isReadOnlyRejection(await callAndCatch(mockHandler, { subcommand: 'create', title: 'x' })),
+      ).toBe(true);
+      expect(
+        isReadOnlyRejection(await callAndCatch(mockHandler, { subcommand: 'delete', tokenId: 1 })),
+      ).toBe(true);
+    });
+
+    it('does not raise the read-only error for list when readOnly is on', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: true } });
+
+      expect(isReadOnlyRejection(await callAndCatch(mockHandler, { subcommand: 'list' }))).toBe(
+        false,
+      );
+    });
+
+    it('does not raise the read-only error for delete when readOnly is off', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: false } });
+
+      expect(
+        isReadOnlyRejection(await callAndCatch(mockHandler, { subcommand: 'delete', tokenId: 1 })),
+      ).toBe(false);
     });
   });
 });

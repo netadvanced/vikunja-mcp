@@ -12,6 +12,7 @@ import { MCPError, ErrorCode } from '../types';
 import { getAuthManagerFromContext, setGlobalClientFactory } from '../client';
 import { logger } from '../utils/logger';
 import { createAuthRequiredError } from '../utils/error-handler';
+import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../utils/read-only';
 
 /**
  * Register task bulk operations tool
@@ -23,7 +24,10 @@ export function registerTaskBulkTool(
 ): void {
   server.tool(
     'vikunja_task_bulk',
-    'Manage bulk task operations: create, update, delete multiple tasks',
+    withReadOnlyNote(
+      'vikunja_task_bulk',
+      'Manage bulk task operations: create, update, delete multiple tasks',
+    ),
     {
       operation: z.enum(['bulk-create', 'bulk-update', 'bulk-delete']),
       // Bulk operation fields
@@ -46,6 +50,7 @@ export function registerTaskBulkTool(
         )
         .optional(),
     },
+    getToolAnnotations('vikunja_task_bulk'),
     async (args) => {
       try {
         logger.debug('Executing task bulk operations tool', { operation: args.operation, taskCount: args.tasks?.length || args.taskIds?.length });
@@ -54,6 +59,8 @@ export function registerTaskBulkTool(
         if (!authManager.isAuthenticated()) {
           throw createAuthRequiredError('access task bulk operations');
         }
+
+        assertWriteAllowed('vikunja_task_bulk', args.operation);
 
         // Set the client factory for this request if provided
         if (clientFactory) {

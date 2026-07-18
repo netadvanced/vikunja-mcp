@@ -16,6 +16,8 @@ import type { MockAuthManager, MockServer } from '../types/mocks';
 import { circuitBreakerRegistry } from '../../src/utils/retry';
 import type { AdminUser } from '../../src/tools/admin';
 import * as validationUtils from '../../src/utils/validation';
+import { ConfigurationManager } from '../../src/config';
+import { callAndCatch, isReadOnlyRejection } from '../utils/read-only-test-helpers';
 
 jest.mock('../../src/auth/AuthManager');
 
@@ -77,7 +79,7 @@ describe('Admin Tool', () => {
     if (calls.length === 0) {
       throw new Error('Tool handler not found');
     }
-    mockHandler = calls[0][3];
+    mockHandler = calls[0][calls[0].length - 1];
   });
 
   describe('Authentication gating', () => {
@@ -396,6 +398,54 @@ describe('Admin Tool', () => {
           new MCPError(ErrorCode.INTERNAL_ERROR, 'An unexpected error occurred during admin operation'),
         );
       });
+    });
+  });
+
+  describe('global read-only mode', () => {
+    afterEach(() => {
+      ConfigurationManager.reset();
+    });
+
+    it('rejects write/destructive subcommands when readOnly is on', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: true } });
+
+      expect(
+        isReadOnlyRejection(
+          await callAndCatch(mockHandler, { subcommand: 'set-project-owner', projectId: 1, ownerId: 2 }),
+        ),
+      ).toBe(true);
+      expect(
+        isReadOnlyRejection(
+          await callAndCatch(mockHandler, { subcommand: 'delete-user', userId: 1, confirm: true }),
+        ),
+      ).toBe(true);
+    });
+
+    it('does not raise the read-only error for overview/list-projects/list-users when readOnly is on', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: true } });
+
+      expect(isReadOnlyRejection(await callAndCatch(mockHandler, { subcommand: 'overview' }))).toBe(
+        false,
+      );
+      expect(
+        isReadOnlyRejection(await callAndCatch(mockHandler, { subcommand: 'list-projects' })),
+      ).toBe(false);
+      expect(isReadOnlyRejection(await callAndCatch(mockHandler, { subcommand: 'list-users' }))).toBe(
+        false,
+      );
+    });
+
+    it('does not raise the read-only error for delete-user when readOnly is off', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: false } });
+
+      expect(
+        isReadOnlyRejection(
+          await callAndCatch(mockHandler, { subcommand: 'delete-user', userId: 1, confirm: true }),
+        ),
+      ).toBe(false);
     });
   });
 });

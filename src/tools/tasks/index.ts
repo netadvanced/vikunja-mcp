@@ -16,6 +16,7 @@ import { TaskFilteringOrchestrator } from './filtering';
 import type { TaskListingArgs } from './types/filters';
 import { createAuthRequiredError, handleFetchError } from '../../utils/error-handler';
 import { formatAorpAsMarkdown } from '../../utils/response-factory';
+import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../../utils/read-only';
 
 
 // Import all operation handlers
@@ -36,6 +37,7 @@ import {
 import { setTaskBucket } from './buckets';
 import { setTaskPosition } from './position';
 import { getTaskByIndex } from './by-index';
+import { createSubtask, listSubtasks } from './subtasks';
 
 
 /**
@@ -128,8 +130,12 @@ export function registerTasksTool(
 ): void {
   server.tool(
     'vikunja_tasks',
-    'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach/list/delete files, comment, bulk operations, set Kanban bucket, set position, lookup by per-project index). ' +
-      'download-attachment cannot deliver file bytes through MCP (no binary channel) — it returns the direct download URL and auth guidance instead.',
+    withReadOnlyNote(
+      'vikunja_tasks',
+      'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach/list/delete files, comment, bulk operations, set Kanban bucket, set position, lookup by per-project index, create/list subtasks). ' +
+        'download-attachment cannot deliver file bytes through MCP (no binary channel) — it returns the direct download URL and auth guidance instead. ' +
+        'create-subtask is a composite (resolve parent -> create task -> relate -> verify) with opt-in atomic rollback via `atomic: true` (default best-effort — see docs/ENDPOINT-PLAYBOOK.md §5).',
+    ),
     {
       subcommand: z.enum([
         'create',
@@ -161,6 +167,8 @@ export function registerTasksTool(
         'set-bucket',
         'set-position',
         'get-by-index',
+        'create-subtask',
+        'list-subtasks',
       ]),
       // Task creation/update fields
       title: z.string().optional(),
@@ -250,9 +258,17 @@ export function registerTasksTool(
       previewSize: z.enum(['sm', 'md', 'lg', 'xl']).optional(),
       // Add relation schema
       ...relationSchema,
+      // Subtask composite fields (create-subtask). title/description/dueDate/
+      // priority/labels/assignees/bucketId are shared with the generic
+      // create/set-bucket fields above.
+      parentTaskId: z.number().optional(),
+      // Opt into atomic rollback for create-subtask (default best-effort) —
+      // see docs/ENDPOINT-PLAYBOOK.md §5.
+      atomic: z.boolean().optional(),
       // Session ID for AORP response tracking
       sessionId: z.string().optional(),
     },
+    getToolAnnotations('vikunja_tasks'),
     async (args) => {
       try {
         logger.debug('Executing tasks tool', { subcommand: args.subcommand, args });
@@ -261,6 +277,16 @@ export function registerTasksTool(
         if (!authManager.isAuthenticated()) {
           throw createAuthRequiredError('access task management features');
         }
+
+        // Global read-only safety mode gate. 'comment' is dual-purpose
+        // (creates a comment when text is supplied, otherwise lists
+        // comments — see handleComment) so its effective classification
+        // depends on whether `comment` text was actually provided.
+        assertWriteAllowed(
+          'vikunja_tasks',
+          args.subcommand,
+          args.subcommand === 'comment' ? (args.comment ? 'write' : 'read') : undefined,
+        );
 
         // Set the client factory for this request if provided
         if (clientFactory) {
@@ -365,6 +391,12 @@ export function registerTasksTool(
 
           case 'get-by-index':
             return getTaskByIndex(args as Parameters<typeof getTaskByIndex>[0], authManager);
+
+          case 'create-subtask':
+            return createSubtask(args as Parameters<typeof createSubtask>[0], authManager);
+
+          case 'list-subtasks':
+            return listSubtasks(args as Parameters<typeof listSubtasks>[0], authManager);
 
           default:
             throw new MCPError(

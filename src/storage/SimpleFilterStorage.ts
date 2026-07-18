@@ -292,6 +292,10 @@ export class FilterStorageManager {
         logger.error('Failed to cleanup inactive sessions', { error: error instanceof Error ? error.message : String(error) });
       });
     }, this.CLEANUP_INTERVAL_MS);
+    // Timer hygiene: don't let this module-level interval keep the process
+    // (or a Jest worker) alive on its own. `unref()` is a no-op in
+    // environments without it (some fake timers), so guard the call.
+    this.cleanupInterval.unref?.();
   }
 
   private async cleanupInactiveSessions(): Promise<void> {

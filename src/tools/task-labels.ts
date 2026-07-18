@@ -13,6 +13,7 @@ import { getAuthManagerFromContext, setGlobalClientFactory } from '../client';
 import { logger } from '../utils/logger';
 import { createAuthRequiredError } from '../utils/error-handler';
 import { applyLabels, removeLabels, listTaskLabels } from '../tools/tasks/labels';
+import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../utils/read-only';
 
 /**
  * Register task labels tool
@@ -24,13 +25,14 @@ export function registerTaskLabelsTool(
 ): void {
   server.tool(
     'vikunja_task_labels',
-    'Manage task labels: apply, remove, list labels',
+    withReadOnlyNote('vikunja_task_labels', 'Manage task labels: apply, remove, list labels'),
     {
       operation: z.enum(['apply-label', 'remove-label', 'list-labels']),
       // Task and label identification
       id: z.number(),
       labels: z.array(z.number()).optional(),
     },
+    getToolAnnotations('vikunja_task_labels'),
     async (args) => {
       try {
         logger.debug('Executing task labels tool', { operation: args.operation, taskId: args.id, labelCount: args.labels?.length });
@@ -39,6 +41,8 @@ export function registerTaskLabelsTool(
         if (!authManager.isAuthenticated()) {
           throw createAuthRequiredError('access task label operations');
         }
+
+        assertWriteAllowed('vikunja_task_labels', args.operation);
 
         // Set the client factory for this request if provided
         if (clientFactory) {
