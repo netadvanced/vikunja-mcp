@@ -187,6 +187,7 @@ see [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the full flow.
 - [Roadmap & status](docs/ROADMAP.md) — what's implemented, what's planned, what won't be
 - [Sample pages index](docs/samples/) — full walkthroughs for every scenario above
 - [Local testing against a real Vikunja stack](docs/LOCAL-TESTING.md)
+- [Releasing](docs/RELEASING.md) — versioning policy and the release checklist · [CHANGELOG](CHANGELOG.md)
 - [Contributing](docs/ROADMAP.md#7-contributing--how-work-lands) · [Tracking issue #28](https://github.com/netadvanced/vikunja-mcp/issues/28)
 
 ## License
