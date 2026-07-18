@@ -76,6 +76,12 @@ describe('read-only.ts', () => {
       expect(classifySubcommand('vikunja_caldav_tokens', 'create')).toBe('write');
       expect(classifySubcommand('vikunja_caldav_tokens', 'delete')).toBe('destructive');
     });
+
+    it('classifies vikunja_user_deletion: request/confirm destructive, cancel a (non-destructive) write', () => {
+      expect(classifySubcommand('vikunja_user_deletion', 'request')).toBe('destructive');
+      expect(classifySubcommand('vikunja_user_deletion', 'confirm')).toBe('destructive');
+      expect(classifySubcommand('vikunja_user_deletion', 'cancel')).toBe('write');
+    });
   });
 
   describe('TOOL_CLASSIFICATIONS completeness', () => {
@@ -120,6 +126,10 @@ describe('read-only.ts', () => {
       expect(isToolDestructive('vikunja_tasks')).toBe(true);
       expect(isToolDestructive('vikunja_tokens')).toBe(true);
       expect(isToolDestructive('vikunja_caldav_tokens')).toBe(true);
+    });
+
+    it('is true for vikunja_user_deletion (request/confirm are destructive; cancel alone would not be)', () => {
+      expect(isToolDestructive('vikunja_user_deletion')).toBe(true);
     });
 
     it('is false when no subcommand is destructive', () => {

@@ -199,15 +199,16 @@ requiring any config migration.
 | `subscriptions` | **ON** | Gates `vikunja_subscriptions` |
 | `reactions` | **ON** | Gates `vikunja_reactions` |
 | `admin` | **OFF** ⚠️ | Gates `vikunja_admin` (instance-admin operations: overview, all-projects listing + owner reassignment, user list/create/delete, admin-flag + status toggles). Deny-by-default AND JWT-only — see [Composing with Auth-Type Gating](#composing-with-auth-type-gating). `delete-user` additionally requires an explicit `confirm: true` tool argument. |
-| `userDeletion` | **OFF** (reserved) | No tool implements this yet. Deny-by-default — destructive. |
+| `userDeletion` | **OFF** ⚠️⚠️ | Gates `vikunja_user_deletion` (`request`/`confirm`/`cancel` self-deletion of the **currently authenticated account**). Deny-by-default AND JWT-only — see [Composing with Auth-Type Gating](#composing-with-auth-type-gating). `request` and `confirm` additionally require an explicit `confirm: true` tool argument; both are genuinely irreversible once the emailed confirmation token is used — do not enable this module unless you specifically want an AI assistant able to delete the connected Vikunja account. `cancel` (the safe undo) does not require `confirm: true`. |
 | `tokenManagement` | **OFF** ⚠️ | Gates `vikunja_tokens` (API token list/create/delete for the connected account). Deny-by-default — credential-adjacent. No auth-type restriction at registration time (unlike `admin`/`users`/`export`), but the underlying `/tokens` endpoints may reject API-token sessions server-side — see `src/tools/tokens.ts`. |
 | `caldavTokens` | **OFF** ⚠️ | Gates `vikunja_caldav_tokens` (CalDAV token list/create/delete for the connected account). Deny-by-default — credential-adjacent, and a created token's secret is shown only once. Unlike `tokenManagement`, the underlying `/user/settings/token/caldav*` endpoints ARE JWT-only per the vendored OpenAPI spec, so registration composes with the same JWT-only gate as `users`/`export`/`admin` — see [Composing with Auth-Type Gating](#composing-with-auth-type-gating) and `src/tools/caldav-tokens.ts`. |
 
 Ordinary modules default **ON** (matching pre-existing behavior — this system is
 additive, not a breaking change). The four reserved "dangerous" modules default **OFF**
-(deny-by-default): `admin`, `tokenManagement`, and `caldavTokens` now have tools wired to
-them and ship already gated closed until an operator opts in; `userDeletion` remains
-fully reserved (no tool yet) for the same reason.
+(deny-by-default): `admin`, `tokenManagement`, `caldavTokens`, and `userDeletion` now all
+have tools wired to them and ship already gated closed until an operator opts in.
+`userDeletion` deserves particular caution — read its row above in full before enabling
+it.
 
 ### Module Env Var Overrides
 
@@ -256,16 +257,22 @@ if (jwtAuthenticated && isModuleEnabled(modules.users)) {
 if (jwtAuthenticated && isModuleEnabled(modules.admin)) {
   registerAdminTool(server, authManager, clientFactory);
 }
+if (jwtAuthenticated && isModuleEnabled(modules.userDeletion)) {
+  registerUserDeletionTool(server, authManager, clientFactory);
+}
 ```
 
 Setting `VIKUNJA_MCP_MODULE_USERS=true` while authenticated with an API token does
 **not** register the users tool — there is no config setting that can grant access auth
-doesn't already permit. The same is true of `VIKUNJA_MCP_MODULE_ADMIN=true`: with an
-API-token session, `vikunja_admin` stays unregistered regardless of the config value.
-`tokenManagement` is the one deny-by-default module that does **not** compose with the
-JWT-only gate — `vikunja_tokens` registers for either session type once its module key
-is enabled, since the underlying endpoints' auth requirement is a runtime server
-behavior rather than something this server enforces at registration time.
+doesn't already permit. The same is true of `VIKUNJA_MCP_MODULE_ADMIN=true` and
+`VIKUNJA_MCP_MODULE_USER_DELETION=true`: with an API-token session, `vikunja_admin` and
+`vikunja_user_deletion` both stay unregistered regardless of the config value — per
+docs/VIKUNJA_API_ISSUES.md, every `/user/*` endpoint (including `/user/deletion/*`)
+rejects `tk_*` API tokens server-side, so this JWT-only gate is not just a local policy
+choice here. `tokenManagement` is the one deny-by-default module that does **not**
+compose with the JWT-only gate — `vikunja_tokens` registers for either session type once
+its module key is enabled, since the underlying endpoints' auth requirement is a runtime
+server behavior rather than something this server enforces at registration time.
 
 `caldavTokens`, by contrast, DOES compose with the JWT-only gate, the same way
 `admin` does — `vikunja_caldav_tokens` registers only when both

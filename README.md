@@ -98,13 +98,13 @@ Full install options, JWT vs. API-token auth, module gating, and every environme
 
 \* JWT authentication only. User data export also has request/status/download tools (`vikunja_request_user_export`, `vikunja_user_export_status`, `vikunja_download_user_export`), all JWT-only.
 
-Three more tools — `vikunja_tokens`, `vikunja_caldav_tokens`, and `vikunja_admin` — exist for API-token management, CalDAV-token management, and instance administration. All are **disabled by default**; an operator opts in explicitly (see Configuration).
+Four more tools — `vikunja_tokens`, `vikunja_caldav_tokens`, `vikunja_admin`, and `vikunja_user_deletion` — exist for API-token management, CalDAV-token management, instance administration, and self account deletion. All are **disabled by default**; an operator opts in explicitly (see Configuration). `vikunja_user_deletion` is the most sensitive of the four — it can delete the connected account — so read its [Configuration guide entry](docs/CONFIGURATION.md#known-modules) before enabling it.
 
 Full subcommand-by-subcommand reference: [`docs/TOOLS.md`](docs/TOOLS.md).
 
 ## Safety by design
 
-Every entity is a toggle you can disable in config, `vikunja_admin`/`vikunja_tokens`/`vikunja_caldav_tokens` ship off until an operator opts in (and `vikunja_admin`/`vikunja_caldav_tokens` additionally require an active JWT session), and a global read-only mode can reject every write/destructive subcommand while reads keep working. Full details: [Configuration guide](docs/CONFIGURATION.md#module-gating).
+Every entity is a toggle you can disable in config, `vikunja_admin`/`vikunja_tokens`/`vikunja_caldav_tokens`/`vikunja_user_deletion` ship off until an operator opts in (and `vikunja_admin`/`vikunja_caldav_tokens`/`vikunja_user_deletion` additionally require an active JWT session), and a global read-only mode can reject every write/destructive subcommand while reads keep working. Full details: [Configuration guide](docs/CONFIGURATION.md#module-gating).
 
 ## Links
 
