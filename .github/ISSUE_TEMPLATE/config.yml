@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Vikunja MCP API build-out tracking
+    url: https://github.com/netadvanced/vikunja-mcp/issues/28
+    about: Status of the endpoint audit and build-out effort — check here before filing a new bug/feature that might already be tracked.
+  - name: Vikunja itself (not this MCP server)
+    url: https://github.com/go-vikunja/vikunja/issues
+    about: For bugs in Vikunja the task manager, not this MCP integration, please use the upstream Vikunja repository.
