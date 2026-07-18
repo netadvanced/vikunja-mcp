@@ -2059,7 +2059,80 @@ describe('Tasks Tool', () => {
       globalThis.fetch = originalFetch;
     });
 
-    it('should bulk update multiple tasks via per-task merge (never native bulk API)', async () => {
+    it('updates scalar fields via one native POST /tasks/bulk using the fields/values contract', async () => {
+      const taskIds = [1, 2, 3];
+      const nativeBodies: Array<Record<string, unknown>> = [];
+      const baseRouter = fetchMock;
+      globalThis.fetch = jest.fn(async (url: string, init?: { method?: string; body?: string }) => {
+        const pathname = new URL(url).pathname.replace(/^\/api\/v\d+/, '');
+        if (init?.method === 'POST' && pathname === '/tasks/bulk') {
+          const body = JSON.parse(init.body ?? '{}') as Record<string, unknown>;
+          nativeBodies.push(body);
+          return jsonResponse({
+            ...body,
+            tasks: (body.task_ids as number[]).map((id) => ({ ...mockTask, id, done: true })),
+          });
+        }
+        return await baseRouter(url, init);
+      }) as unknown as typeof fetch;
+
+      const result = await callTool('bulk-update', {
+        taskIds,
+        field: 'done',
+        value: true,
+      });
+
+      // models.BulkTask per the OpenAPI spec: fields lists what to change,
+      // values carries only those fields — nothing else can be wiped.
+      expect(nativeBodies).toEqual([
+        { task_ids: [1, 2, 3], fields: ['done'], values: { done: true } },
+      ]);
+      // One request does the whole update — no per-task read-modify-write
+      expect(mockClient.tasks.updateTask).not.toHaveBeenCalled();
+      // getTask is only used for the pre-update assignee snapshot
+      expect(mockClient.tasks.getTask).toHaveBeenCalledTimes(3);
+
+      const markdown = result.content[0].text;
+      const parsed = parseMarkdown(markdown);
+      const aorpStatus = parsed.getAorpStatus();
+      expect(aorpStatus.type).toBe('success');
+      expect(markdown).toContain('update-task');
+      expect(markdown).toContain('Successfully updated 3 tasks');
+    });
+
+    it('restores assignees that the native bulk endpoint clears server-side', async () => {
+      mockClient.tasks.getTask.mockImplementation((id: number) =>
+        Promise.resolve({ ...mockTask, id, assignees: [{ id: 2, username: 'claude' }] }),
+      );
+      const baseRouter = fetchMock;
+      globalThis.fetch = jest.fn(async (url: string, init?: { method?: string; body?: string }) => {
+        const pathname = new URL(url).pathname.replace(/^\/api\/v\d+/, '');
+        if (init?.method === 'POST' && pathname === '/tasks/bulk') {
+          const body = JSON.parse(init.body ?? '{}') as Record<string, unknown>;
+          // Vikunja 2.3.0 clears assignees in a bulk update even when the
+          // fields/values payload never mentions them.
+          return jsonResponse({
+            ...body,
+            tasks: (body.task_ids as number[]).map((id) => ({ ...mockTask, id, done: true, assignees: null })),
+          });
+        }
+        return await baseRouter(url, init);
+      }) as unknown as typeof fetch;
+
+      await callTool('bulk-update', {
+        taskIds: [1, 2],
+        field: 'done',
+        value: true,
+      });
+
+      // PUT /tasks/{id}/assignees routes to assignUserToTask in the harness
+      expect(mockClient.tasks.assignUserToTask).toHaveBeenCalledWith(1, 2);
+      expect(mockClient.tasks.assignUserToTask).toHaveBeenCalledWith(2, 2);
+    });
+
+    it('falls back to per-task merge when the native bulk endpoint is unavailable', async () => {
+      // The describe-level router does not route POST /tasks/bulk, so the
+      // native attempt fails and the per-task merge path takes over.
       const taskIds = [1, 2, 3];
       mockClient.tasks.getTask.mockImplementation((id: number) =>
         Promise.resolve({
@@ -2077,8 +2150,8 @@ describe('Tasks Tool', () => {
         value: true,
       });
 
-      expect(mockClient.tasks.bulkUpdateTasks).not.toHaveBeenCalled();
-      expect(mockClient.tasks.getTask).toHaveBeenCalledTimes(3);
+      // 3 pre-update snapshot reads + 3 per-task merge reads
+      expect(mockClient.tasks.getTask).toHaveBeenCalledTimes(6);
       expect(mockClient.tasks.updateTask).toHaveBeenCalledTimes(3);
       expect(mockClient.tasks.updateTask).toHaveBeenCalledWith(
         1,
