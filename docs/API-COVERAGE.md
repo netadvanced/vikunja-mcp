@@ -14,10 +14,10 @@ Vikunja documents **169** distinct API operations (method+path). Of those:
 
 | Status | Count | % |
 |---|---|---|
-| ✅ Implemented | 103 | 61% |
+| ✅ Implemented | 123 | 73% |
 | ⚠️ Implemented (bug) | 1 | 1% |
 | 🟡 Partial | 1 | 1% |
-| ❌ Not implemented | 64 | 38% |
+| ❌ Not implemented | 44 | 26% |
 | **Total** | **169** | 100% |
 
 - **✅ Implemented** — implementation matches the documented endpoint (method, path, request/response fields all checked).
@@ -25,7 +25,7 @@ Vikunja documents **169** distinct API operations (method+path). Of those:
 - **🟡 Partial** — works for the common case but silently drops documented capability (e.g. missing pagination/search params), or is an honest, documented, by-design partial (e.g. no binary content channel).
 - **❌ Not implemented** — no MCP tool calls this endpoint at all. Some are intentional (credential ceremonies, genuinely-binary blob endpoints, migration importers, destructive test/account endpoints) rather than gaps; others are approved-to-build but not yet coded. See notes per row and the re-triage below.
 
-> **C2 endpoint-tail re-triage (2026-07-18):** all 64 `❌` rows were re-examined under the direct-REST architecture (`node-vikunja` removed). Several 2026-07-17 "won't-implement" verdicts rested on limitations that no longer apply (a broken client-library call, a blanket "binary/blob" rule that mislabeled JSON endpoints). New split: **20 IMPLEMENT (approved-to-build) / 36 PARKED / 8 NEVER** — full per-op verdicts, spec evidence, and the grouped candidate backlog (G1–G7) live in **[docs/ENDPOINT-TAIL-RETRIAGE.md](ENDPOINT-TAIL-RETRIAGE.md)**. This changed **no counts**: all 64 stay `❌` until each IMPLEMENT row's code actually lands (per the maintenance rule above). The Notes on the 20 IMPLEMENT rows below are updated to carry the new verdict; PARKED/NEVER rows keep their `❌` with reasons re-justified in the re-triage doc.
+> **C2 endpoint-tail re-triage (2026-07-18):** all 64 `❌` rows were re-examined under the direct-REST architecture (`node-vikunja` removed). Several 2026-07-17 "won't-implement" verdicts rested on limitations that no longer apply (a broken client-library call, a blanket "binary/blob" rule that mislabeled JSON endpoints). New split: **20 IMPLEMENT (approved-to-build) / 36 PARKED / 8 NEVER** — full per-op verdicts, spec evidence, and the grouped candidate backlog (G1–G7) live in **[docs/ENDPOINT-TAIL-RETRIAGE.md](ENDPOINT-TAIL-RETRIAGE.md)**. At re-triage time this changed **no counts**: rows stayed `❌` until each IMPLEMENT row's code actually landed (per the maintenance rule above). **Update (wave G-endpoint-tail, 2026-07-18):** all **20 IMPLEMENT** rows (candidates G1–G7) have since shipped and flipped to `✅`, taking the summary from 103→123 `✅` and 64→44 `❌`; the 36 PARKED and 8 NEVER rows keep their `❌` with reasons re-justified in the re-triage doc.
 
 ## Correctness Issues
 
