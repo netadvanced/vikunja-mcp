@@ -24,6 +24,8 @@ import type { BulkUpdateArgs, BulkDeleteArgs, BulkCreateArgs, BulkCreateTaskData
 
 /** `models.Task` per the OpenAPI spec — request/response shape for the task endpoints. */
 type Task = components['schemas']['models.Task'];
+/** `models.BulkTask` per the OpenAPI spec — request/response shape for POST /tasks/bulk. */
+type BulkTask = components['schemas']['models.BulkTask'];
 
 // ==================== BATCH PROCESSORS ====================
 
@@ -72,13 +74,23 @@ function resolveBulkUpdateValue(field: string | undefined, value: unknown): unkn
 // ==================== BULK UPDATE ====================
 
 /**
- * Bulk-update via per-task GET + merge + POST.
+ * Bulk-update.
  *
- * Intentionally does **not** call Vikunja's native `bulkUpdateTasks` API.
- * That endpoint only sends `{ task_ids, field, value }`, and Vikunja's task
- * update semantics are a full-model replace — omitted fields (description,
- * priority, etc.) get cleared. Using the merge path matches single-task
- * `update` and avoids silent data loss (see GitHub issue #46).
+ * Scalar fields go through Vikunja's native `POST /tasks/bulk` in ONE request.
+ * The endpoint's real contract (see `models.BulkTask` in the generated OpenAPI
+ * types) is `{ task_ids, fields: string[], values: models.Task }` — the server
+ * applies exactly the listed fields and preserves everything else. The old
+ * belief that the endpoint full-replaces tasks came from node-vikunja's stale
+ * `{ task_ids, field, value }` type (upstream #46): with that malformed payload
+ * the server sees `fields: null` and applies a zero-value task. A single
+ * request also sidesteps the `database is locked` partial failures that
+ * concurrent per-task updates hit on SQLite-backed instances (upstream #79).
+ *
+ * Two server-side caveats handled here (verified against live 2.3.0):
+ * - the bulk endpoint clears assignees even for a correctly-scoped update, so
+ *   assignees are snapshotted first and re-added afterwards;
+ * - assignees/labels cannot be set through the bulk endpoint at all, so those
+ *   fields use the per-task path.
  */
 export async function bulkUpdateTasks(args: BulkUpdateArgs, authManager: AuthManager): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   try {
@@ -87,56 +99,123 @@ export async function bulkUpdateTasks(args: BulkUpdateArgs, authManager: AuthMan
     const taskIds = args.taskIds ?? [];
     const fieldValue = resolveBulkUpdateValue(args.field, args.value);
 
+    const perTaskUpdate = async (): Promise<{ content: Array<{ type: 'text'; text: string }> }> => {
     const updateResult = await processors.update.processBatches(taskIds, async (taskId) => {
-      const current = await vikunjaRestRequest<Task>(authManager, 'GET', `/tasks/${taskId}`);
-      // Spread current task so fields not being changed survive Vikunja's full replace
-      const update = applyFieldUpdate({ ...current }, args.field, fieldValue);
+        const current = await vikunjaRestRequest<Task>(authManager, 'GET', `/tasks/${taskId}`);
+        // Spread current task so fields not being changed survive Vikunja's full replace
+        const update = applyFieldUpdate({ ...current }, args.field, fieldValue);
 
-      const updated = await vikunjaRestRequest<Task>(authManager, 'POST', `/tasks/${taskId}`, update);
+        const updated = await vikunjaRestRequest<Task>(authManager, 'POST', `/tasks/${taskId}`, update);
 
-      if (args.field === 'assignees' && Array.isArray(args.value)) {
-        const currentTask = await getTaskViaRest(authManager, taskId);
-        const currentAssignees = (currentTask.assignees ?? [])
-          .map((a) => a.id)
-          .filter((id): id is number => typeof id === 'number');
-        if (args.value.length > 0) {
-          try {
-            // Per-user additive assign (PUT /tasks/{taskID}/assignees, body
-            // { user_id }, models.TaskAssginee) instead of the bulk endpoint,
-            // which REPLACES the whole list and would silently unassign
-            // everyone (upstream issue #15). Run concurrently.
-            await Promise.all((args.value as number[]).map((userId) => withRetry(() => vikunjaRestRequest(authManager, 'PUT', `/tasks/${taskId}/assignees`, { user_id: userId }), { ...RETRY_CONFIG.AUTH_ERRORS, shouldRetry: isAuthenticationError })));
-          } catch (assigneeError) {
-            if (isAuthenticationError(assigneeError)) throw new MCPError(ErrorCode.API_ERROR, 'Assignee operations may have authentication issues');
-            throw assigneeError;
+        if (args.field === 'assignees' && Array.isArray(args.value)) {
+          const currentTask = await getTaskViaRest(authManager, taskId);
+          const currentAssignees = (currentTask.assignees ?? [])
+            .map((a) => a.id)
+            .filter((id): id is number => typeof id === 'number');
+          if (args.value.length > 0) {
+            try {
+              // Per-user additive assign (PUT /tasks/{taskID}/assignees, body
+              // { user_id }, models.TaskAssginee) instead of the bulk endpoint,
+              // which REPLACES the whole list and would silently unassign
+              // everyone (upstream issue #15). Run concurrently.
+              await Promise.all((args.value as number[]).map((userId) => withRetry(() => vikunjaRestRequest(authManager, 'PUT', `/tasks/${taskId}/assignees`, { user_id: userId }), { ...RETRY_CONFIG.AUTH_ERRORS, shouldRetry: isAuthenticationError })));
+            } catch (assigneeError) {
+              if (isAuthenticationError(assigneeError)) throw new MCPError(ErrorCode.API_ERROR, 'Assignee operations may have authentication issues');
+              throw assigneeError;
+            }
+          }
+          // DELETE /tasks/{taskID}/assignees/{userID} per the OpenAPI spec — no body.
+          for (const userId of currentAssignees) {
+            try { await withRetry(() => vikunjaRestRequest(authManager, 'DELETE', `/tasks/${taskId}/assignees/${userId}`), { ...RETRY_CONFIG.AUTH_ERRORS, shouldRetry: isAuthenticationError }); }
+            catch (e) { if (isAuthenticationError(e)) throw new MCPError(ErrorCode.API_ERROR, `${AUTH_ERROR_MESSAGES.ASSIGNEE_REMOVE_PARTIAL} (Retried ${RETRY_CONFIG.AUTH_ERRORS.maxRetries} times)`); throw e; }
           }
         }
-        // DELETE /tasks/{taskID}/assignees/{userID} per the OpenAPI spec — no body.
-        for (const userId of currentAssignees) {
-          try { await withRetry(() => vikunjaRestRequest(authManager, 'DELETE', `/tasks/${taskId}/assignees/${userId}`), { ...RETRY_CONFIG.AUTH_ERRORS, shouldRetry: isAuthenticationError }); }
-          catch (e) { if (isAuthenticationError(e)) throw new MCPError(ErrorCode.API_ERROR, `${AUTH_ERROR_MESSAGES.ASSIGNEE_REMOVE_PARTIAL} (Retried ${RETRY_CONFIG.AUTH_ERRORS.maxRetries} times)`); throw e; }
+        // Labels are never applied by Vikunja's task update payload; persist them
+        // explicitly via setTaskLabels (correct labels payload shape) — re-impl #49.
+        if (args.field === 'labels' && Array.isArray(args.value)) {
+          await withRetry(() => setTaskLabels(authManager, taskId, args.value as number[]), { ...RETRY_CONFIG.AUTH_ERRORS, shouldRetry: isAuthenticationError });
+        }
+        return updated;
+      });
+      if (updateResult.failed.length > 0 && updateResult.successful.length === 0) {
+        const firstError = updateResult.failed[0]?.error;
+        // Preserve MCPError instances with auth messages
+        if (firstError instanceof MCPError && firstError.message.includes('authentication')) throw firstError;
+        throw new MCPError(ErrorCode.API_ERROR, `Bulk update failed. Could not update any tasks. Failed IDs: ${updateResult.failed.map(f => f.originalItem).join(', ')}`);
+      }
+      // Report partial failure honestly (mirrors bulkDeleteTasks) instead of
+      // claiming every task was updated.
+      if (updateResult.failed.length > 0) {
+        const failedIds = updateResult.failed.map(f => f.originalItem);
+        return successResponse('update-task', `Bulk update partially completed. Successfully updated ${updateResult.successful.length} tasks. Failed task IDs: ${failedIds.join(', ')}`, updateResult.successful, {
+          count: updateResult.successful.length, failedCount: updateResult.failed.length, failedIds, affectedFields: [args.field], success: false,
+        });
+      }
+      return successResponse('update-task', `Successfully updated ${taskIds.length} tasks`, updateResult.successful, {
+        count: taskIds.length, affectedFields: [args.field], performanceMetrics: {
+          totalDuration: updateResult.metrics.totalDuration, operationsPerSecond: updateResult.metrics.operationsPerSecond,
+          apiCallsUsed: updateResult.metrics.successfulOperations + updateResult.metrics.failedOperations,
+        },
+      });
+    };
+
+    // Assignees and labels have their own endpoints; the native bulk endpoint
+    // does not handle them.
+    if (args.field === 'assignees' || args.field === 'labels') {
+      return await perTaskUpdate();
+    }
+
+    try {
+      // Snapshot assignees first: the bulk endpoint clears them server-side
+      // even for a correctly-scoped update (verified against 2.3.0).
+      const preFetch = await processors.update.processBatches(taskIds, async (id) => await vikunjaRestRequest<Task>(authManager, 'GET', `/tasks/${id}`));
+      const assigneesByTask = new Map<number, number[]>();
+      for (const t of preFetch.successful) {
+        if (!t?.id) continue;
+        const ids = (t.assignees ?? []).map((a) => a.id).filter((id): id is number => typeof id === 'number');
+        if (ids.length > 0) assigneesByTask.set(t.id, ids);
+      }
+
+      const payload: BulkTask = {
+        task_ids: taskIds,
+        fields: [args.field as string],
+        values: { [args.field as string]: fieldValue } as Task,
+      };
+      const result = await vikunjaRestRequest<BulkTask | Task[]>(authManager, 'POST', '/tasks/bulk', payload);
+
+      // Re-add the assignees the bulk endpoint cleared. Sequential on purpose:
+      // concurrent writes 500 with "database is locked" on SQLite backends.
+      for (const [taskId, userIds] of assigneesByTask) {
+        for (const userId of userIds) {
+          try {
+            await vikunjaRestRequest(authManager, 'PUT', `/tasks/${taskId}/assignees`, { user_id: userId });
+          } catch (e) {
+            logger.warn('Could not restore assignee after bulk update', { taskId, userId, error: e instanceof Error ? e.message : String(e) });
+          }
         }
       }
-      // Labels are never applied by Vikunja's task update payload; persist them
-      // explicitly via setTaskLabels (correct labels payload shape) — re-impl #49.
-      if (args.field === 'labels' && Array.isArray(args.value)) {
-        await withRetry(() => setTaskLabels(authManager, taskId, args.value as number[]), { ...RETRY_CONFIG.AUTH_ERRORS, shouldRetry: isAuthenticationError });
-      }
-      return updated;
-    });
 
-    if (updateResult.failed.length > 0 && updateResult.successful.length === 0) {
-      const firstError = updateResult.failed[0]?.error;
-      // Preserve MCPError instances with auth messages
-      if (firstError instanceof MCPError && firstError.message.includes('authentication')) throw firstError;
-      throw new MCPError(ErrorCode.API_ERROR, `Bulk update failed. Could not update any tasks. Failed IDs: ${updateResult.failed.map(f => f.originalItem).join(', ')}`);
+      // 2.x echoes { task_ids, fields, values, tasks }; tolerate a bare Task[] too.
+      const updatedTasks: Task[] = Array.isArray(result) ? result : (result?.tasks ?? []);
+      // Sanity-check the server actually applied the value — guards against
+      // running into an older server that ignores fields/values.
+      const verifiable = ['priority', 'done', 'project_id'].includes(args.field as string);
+      const applied = updatedTasks.length > 0 && (!verifiable || updatedTasks.every((t) => t[args.field as keyof Task] === fieldValue));
+      if (!applied) {
+        throw new MCPError(ErrorCode.API_ERROR, 'Native bulk update did not apply the requested value');
+      }
+
+      // Re-fetch when assignees were restored so the response reflects them.
+      const responseTasks = assigneesByTask.size > 0
+        ? (await processors.update.processBatches(taskIds, async (id) => await vikunjaRestRequest<Task>(authManager, 'GET', `/tasks/${id}`))).successful
+        : updatedTasks;
+
+      return successResponse('update-task', `Successfully updated ${taskIds.length} tasks`, responseTasks, { count: taskIds.length, affectedFields: [args.field] });
+    } catch (nativeError) {
+      if (nativeError instanceof MCPError && nativeError.message.includes('authentication')) throw nativeError;
+      logger.warn('Native bulk update failed; falling back to per-task merge', { error: nativeError instanceof Error ? nativeError.message : String(nativeError), field: args.field });
+      return await perTaskUpdate();
     }
-    return successResponse('update-task', `Successfully updated ${taskIds.length} tasks`, updateResult.successful, {
-      count: taskIds.length, affectedFields: [args.field], performanceMetrics: {
-        totalDuration: updateResult.metrics.totalDuration, operationsPerSecond: updateResult.metrics.operationsPerSecond,
-        apiCallsUsed: updateResult.metrics.successfulOperations + updateResult.metrics.failedOperations,
-      },
-    });
   } catch (error) {
     if (error instanceof MCPError) throw error;
     if (error instanceof Error && (error.message.includes('fetch failed') || error.message.includes('ECONNREFUSED') || error.message.includes('ENOTFOUND'))) throw handleFetchError(error, 'bulk update tasks');
