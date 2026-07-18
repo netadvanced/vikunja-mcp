@@ -15,7 +15,7 @@ import { vikunjaRestRequest } from '../utils/vikunja-rest';
 import type { components } from '../types/generated/vikunja-openapi';
 
 // Sourced from the vendored OpenAPI spec (docs/vikunja-openapi.json) — see
-// docs/API-SPEC.md, replacing node-vikunja's types (Wave D domain migration,
+// docs/API-SPEC.md, replacing the legacy client's types (Wave D domain migration,
 // tracking issue #28). GET /user returns v1.UserWithSettings (id/username/
 // email/created/updated flat, everything else nested under `settings` —
 // see transformUser below and docs/API_NOTES.md). GET /users (search)
@@ -173,7 +173,7 @@ export function registerUsersTool(server: McpServer, authManager: AuthManager, _
             if (args.perPage !== undefined) params.per_page = args.perPage;
 
             // GET /users only accepts the `s` query param per the spec (no
-            // page/per_page) — node-vikunja's UserSearchParams type includes
+            // page/per_page) — the legacy client's UserSearchParams type includes
             // pagination fields the real endpoint doesn't support, so the
             // request only ever sent `s` server-side even before this
             // migration. `params`/`paramsMetadata` still record whatever the
@@ -333,7 +333,7 @@ export function registerUsersTool(server: McpServer, authManager: AuthManager, _
           }
 
           case 'timezones': {
-            // GET /user/timezones. Not exposed via node-vikunja's client
+            // GET /user/timezones. Not exposed via the legacy client's client
             // (all new HTTP calls go through vikunjaRestRequest per
             // docs/ENDPOINT-PLAYBOOK.md §3). The instance-dependent list of
             // valid IANA time zone names this call returns is exactly what
@@ -375,7 +375,7 @@ export function registerUsersTool(server: McpServer, authManager: AuthManager, _
           // Vikunja API quirk (docs/API_NOTES.md "User Endpoint
           // Authentication"): the same token that works everywhere else can
           // be rejected on `/user`/`/users`. Route it through the same
-          // friendly auth-error translation node-vikunja-sourced exceptions
+          // friendly auth-error translation legacy-client-sourced exceptions
           // used to get — `vikunjaRestRequest` throws `MCPError` with the
           // HTTP status under `details.statusCode`, not a `.message` string
           // `handleAuthError`'s pattern matching recognizes, so this has to

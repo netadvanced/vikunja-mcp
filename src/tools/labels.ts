@@ -2,7 +2,7 @@
  * Labels Tool
  * Handles label operations for Vikunja
  *
- * Migrated off node-vikunja (Wave D domain migration, tracking issue #28)
+ * Migrated off the legacy client (Wave D domain migration, tracking issue #28)
  * onto `vikunjaRestRequest` + types generated from the vendored OpenAPI
  * spec. See docs/ENDPOINT-PLAYBOOK.md §6.
  *
@@ -34,7 +34,7 @@ import type { components } from '../types/generated/vikunja-openapi';
 import type { Label as ResponseLabel } from '../types/vikunja';
 
 // Sourced from the vendored OpenAPI spec (docs/vikunja-openapi.json) — see
-// docs/API-SPEC.md, replacing node-vikunja's `Label` type.
+// docs/API-SPEC.md, replacing the legacy client's `Label` type.
 type VikunjaLabel = components['schemas']['models.Label'];
 
 // Use shared validateAndConvertId from utils/validation
@@ -42,7 +42,7 @@ type VikunjaLabel = components['schemas']['models.Label'];
 /**
  * Re-throws a REST-layer 404 (`vikunjaRestRequest` throws `MCPError` with
  * `details.statusCode`, not a bare `.statusCode` property) as a friendly
- * "Label with ID X not found" — matching the message the node-vikunja-backed
+ * "Label with ID X not found" — matching the message the legacy-client-backed
  * implementation produced via its own thrown `.statusCode`-bearing errors.
  * Everything else is rethrown/wrapped unchanged by the caller's
  * `wrapToolError` fallback.

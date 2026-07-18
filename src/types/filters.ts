@@ -2,8 +2,11 @@
  * Filter-related type definitions for Vikunja MCP Server
  */
 
-import type { Task } from 'node-vikunja';
+import type { components } from './generated/vikunja-openapi';
 import type { FilteringMetadata } from '../utils/filtering/types';
+
+/** `models.Task` per the OpenAPI spec — task shape carried in filter results. */
+type Task = components['schemas']['models.Task'];
 
 /**
  * Supported filter operators

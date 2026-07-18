@@ -3,13 +3,16 @@
  * Handles validation of filter expressions and task listing parameters
  */
 
-import type { Task } from 'node-vikunja';
+import type { components } from '../../../types/generated/vikunja-openapi';
 import type { FilterExpression, FilterGroup, ParseResult } from '../../../types/filters';
 import type { TaskListingArgs, TaskFilterValidationConfig, TaskFilterStorage } from '../types/filters';
 import { MCPError, ErrorCode } from '../../../types';
 import { parseFilterString, expressionToString } from '../../../utils/filters';
 import { validateTaskCountLimit } from '../../../utils/memory';
 import { logger } from '../../../utils/logger';
+
+/** `models.Task` per the OpenAPI spec — sample task for memory estimation. */
+type Task = components['schemas']['models.Task'];
 
 /**
  * Validates filter parameters for task listing operations

@@ -12,8 +12,11 @@ import {
   registerTaskRelationsTool
 } from '../../src/tools/index';
 import { MCPError, ErrorCode } from '../../src/types';
-import type { Task, User } from 'node-vikunja';
+import type { components } from '../../src/types/generated/vikunja-openapi';
 import type { MockVikunjaClient, MockAuthManager, MockServer } from '../types/mocks';
+
+type Task = components['schemas']['models.Task'];
+type User = components['schemas']['user.User'];
 
 // Import the function we're mocking
 import { getClientFromContext, getAuthManagerFromContext } from '../../src/client';
@@ -106,6 +109,20 @@ describe('Tasks Tool', () => {
       if (method === 'POST' && labelBulkMatch?.[1] !== undefined) {
         await labelWrite(Number(labelBulkMatch[1]), body);
         return jsonResponse({ labels: [] });
+      }
+      // Assignee sub-resource writes (per-user additive assign / remove) also
+      // go through vikunjaRestRequest -> fetch now; proxy them back through the
+      // node-vikunja `mockClient.tasks` methods each bulk test configures and
+      // asserts on.
+      const assigneesMatch = /^\/tasks\/(\d+)\/assignees$/.exec(pathname);
+      if (method === 'PUT' && assigneesMatch?.[1] !== undefined) {
+        return jsonResponse(await mockClient.tasks.assignUserToTask(Number(assigneesMatch[1]), body?.user_id));
+      }
+      const assigneeDeleteMatch = /^\/tasks\/(\d+)\/assignees\/(\d+)$/.exec(pathname);
+      if (method === 'DELETE' && assigneeDeleteMatch?.[1] !== undefined) {
+        return jsonResponse(
+          await mockClient.tasks.removeUserFromTask(Number(assigneeDeleteMatch[1]), Number(assigneeDeleteMatch[2])),
+        );
       }
       const taskIdMatch = /^\/tasks\/(\d+)$/.exec(pathname);
       if (taskIdMatch?.[1] !== undefined) {
@@ -290,6 +307,43 @@ describe('Tasks Tool', () => {
         }
         return jsonResponse(
           await mockClient.tasks.getProjectTasks(Number(projectTasksMatch[1]), parseParams()),
+        );
+      }
+
+      // Label/assignee sub-resources also go through vikunjaRestRequest ->
+      // fetch now (they used to be node-vikunja client calls). Proxy them back
+      // through the corresponding mockClient.tasks methods so each test's
+      // per-scenario mock config and call-count/args assertions keep driving
+      // behavior. A rejecting mockClient method surfaces as a fetch()-layer
+      // rejection, which vikunjaRestRequest wraps into an MCPError (so failure
+      // messages carry the "Vikunja REST request failed (METHOD path): ..."
+      // prefix, same as a real network failure).
+      const labelBulkMatch = /^\/tasks\/(\d+)\/labels\/bulk$/.exec(pathname);
+      if (labelBulkMatch?.[1] !== undefined && method === 'POST') {
+        return jsonResponse(await mockClient.tasks.updateTaskLabels(Number(labelBulkMatch[1]), body));
+      }
+      const labelsMatch = /^\/tasks\/(\d+)\/labels$/.exec(pathname);
+      if (labelsMatch?.[1] !== undefined) {
+        const taskId = Number(labelsMatch[1]);
+        if (method === 'PUT') return jsonResponse(await mockClient.tasks.addLabelToTask(taskId, body));
+        if (method === 'GET') return jsonResponse([]);
+      }
+      const labelDeleteMatch = /^\/tasks\/(\d+)\/labels\/(\d+)$/.exec(pathname);
+      if (labelDeleteMatch?.[1] !== undefined && method === 'DELETE') {
+        return jsonResponse(
+          await mockClient.tasks.removeLabelFromTask(Number(labelDeleteMatch[1]), Number(labelDeleteMatch[2])),
+        );
+      }
+      const assigneesMatch = /^\/tasks\/(\d+)\/assignees$/.exec(pathname);
+      if (assigneesMatch?.[1] !== undefined) {
+        const taskId = Number(assigneesMatch[1]);
+        if (method === 'PUT') return jsonResponse(await mockClient.tasks.assignUserToTask(taskId, body?.user_id));
+        if (method === 'GET') return jsonResponse([]);
+      }
+      const assigneeDeleteMatch = /^\/tasks\/(\d+)\/assignees\/(\d+)$/.exec(pathname);
+      if (assigneeDeleteMatch?.[1] !== undefined && method === 'DELETE') {
+        return jsonResponse(
+          await mockClient.tasks.removeUserFromTask(Number(assigneeDeleteMatch[1]), Number(assigneeDeleteMatch[2])),
         );
       }
 
@@ -580,14 +634,10 @@ describe('Tasks Tool', () => {
           project_id: 1,
         }),
       );
-      expect(mockClient.tasks.addLabelToTask).toHaveBeenCalledWith(1, {
-        task_id: 1,
-        label_id: 1,
-      });
-      expect(mockClient.tasks.addLabelToTask).toHaveBeenCalledWith(1, {
-        task_id: 1,
-        label_id: 2,
-      });
+      // create adds labels via the additive PUT /tasks/{id}/labels endpoint,
+      // body { label_id } (models.LabelTask) — no task_id in the body.
+      expect(mockClient.tasks.addLabelToTask).toHaveBeenCalledWith(1, { label_id: 1 });
+      expect(mockClient.tasks.addLabelToTask).toHaveBeenCalledWith(1, { label_id: 2 });
       expect(mockClient.tasks.assignUserToTask).toHaveBeenCalledWith(1, 1);
       expect(mockClient.tasks.assignUserToTask).toHaveBeenCalledWith(1, 2);
     });
@@ -607,14 +657,8 @@ describe('Tasks Tool', () => {
         }),
       ).rejects.toThrow('Labels were requested but not attached');
 
-      expect(mockClient.tasks.addLabelToTask).toHaveBeenCalledWith(1, {
-        task_id: 1,
-        label_id: 4,
-      });
-      expect(mockClient.tasks.addLabelToTask).toHaveBeenCalledWith(1, {
-        task_id: 1,
-        label_id: 3,
-      });
+      expect(mockClient.tasks.addLabelToTask).toHaveBeenCalledWith(1, { label_id: 4 });
+      expect(mockClient.tasks.addLabelToTask).toHaveBeenCalledWith(1, { label_id: 3 });
       expect(mockClient.tasks.deleteTask).toHaveBeenCalledWith(1);
     });
 
@@ -684,13 +728,18 @@ describe('Tasks Tool', () => {
       mockClient.tasks.addLabelToTask.mockRejectedValue(new Error('Label assignment failed'));
       mockClient.tasks.deleteTask.mockResolvedValue(undefined);
 
+      // The label add now flows through vikunjaRestRequest, so its failure is
+      // wrapped with the "Vikunja REST request failed (PUT /tasks/1/labels): "
+      // prefix before the rollback message is composed around it.
       await expect(
         callTool('create', {
           title: 'Test',
           projectId: 1,
           labels: [1, 2],
         }),
-      ).rejects.toThrow('Failed to complete task creation: Label assignment failed');
+      ).rejects.toThrow(
+        'Failed to complete task creation: Vikunja REST request failed (PUT /tasks/1/labels): Label assignment failed. Task was successfully rolled back.',
+      );
 
       expect(mockClient.tasks.deleteTask).toHaveBeenCalledWith(1);
     });
@@ -706,6 +755,9 @@ describe('Tasks Tool', () => {
       );
       mockClient.tasks.deleteTask.mockRejectedValue(new Error('Delete failed'));
 
+      // The assignee add now flows through vikunjaRestRequest, so its failure
+      // is wrapped with the "Vikunja REST request failed (PUT
+      // /tasks/1/assignees): " prefix; rollback delete fails on top of that.
       await expect(
         callTool('create', {
           title: 'Test',
@@ -713,7 +765,9 @@ describe('Tasks Tool', () => {
           labels: [1],
           assignees: [1, 2],
         }),
-      ).rejects.toThrow('Failed to complete task creation: Assignee assignment failed');
+      ).rejects.toThrow(
+        'Failed to complete task creation: Vikunja REST request failed (PUT /tasks/1/assignees): Assignee assignment failed. Task rollback also failed - manual cleanup may be required.',
+      );
 
       expect(mockClient.tasks.deleteTask).toHaveBeenCalledWith(1);
       expect(consoleErrorSpy).toHaveBeenCalledWith(
@@ -751,13 +805,17 @@ describe('Tasks Tool', () => {
       mockClient.tasks.addLabelToTask.mockRejectedValue('Label update failed');
       mockClient.tasks.deleteTask.mockResolvedValue(undefined);
 
+      // The non-Error rejection ('Label update failed') is stringified by
+      // vikunjaRestRequest and wrapped with the REST prefix before rollback.
       await expect(
         callTool('create', {
           title: 'Test',
           projectId: 1,
           labels: [1, 2],
         }),
-      ).rejects.toThrow('Failed to complete task creation: Label update failed');
+      ).rejects.toThrow(
+        'Failed to complete task creation: Vikunja REST request failed (PUT /tasks/1/labels): Label update failed. Task was successfully rolled back.',
+      );
 
       expect(mockClient.tasks.deleteTask).toHaveBeenCalledWith(1);
     });
@@ -1197,12 +1255,15 @@ describe('Tasks Tool', () => {
       // Mock removeUserFromTask to fail
       mockClient.tasks.removeUserFromTask.mockRejectedValue(new Error('Failed to remove user'));
 
+      // The assignee removal now flows through vikunjaRestRequest (DELETE
+      // /tasks/1/assignees/1); its failure is wrapped as an MCPError and
+      // propagated as-is by updateTask.
       await expect(
         callTool('update', {
           id: 1,
           assignees: [2], // Remove user 1, keep user 2
         }),
-      ).rejects.toThrow('Failed to update task: Failed to remove user');
+      ).rejects.toThrow('Vikunja REST request failed (DELETE /tasks/1/assignees/1): Failed to remove user');
 
       expect(mockClient.tasks.removeUserFromTask).toHaveBeenCalledWith(1, 1);
     });
@@ -1394,7 +1455,11 @@ describe('Tasks Tool', () => {
     it('should assign users to a task', async () => {
       const updatedTask = { ...mockTask, assignees: [mockUser] };
 
-      mockClient.tasks.getTask.mockResolvedValue(updatedTask);
+      // The assign flow refreshes/verifies via GET /tasks/1 (direct REST);
+      // return the task there. PUT /tasks/1/assignees just needs to be OK.
+      fetchMock.mockImplementation(async (_url: string, init?: { method?: string }) =>
+        (init?.method ?? 'GET') === 'GET' ? restOk(updatedTask) : restOk({}),
+      );
 
       const result = await callTool('assign', {
         id: 1,
@@ -1446,7 +1511,9 @@ describe('Tasks Tool', () => {
         assignees: [mockUser, { ...mockUser, id: 2, username: 'user2' }],
       };
 
-      mockClient.tasks.getTask.mockResolvedValue(taskWithMultipleAssignees);
+      fetchMock.mockImplementation(async (_url: string, init?: { method?: string }) =>
+        (init?.method ?? 'GET') === 'GET' ? restOk(taskWithMultipleAssignees) : restOk({}),
+      );
 
       const result = await callTool('assign', {
         id: 1,
@@ -1503,7 +1570,11 @@ describe('Tasks Tool', () => {
     it('should unassign users from a task', async () => {
       const updatedTask = { ...mockTask, assignees: [] };
 
-      mockClient.tasks.getTask.mockResolvedValue(updatedTask);
+      // The unassign flow refreshes via GET /tasks/1 (direct REST) after the
+      // DELETE calls; return the task there.
+      fetchMock.mockImplementation(async (_url: string, init?: { method?: string }) =>
+        (init?.method ?? 'GET') === 'GET' ? restOk(updatedTask) : restOk({}),
+      );
 
       const result = await callTool('unassign', {
         id: 1,
@@ -1525,14 +1596,20 @@ describe('Tasks Tool', () => {
     it('should unassign multiple users from a task', async () => {
       const updatedTask = { ...mockTask, assignees: [] };
 
-      mockClient.tasks.getTask.mockResolvedValue(updatedTask);
+      fetchMock.mockImplementation(async (_url: string, init?: { method?: string }) =>
+        (init?.method ?? 'GET') === 'GET' ? restOk(updatedTask) : restOk({}),
+      );
 
       const result = await callTool('unassign', {
         id: 1,
         assignees: [1, 2, 3],
       });
 
-      expect(fetchMock).toHaveBeenCalledTimes(3);
+      // Three DELETE calls (one per user) plus the single refresh GET /tasks/1.
+      const deleteCalls = fetchMock.mock.calls.filter(
+        ([, init]) => (init as { method?: string } | undefined)?.method === 'DELETE',
+      );
+      expect(deleteCalls).toHaveLength(3);
       expect(fetchMock).toHaveBeenCalledWith(
         'https://api.vikunja.test/api/v1/tasks/1/assignees/1',
         expect.objectContaining({ method: 'DELETE' }),
@@ -1898,10 +1975,10 @@ describe('Tasks Tool', () => {
     });
 
     it('should handle client initialization errors', async () => {
-      (getClientFromContext as jest.Mock).mockImplementation(() => {
-        throw new Error('Failed to initialize client');
-      });
-      (getClientFromContext as jest.Mock).mockRejectedValue(new Error('Failed to initialize client'));
+      // The tool's session guard is getAuthManagerFromContext() now (the old
+      // getClientFromContext is gone from the handler path), so a session
+      // failure surfaces through it.
+      (getAuthManagerFromContext as jest.Mock).mockRejectedValue(new Error('Failed to initialize client'));
 
       await expect(callTool('list')).rejects.toThrow('Failed to initialize client');
     });
@@ -3007,11 +3084,9 @@ describe('Tasks Tool', () => {
 
   describe('main handler error handling', () => {
     it('should handle non-Error exceptions in main handler', async () => {
-      // Mock getClientFromContext to throw a non-Error directly
-      (getClientFromContext as jest.Mock).mockImplementation(() => {
-        throw 'String error from client initialization';
-      });
-      (getClientFromContext as jest.Mock).mockRejectedValue('String error from client initialization');
+      // The session guard (getAuthManagerFromContext) rejecting with a non-Error
+      // value exercises the handler's String(error) fallback branch.
+      (getAuthManagerFromContext as jest.Mock).mockRejectedValue('String error from client initialization');
 
       await expect(callTool('list')).rejects.toThrow(
         'Task operation error: String error from client initialization',

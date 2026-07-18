@@ -1,6 +1,6 @@
 /**
  * Helpers to extract a usable detail (HTTP status + body) from errors thrown
- * by node-vikunja / fetch wrappers, so the wrapper can propagate the real
+ * by legacy client / fetch wrappers, so the wrapper can propagate the real
  * cause to the MCP client instead of replacing it with a generic message.
  *
  * Targets the same error shape that `isAuthenticationError` probes in

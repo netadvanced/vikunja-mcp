@@ -8,7 +8,7 @@
  * between projects, so long-lived references should use the returned
  * task's numeric `id` instead of re-resolving by index later.
  *
- * node-vikunja does not expose this endpoint, so this calls the Vikunja
+ * legacy client does not expose this endpoint, so this calls the Vikunja
  * REST API directly via the shared `vikunja-rest` helper.
  */
 

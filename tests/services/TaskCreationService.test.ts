@@ -1,33 +1,41 @@
 import { TaskCreationService } from '../../src/services/TaskCreationService';
 import { MCPError, ErrorCode } from '../../src/types';
-import type { TypedVikunjaClient } from '../../src/types/node-vikunja-extended';
 import type { ImportedTask } from '../../src/parsers/InputParserFactory';
-import type { Task, Label, User } from 'node-vikunja';
+import type { components } from '../../src/types/generated/vikunja-openapi';
 import { isAuthenticationError } from '../../src/utils/auth-error-handler';
 import { AuthManager } from '../../src/auth/AuthManager';
-import { getAuthManagerFromContext } from '../../src/client';
 import { circuitBreakerRegistry } from '../../src/utils/retry';
 
 // Mock dependencies
 jest.mock('../../src/utils/logger');
 jest.mock('../../src/utils/auth-error-handler');
-// setTaskLabels (src/utils/label-bulk.ts, migrated off node-vikunja) calls
-// the direct-REST helper for POST /tasks/{id}/labels/bulk rather than
-// mockClient.tasks.updateTaskLabels — it needs a resolved AuthManager
-// session from this module.
-jest.mock('../../src/client', () => ({
-  getAuthManagerFromContext: jest.fn(),
-}));
 
 // Import mocked logger for assertions
 import { logger } from '../../src/utils/logger';
 
-// `createBaseTask` is migrated off node-vikunja onto the direct-REST helper
-// (`PUT /projects/{id}/tasks`); label/assignee/reminder handling stays on
-// the node-vikunja client (`mockClient`) — those domains' node-vikunja
-// retirement is a separate item's scope.
+// Spec-sourced entity shapes (docs/vikunja-openapi.json).
+type Task = components['schemas']['models.Task'];
+type Label = components['schemas']['models.Label'];
+type User = components['schemas']['user.User'];
+
+// TaskCreationService is fully migrated off node-vikunja onto direct-REST
+// (all via the passed AuthManager, so every call hits the module-level
+// `global.fetch`):
+//   - createBaseTask       -> PUT  /projects/{id}/tasks
+//   - setTaskLabels        -> POST /tasks/{id}/labels/bulk
+//   - verifyLabelAssignment-> GET  /tasks/{id}
+//   - handleUserAssignment -> PUT  /tasks/{id}/assignees (one per user)
+// The create response is queued per test via `fetchOkOnce`; the other three
+// endpoints are routed (below) to controllable jest.fns so existing
+// argument/return/rejection set-ups keep working:
+//   - label-bulk POST  -> `labelWrite(taskId, body)`
+//   - verify GET        -> `mockClient.tasks.getTask(id)`
+//   - assignee PUT      -> `mockClient.tasks.assignUserToTask(id, userId)`
 const mockFetch = jest.fn();
 global.fetch = mockFetch as unknown as typeof fetch;
+
+/** Label-bulk POST delegate — tests fail it via `labelWrite.mockRejectedValue`. */
+const labelWrite = jest.fn();
 
 /** Minimal Response-like object for the REST helper. */
 function mockResponse(opts: {
@@ -45,7 +53,7 @@ function mockResponse(opts: {
   } as unknown as Response;
 }
 
-/** Queues one successful JSON response for the next `fetch` call. */
+/** Queues one successful JSON response for the next `fetch` call (the create). */
 function fetchOkOnce(body: unknown): void {
   mockFetch.mockResolvedValueOnce(mockResponse({ text: JSON.stringify(body) }));
 }
@@ -64,7 +72,7 @@ function fetchBody(callIndex: number): any {
 
 describe('TaskCreationService', () => {
   let taskCreationService: TaskCreationService;
-  let mockClient: jest.Mocked<TypedVikunjaClient>;
+  let mockClient: any;
   let authManager: AuthManager;
   let mockEntityMaps: any;
   let mockTask: ImportedTask;
@@ -72,6 +80,8 @@ describe('TaskCreationService', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockFetch.mockReset();
+    labelWrite.mockReset();
+    labelWrite.mockResolvedValue(undefined);
     // vikunjaRestRequest protects every call with a process-wide named
     // circuit breaker; clear accumulated stats so one test's deliberately
     // failing scenario doesn't trip the breaker for a later test.
@@ -79,7 +89,11 @@ describe('TaskCreationService', () => {
 
     taskCreationService = new TaskCreationService();
 
-    // Setup mock client
+    // Controllable delegates for the routed sub-resource endpoints. Kept as a
+    // `mockClient.tasks.*` shape so this file's existing arrange/assert lines
+    // (`getTask.mockResolvedValue`, `assignUserToTask).toHaveBeenCalledWith`,
+    // `updateTaskLabels/bulkAssignUsersToTask).not.toHaveBeenCalled`) read
+    // unchanged.
     mockClient = {
       tasks: {
         getTask: jest.fn(),
@@ -87,21 +101,38 @@ describe('TaskCreationService', () => {
         bulkAssignUsersToTask: jest.fn(),
         assignUserToTask: jest.fn(),
       },
-    } as jest.Mocked<TypedVikunjaClient>;
+    };
 
     authManager = new AuthManager();
     authManager.connect('https://vikunja.test', 'tk_test-token');
-    // createBaseTask (PUT /projects/{id}/tasks) uses the real authManager
-    // above; setTaskLabels (POST /tasks/{id}/labels/bulk, migrated by #71)
-    // instead recovers its session via getAuthManagerFromContext.
-    (getAuthManagerFromContext as jest.Mock).mockResolvedValue({
-      getSession: () => ({ apiUrl: 'https://mock.vikunja.test', apiToken: 'mock-token' }),
+
+    // The create PUT is queued per test via fetchOkOnce (a once-value, which
+    // takes priority over this implementation for the first call). Every
+    // later call is routed here to the matching delegate.
+    mockFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      const method = (init?.method ?? 'GET') as string;
+      const body = init?.body ? JSON.parse(init.body as string) : undefined;
+
+      const labelBulkMatch = /\/tasks\/(\d+)\/labels\/bulk$/.exec(url);
+      if (method === 'POST' && labelBulkMatch) {
+        await labelWrite(Number(labelBulkMatch[1]), body);
+        return mockResponse({ text: JSON.stringify({ labels: [] }) });
+      }
+
+      const assigneeMatch = /\/tasks\/(\d+)\/assignees$/.exec(url);
+      if (method === 'PUT' && assigneeMatch) {
+        await mockClient.tasks.assignUserToTask(Number(assigneeMatch[1]), body?.user_id);
+        return mockResponse({ text: JSON.stringify({}) });
+      }
+
+      const getTaskMatch = /\/tasks\/(\d+)$/.exec(url);
+      if (method === 'GET' && getTaskMatch) {
+        const task = await mockClient.tasks.getTask(Number(getTaskMatch[1]));
+        return mockResponse({ text: JSON.stringify(task) });
+      }
+
+      throw new Error(`Unexpected fetch ${method} ${url}`);
     });
-    // Both createBaseTask and setTaskLabels go through the module-level
-    // mockFetch. Default every fetch to success so the label-bulk POST
-    // resolves; fetchOkOnce queues the createBaseTask PUT response per test,
-    // and label-failure tests override with mockFetch.mockRejectedValue.
-    mockFetch.mockResolvedValue(mockResponse({ text: JSON.stringify({ labels: [] }) }));
 
     // Setup mock entity maps
     mockEntityMaps = {
@@ -165,7 +196,6 @@ describe('TaskCreationService', () => {
       const result = await taskCreationService.createTask(
         mockTask,
         456,
-        mockClient,
         authManager,
         mockEntityMaps
       );
@@ -215,7 +245,6 @@ describe('TaskCreationService', () => {
       const result = await taskCreationService.createTask(
         minimalTask,
         456,
-        mockClient,
         authManager,
         mockEntityMaps
       );
@@ -241,7 +270,7 @@ describe('TaskCreationService', () => {
 
       // Act & Assert
       await expect(
-        taskCreationService.createTask(mockTask, 456, mockClient, authManager, mockEntityMaps)
+        taskCreationService.createTask(mockTask, 456, authManager, mockEntityMaps)
       ).rejects.toThrow(MCPError);
 
       // isAuthenticationError is called with the original network-level
@@ -261,12 +290,12 @@ describe('TaskCreationService', () => {
 
       // Act & Assert - Should bubble up even with catchErrors=true
       await expect(
-        taskCreationService.createTask(mockTask, 456, mockClient, authManager, mockEntityMaps, true)
+        taskCreationService.createTask(mockTask, 456, authManager, mockEntityMaps, true)
       ).rejects.toThrow(MCPError);
 
       // Act & Assert - Should also bubble up with catchErrors=false
       await expect(
-        taskCreationService.createTask(mockTask, 456, mockClient, authManager, mockEntityMaps, false)
+        taskCreationService.createTask(mockTask, 456, authManager, mockEntityMaps, false)
       ).rejects.toThrow(MCPError);
     });
 
@@ -279,7 +308,7 @@ describe('TaskCreationService', () => {
 
       // Act & Assert
       await expect(
-        taskCreationService.createTask(mockTask, 456, mockClient, authManager, mockEntityMaps, false)
+        taskCreationService.createTask(mockTask, 456, authManager, mockEntityMaps, false)
       ).rejects.toThrow('API rate limit exceeded');
     });
 
@@ -294,7 +323,6 @@ describe('TaskCreationService', () => {
       const result = await taskCreationService.createTask(
         mockTask,
         456,
-        mockClient,
         authManager,
         mockEntityMaps
       );
@@ -333,7 +361,6 @@ describe('TaskCreationService', () => {
       const result = await taskCreationService.createTask(
         mockTask,
         456,
-        mockClient,
         authManager,
         mockEntityMaps
       );
@@ -342,7 +369,7 @@ describe('TaskCreationService', () => {
       expect(result.success).toBe(true);
       expect(result.warnings).toBeUndefined();
       expect(mockFetch).toHaveBeenCalledWith(
-        'https://mock.vikunja.test/api/v1/tasks/123/labels/bulk',
+        'https://vikunja.test/api/v1/tasks/123/labels/bulk',
         expect.objectContaining({
           method: 'POST',
           body: JSON.stringify({ labels: [{ id: 1 }, { id: 2 }] }),
@@ -372,7 +399,6 @@ describe('TaskCreationService', () => {
       const result = await taskCreationService.createTask(
         mockTask,
         456,
-        mockClient,
         authManager,
         mockEntityMaps
       );
@@ -393,17 +419,16 @@ describe('TaskCreationService', () => {
       } as Task;
       (isAuthenticationError as jest.Mock).mockReturnValue(true);
 
-      // createBaseTask PUT succeeds; the label-bulk POST fails. Persistent
-      // rejection: the REST helper retries transient network failures, so
-      // every fetch attempt must reject the same way.
+      // createBaseTask PUT succeeds; the label-bulk POST fails. Failing only
+      // the label-bulk delegate (not every fetch) keeps the assignee PUTs
+      // succeeding, so the sole warning is the label one.
       fetchOkOnce(createdTask);
-      mockFetch.mockRejectedValue(new Error('Insufficient permissions'));
+      labelWrite.mockRejectedValue(new Error('Insufficient permissions'));
 
       // Act
       const result = await taskCreationService.createTask(
         mockTask,
         456,
-        mockClient,
         authManager,
         mockEntityMaps
       );
@@ -424,17 +449,16 @@ describe('TaskCreationService', () => {
       } as Task;
       (isAuthenticationError as jest.Mock).mockReturnValue(false);
 
-      // createBaseTask PUT succeeds; the label-bulk POST fails. Persistent
-      // rejection: the REST helper retries transient network failures, so
-      // every fetch attempt must reject the same way.
+      // createBaseTask PUT succeeds; the label-bulk POST fails. Failing only
+      // the label-bulk delegate (not every fetch) keeps the assignee PUTs
+      // succeeding, so the sole warning is the label one.
       fetchOkOnce(createdTask);
-      mockFetch.mockRejectedValue(new Error('Network error'));
+      labelWrite.mockRejectedValue(new Error('Network error'));
 
       // Act
       const result = await taskCreationService.createTask(
         mockTask,
         456,
-        mockClient,
         authManager,
         mockEntityMaps
       );
@@ -478,7 +502,6 @@ describe('TaskCreationService', () => {
       const result = await taskCreationService.createTask(
         taskWithUnknownLabels,
         456,
-        mockClient,
         authManager,
         mockEntityMaps
       );
@@ -507,7 +530,6 @@ describe('TaskCreationService', () => {
       const result = await taskCreationService.createTask(
         mockTask,
         456,
-        mockClient,
         authManager,
         mockEntityMaps
       );
@@ -539,7 +561,6 @@ describe('TaskCreationService', () => {
       const result = await taskCreationService.createTask(
         taskWithoutLabels,
         456,
-        mockClient,
         authManager,
         mockEntityMaps
       );
@@ -575,7 +596,6 @@ describe('TaskCreationService', () => {
       const result = await taskCreationService.createTask(
         taskWithoutLabels,
         456,
-        mockClient,
         authManager,
         entityMapsWithNoUsers
       );
@@ -608,7 +628,6 @@ describe('TaskCreationService', () => {
       const result = await taskCreationService.createTask(
         taskWithoutLabels,
         456,
-        mockClient,
         authManager,
         mockEntityMaps
       );
@@ -616,7 +635,11 @@ describe('TaskCreationService', () => {
       // Assert
       expect(result.success).toBe(true);
       expect(result.warnings).toHaveLength(1);
-      expect(result.warnings![0]).toContain('Failed to assign users: User assignment failed');
+      // The assignee PUT now flows through vikunjaRestRequest, which prefixes
+      // the original message with its own context — so the raw text is nested
+      // rather than immediately following the "Failed to assign users:" label.
+      expect(result.warnings![0]).toContain('Failed to assign users:');
+      expect(result.warnings![0]).toContain('User assignment failed');
     });
 
     it('should handle users that are not found', async () => {
@@ -640,7 +663,6 @@ describe('TaskCreationService', () => {
       const result = await taskCreationService.createTask(
         taskWithUnknownUsers,
         456,
-        mockClient,
         authManager,
         mockEntityMaps
       );
@@ -681,7 +703,6 @@ describe('TaskCreationService', () => {
       const result = await taskCreationService.createTask(
         taskWithReminders,
         456,
-        mockClient,
         authManager,
         mockEntityMaps
       );
@@ -722,7 +743,6 @@ describe('TaskCreationService', () => {
       const result = await taskCreationService.createTask(
         taskWithEmptyArrays,
         456,
-        mockClient,
         authManager,
         mockEntityMaps
       );
@@ -757,7 +777,6 @@ describe('TaskCreationService', () => {
       const result = await taskCreationService.createTask(
         taskWithUndefined,
         456,
-        mockClient,
         authManager,
         mockEntityMaps
       );
@@ -793,7 +812,6 @@ describe('TaskCreationService', () => {
       const result = await taskCreationService.createTask(
         taskWithInvalidRepeatMode,
         456,
-        mockClient,
         authManager,
         mockEntityMaps
       );
@@ -831,7 +849,6 @@ describe('TaskCreationService', () => {
       const result = await taskCreationService.createTask(
         taskWithMultipleIssues,
         456,
-        mockClient,
         authManager,
         mockEntityMaps
       );

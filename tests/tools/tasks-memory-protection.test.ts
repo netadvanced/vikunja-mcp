@@ -3,10 +3,12 @@
  * Verifies DoS protection and task count limits
  */
 
-import type { Task } from 'node-vikunja';
+import type { components } from '../../src/types/generated/vikunja-openapi';
 import { MCPError, ErrorCode } from '../../src/types';
 import { registerTasksTool } from '../../src/tools/tasks';
-import { getClientFromContext } from '../../src/client';
+import { getAuthManagerFromContext } from '../../src/client';
+
+type Task = components['schemas']['models.Task'];
 import { createMockTestableAuthManager } from '../utils/test-utils';
 import type { MockVikunjaClient, MockAuthManager, MockServer } from '../types/mocks';
 import { circuitBreakerRegistry } from '../../src/utils/retry';
@@ -23,7 +25,9 @@ jest.mock('../../src/utils/logger', () => ({
   }
 }));
 
-const mockGetClientFromContext = getClientFromContext as jest.MockedFunction<typeof getClientFromContext>;
+const mockGetAuthManagerFromContext = getAuthManagerFromContext as jest.MockedFunction<
+  typeof getAuthManagerFromContext
+>;
 
 // Cross-project listing (no projectId / allProjects) now attempts the
 // direct-REST GET /tasks endpoint first (RestCrossProjectFilteringStrategy)
@@ -175,7 +179,7 @@ describe('Tasks Memory Protection', () => {
       tool: jest.fn() as jest.MockedFunction<(name: string, description: string, schema: any, handler: any) => void>,
     } as MockServer;
 
-    mockGetClientFromContext.mockResolvedValue(mockClient);
+    mockGetAuthManagerFromContext.mockResolvedValue(mockAuthManager as any);
 
     // Register the tool
     registerTasksTool(mockServer as any, mockAuthManager as any);

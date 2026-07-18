@@ -4,8 +4,6 @@
  */
 
 import { MCPError, ErrorCode } from '../../../types';
-import { getClientFromContext } from '../../../client';
-import type { VikunjaClient } from 'node-vikunja';
 import type { AuthManager } from '../../../auth/AuthManager';
 import { vikunjaRestRequest } from '../../../utils/vikunja-rest';
 import { logger } from '../../../utils/logger';
@@ -105,7 +103,7 @@ export async function createTask(
     if (args.priority !== undefined) newTask.priority = args.priority;
 
     // Handle repeat configuration. The generated `models.Task.repeat_mode`
-    // type (0 | 1 | 2) matches the real API, unlike node-vikunja's
+    // type (0 | 1 | 2) matches the real API, unlike the legacy client's
     // (incorrect) 'day' | 'week' | 'month' | 'year' typing — no bypass cast
     // needed now that this goes through the generated type.
     if (args.repeatAfter !== undefined || args.repeatMode !== undefined) {
@@ -144,21 +142,16 @@ export async function createTask(
     };
 
     if (needsPostCreate) {
-      // Labels/assignees are a task sub-resource migrated by a sibling item
-      // (M-B) — still applied via the node-vikunja client here, fetched
-      // lazily and only when actually needed.
-      const client = await getClientFromContext();
-
       try {
         // Add labels if provided
         if (args.labels && args.labels.length > 0 && createdTask.id) {
-          await addLabelsToTask(client, createdTask.id, args.labels);
+          await addLabelsToTask(authManager, createdTask.id, args.labels);
           creationState.labelsAdded = true;
         }
 
         // Add assignees if provided
         if (args.assignees && args.assignees.length > 0 && createdTask.id) {
-          await addAssigneesToTask(client, createdTask.id, args.assignees);
+          await addAssigneesToTask(authManager, createdTask.id, args.assignees);
           creationState.assigneesAdded = true;
         }
 
@@ -265,22 +258,19 @@ export async function createTask(
 }
 
 /**
- * Adds labels to a task.
- * Uses addLabelToTask (same as apply-label) — updateTaskLabels can silently
- * no-op on some Vikunja versions (GitHub #37).
- *
- * Labels are a task sub-resource (sibling item M-B); this still goes through
- * the node-vikunja client rather than the direct-REST helper.
+ * Adds labels to a task via the additive per-label endpoint (PUT
+ * /tasks/{taskID}/labels, body { label_id }, models.LabelTask) — same as
+ * apply-label. The bulk endpoint can silently no-op on some Vikunja versions
+ * (GitHub #37).
  *
  * Intentionally does not use withRetry: that helper shares an "anonymous"
  * circuit breaker across calls, so a later create would re-fire the first
  * call's label set against the wrong task.
  */
-async function addLabelsToTask(client: VikunjaClient, taskId: number, labelIds: number[]): Promise<void> {
+async function addLabelsToTask(authManager: AuthManager, taskId: number, labelIds: number[]): Promise<void> {
   try {
     for (const labelId of labelIds) {
-      await client.tasks.addLabelToTask(taskId, {
-        task_id: taskId,
+      await vikunjaRestRequest(authManager, 'PUT', `/tasks/${taskId}/labels`, {
         label_id: labelId,
       });
     }
@@ -297,22 +287,20 @@ async function addLabelsToTask(client: VikunjaClient, taskId: number, labelIds: 
 }
 
 /**
- * Adds assignees to a task with retry logic for authentication errors.
- * Assignees are a task sub-resource (sibling item M-B); this still goes
- * through the node-vikunja client rather than the direct-REST helper.
+ * Adds assignees to a task with retry logic for authentication errors, via the
+ * direct-REST additive single-assign endpoint.
  */
-async function addAssigneesToTask(client: VikunjaClient, taskId: number, assigneeIds: number[]): Promise<void> {
+async function addAssigneesToTask(authManager: AuthManager, taskId: number, assigneeIds: number[]): Promise<void> {
   try {
-    // Assign each user via the ADDITIVE single-assign endpoint rather than the
-    // bulk endpoint. node-vikunja's bulkAssignUsersToTask posts `{ user_ids }`
-    // to Vikunja's bulk endpoint, which expects `{ assignees }` and REPLACES
-    // the entire assignee list — the mismatched field is parsed as "assign
-    // nobody", silently unassigning everyone (upstream issue #15). Per-user
-    // calls run concurrently via Promise.all.
+    // Assign each user via the ADDITIVE single-assign endpoint (PUT
+    // /tasks/{taskID}/assignees, body { user_id }, models.TaskAssginee) rather
+    // than the bulk endpoint (POST .../assignees/bulk), which REPLACES the
+    // entire assignee list — a bulk call would silently unassign everyone
+    // (upstream issue #15). Per-user calls run concurrently via Promise.all.
     await Promise.all(
       assigneeIds.map((userId) =>
         withRetry(
-          () => client.tasks.assignUserToTask(taskId, userId),
+          () => vikunjaRestRequest(authManager, 'PUT', `/tasks/${taskId}/assignees`, { user_id: userId }),
           {
             ...RETRY_CONFIG.AUTH_ERRORS,
             shouldRetry: (error) => isAuthenticationError(error)

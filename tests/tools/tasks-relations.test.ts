@@ -26,13 +26,6 @@ const RelationKind = {
   COPIEDTO: 'copiedto',
 };
 
-// Mock the entire module
-jest.mock('../../src/client', () => ({
-  getClientFromContext: jest.fn(),
-  setGlobalClientFactory: jest.fn(),
-  clearGlobalClientFactory: jest.fn(),
-}));
-
 // Mock logger to reduce test noise
 jest.mock('../../src/utils/logger', () => ({
   logger: {
@@ -56,10 +49,6 @@ jest.mock('../../src/storage/SimpleFilterStorage', () => ({
   },
 }));
 
-// Import the mocked function
-import { getClientFromContext } from '../../src/client';
-const mockedGetClientFromContext = jest.mocked(getClientFromContext);
-
 // Mock data
 const mockTask = {
   id: 1,
@@ -71,21 +60,11 @@ const mockTask = {
   ],
 };
 
-const mockRelatedTask = {
-  id: 2,
-  title: 'Related Task',
-  project_id: 1,
-};
-
-// relate/unrelate now call the direct-REST helper (vikunjaRestRequest) for
-// PUT/DELETE /tasks/{taskID}/relations..., so only getTask (a deliberate
-// node-vikunja leftover used to refresh the response) stays on the mock
-// client — REST calls are driven through a mocked global fetch instead.
-const mockClient = {
-  tasks: {
-    getTask: jest.fn(),
-  },
-};
+// relate/unrelate/relations drive every Vikunja call through the direct-REST
+// helper (vikunjaRestRequest) now: PUT/DELETE /tasks/{taskID}/relations... for
+// the writes, and GET /tasks/{id} (via getTaskViaRest) to refresh the response
+// task. There is no node-vikunja client involved any more, so the tests route
+// a single mocked global fetch for all of it.
 
 // Helper to create a mock server
 function createMockServer(): McpServer & { executeTool: (name: string, args: unknown) => Promise<unknown> } {
@@ -130,9 +109,6 @@ describe('Task Relations Tool', () => {
     // Set up authenticated state
     authManager.connect('https://vikunja.test', 'test-token');
 
-    // Setup default mock implementation
-    mockedGetClientFromContext.mockResolvedValue(mockClient as any);
-
     // relate/unrelate go through vikunjaRestRequest now, so mock global
     // fetch and clear the process-wide circuit breaker registry so one
     // test's failure doesn't count against another's.
@@ -151,14 +127,6 @@ describe('Task Relations Tool', () => {
 
   describe('relate subcommand', () => {
     it('should create a task relation successfully', async () => {
-      mockClient.tasks.getTask.mockResolvedValue({
-        ...mockTask,
-        related_tasks: [
-          ...mockTask.related_tasks!,
-          { task_id: 4, relation_kind: RelationKind.RELATED },
-        ],
-      });
-
       const result = await server.executeTool('vikunja_tasks', {
         subcommand: 'relate',
         id: 1,
@@ -177,7 +145,11 @@ describe('Task Relations Tool', () => {
           }),
         }),
       );
-      expect(mockClient.tasks.getTask).toHaveBeenCalledWith(1);
+      // The task is refreshed afterwards via GET /tasks/{id} (direct-REST).
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://vikunja.test/api/v1/tasks/1',
+        expect.objectContaining({ method: 'GET' }),
+      );
 
       const markdown = (result as any).content[0].text;
       const parsed = parseMarkdown(markdown);
@@ -247,7 +219,6 @@ describe('Task Relations Tool', () => {
 
       for (const kind of relationKinds) {
         fetchMock.mockResolvedValue(restOk({}));
-        mockClient.tasks.getTask.mockResolvedValue(mockTask);
 
         const result = await server.executeTool('vikunja_tasks', {
           subcommand: 'relate',
@@ -298,11 +269,6 @@ describe('Task Relations Tool', () => {
 
   describe('unrelate subcommand', () => {
     it('should remove a task relation successfully', async () => {
-      mockClient.tasks.getTask.mockResolvedValue({
-        ...mockTask,
-        related_tasks: [{ task_id: 3, relation_kind: RelationKind.BLOCKING }],
-      });
-
       const result = await server.executeTool('vikunja_tasks', {
         subcommand: 'unrelate',
         id: 1,
@@ -321,7 +287,11 @@ describe('Task Relations Tool', () => {
           }),
         }),
       );
-      expect(mockClient.tasks.getTask).toHaveBeenCalledWith(1);
+      // The task is refreshed afterwards via GET /tasks/{id} (direct-REST).
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://vikunja.test/api/v1/tasks/1',
+        expect.objectContaining({ method: 'GET' }),
+      );
 
       const markdown = (result as any).content[0].text;
       const parsed = parseMarkdown(markdown);
@@ -395,21 +365,27 @@ describe('Task Relations Tool', () => {
   describe('relations subcommand', () => {
     it('should list task relations successfully', async () => {
       // Vikunja's real API shape: related_tasks is a map of relation kind ->
-      // Task[] (models.RelatedTaskMap), not a flat array.
-      mockClient.tasks.getTask.mockResolvedValue({
-        ...mockTask,
-        related_tasks: {
-          subtask: [{ id: 2, title: 'Related Task' }],
-          blocking: [{ id: 3, title: 'Blocking Task' }],
-        },
-      });
+      // Task[] (models.RelatedTaskMap), not a flat array. The 'relations'
+      // subcommand's only network call is GET /tasks/{id} (direct-REST).
+      fetchMock.mockResolvedValue(
+        restOk({
+          ...mockTask,
+          related_tasks: {
+            subtask: [{ id: 2, title: 'Related Task' }],
+            blocking: [{ id: 3, title: 'Blocking Task' }],
+          },
+        }),
+      );
 
       const result = await server.executeTool('vikunja_tasks', {
         subcommand: 'relations',
         id: 1,
       });
 
-      expect(mockClient.tasks.getTask).toHaveBeenCalledWith(1);
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://vikunja.test/api/v1/tasks/1',
+        expect.objectContaining({ method: 'GET' }),
+      );
 
       const markdown = (result as any).content[0].text;
       const parsed = parseMarkdown(markdown);
@@ -420,10 +396,12 @@ describe('Task Relations Tool', () => {
     });
 
     it('should handle tasks with no relations', async () => {
-      mockClient.tasks.getTask.mockResolvedValue({
-        ...mockTask,
-        related_tasks: {},
-      });
+      fetchMock.mockResolvedValue(
+        restOk({
+          ...mockTask,
+          related_tasks: {},
+        }),
+      );
 
       const result = await server.executeTool('vikunja_tasks', {
         subcommand: 'relations',
@@ -438,10 +416,14 @@ describe('Task Relations Tool', () => {
     });
 
     it('should handle tasks with undefined relations', async () => {
-      mockClient.tasks.getTask.mockResolvedValue({
-        ...mockTask,
-        related_tasks: undefined,
-      });
+      // JSON.stringify drops the undefined key, so GET /tasks/{id} returns a
+      // task with no related_tasks field at all — the source coerces that to {}.
+      fetchMock.mockResolvedValue(
+        restOk({
+          ...mockTask,
+          related_tasks: undefined,
+        }),
+      );
 
       const result = await server.executeTool('vikunja_tasks', {
         subcommand: 'relations',
@@ -464,25 +446,37 @@ describe('Task Relations Tool', () => {
     });
 
     it('should handle API errors', async () => {
-      mockClient.tasks.getTask.mockRejectedValue(new Error('Task not found'));
+      // The 'relations' refresh is GET /tasks/{id} (direct-REST); a non-OK
+      // response surfaces as an MCPError carrying the HTTP status and body. A
+      // 404 is not retried, so this resolves without any backoff delay.
+      fetchMock.mockResolvedValue({
+        ok: false,
+        status: 404,
+        statusText: 'Not Found',
+        text: jest.fn(async () => 'Task not found'),
+      } as unknown as Response);
 
       await expect(
         server.executeTool('vikunja_tasks', {
           subcommand: 'relations',
           id: 1,
         }),
-      ).rejects.toThrow('Failed to get task relations');
+      ).rejects.toThrow(
+        'Vikunja REST request failed (GET /tasks/1): HTTP 404 Not Found — Task not found',
+      );
     });
 
     it('should handle non-Error thrown values', async () => {
-      mockClient.tasks.getTask.mockRejectedValue(12345);
+      // A non-Error rejection from fetch is stringified by the REST helper into
+      // the wrapped MCPError message rather than leaking through raw.
+      fetchMock.mockRejectedValue(12345);
 
       await expect(
         server.executeTool('vikunja_tasks', {
           subcommand: 'relations',
           id: 1,
         }),
-      ).rejects.toThrow('Failed to get task relations: Unknown error');
+      ).rejects.toThrow('Vikunja REST request failed (GET /tasks/1): 12345');
     });
   });
 
@@ -539,9 +533,8 @@ describe('Task Relations Tool', () => {
 
   describe('edge cases', () => {
     it('should validate relation kind with invalid map entry in unrelate', async () => {
-      // This covers the uncovered branch where relationKind is not found
-      mockClient.tasks.getTask.mockResolvedValue(mockTask);
-
+      // This covers the uncovered branch where relationKind is not found;
+      // validation rejects before any network call is made.
       await expect(
         server.executeTool('vikunja_tasks', {
           subcommand: 'unrelate',

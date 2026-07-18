@@ -41,7 +41,7 @@ const mockCreateSecureLogConfig = jest.fn().mockReturnValue({ config: 'test' });
 const mockCreateVikunjaClientFactory = jest.fn();
 const mockSetGlobalClientFactory = jest.fn();
 const mockClearGlobalClientFactory = jest.fn();
-const mockGetClientFromContext = jest.fn();
+const mockGetAuthManagerFromContext = jest.fn();
 
 // Set up all mocks before imports
 jest.mock('@modelcontextprotocol/sdk/server/mcp.js', () => ({
@@ -79,7 +79,7 @@ jest.mock('../src/utils/security', () => ({
 jest.mock('../src/client', () => ({
   createVikunjaClientFactory: mockCreateVikunjaClientFactory,
   setGlobalClientFactory: mockSetGlobalClientFactory,
-  getClientFromContext: mockGetClientFromContext,
+  getAuthManagerFromContext: mockGetAuthManagerFromContext,
   clearGlobalClientFactory: mockClearGlobalClientFactory,
 }));
 
@@ -455,11 +455,11 @@ describe('Main Server Entry Point (index.ts)', () => {
   });
 
   describe('Exported Functions', () => {
-    it('should export getClientFromContext function', () => {
+    it('should export getAuthManagerFromContext function', () => {
       const indexModule = require('../src/index');
-      
-      expect(indexModule.getClientFromContext).toBeDefined();
-      expect(indexModule.getClientFromContext).toBe(mockGetClientFromContext);
+
+      expect(indexModule.getAuthManagerFromContext).toBeDefined();
+      expect(indexModule.getAuthManagerFromContext).toBe(mockGetAuthManagerFromContext);
     });
 
     it('should export clearGlobalClientFactory function', () => {

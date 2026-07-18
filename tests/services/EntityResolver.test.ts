@@ -1,18 +1,27 @@
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
-import { EntityResolver, type EntityResolutionResult } from '../../src/services/EntityResolver';
-import { MCPError } from '../../src/types/index';
-import type { TypedVikunjaClient, Label, User } from '../../src/client';
+import { EntityResolver } from '../../src/services/EntityResolver';
 import { AuthManager } from '../../src/auth/AuthManager';
 import { logger } from '../../src/utils/logger';
 import { circuitBreakerRegistry } from '../../src/utils/retry';
+import type { components } from '../../src/types/generated/vikunja-openapi';
 
 // Mock logger to avoid noise in tests
 jest.mock('../../src/utils/logger');
 
-// `fetchUsers` is migrated off node-vikunja onto the direct-REST helper
-// (`GET /users`); `fetchLabels` (`client.labels.getLabels`) stays on the
-// node-vikunja client — that domain's node-vikunja retirement is a separate
-// item's scope.
+// Spec-sourced entity shapes (docs/vikunja-openapi.json).
+type Label = components['schemas']['models.Label'];
+type User = components['schemas']['user.User'];
+
+// EntityResolver is fully migrated off node-vikunja: `fetchLabels`
+// (`GET /labels`) and `fetchUsers` (`GET /users`) both go through the
+// direct-REST helper, which talks to `global.fetch`. Route each endpoint to
+// its own jest.fn so the two responses stay independently controllable:
+//   - `getLabelsMock` resolves the raw labels value (array / null / non-array)
+//     or rejects; its value is JSON-serialized into the fetch Response body.
+//   - `getUsersMock` resolves a ready-made `Response` (so a test can craft a
+//     401, an empty body, etc.) or rejects to model a network-level failure.
+const getLabelsMock = jest.fn<() => Promise<unknown>>();
+const getUsersMock = jest.fn<() => Promise<Response>>();
 const mockFetch = jest.fn();
 global.fetch = mockFetch as unknown as typeof fetch;
 
@@ -32,21 +41,40 @@ function mockResponse(opts: {
   } as unknown as Response;
 }
 
-/** Queues one successful JSON response for the next `fetch` call. */
-function fetchOkOnce(body: unknown): void {
-  mockFetch.mockResolvedValueOnce(mockResponse({ text: JSON.stringify(body) }));
+/** Configure the labels response (the raw value the API returns). */
+function respondLabels(value: unknown): void {
+  getLabelsMock.mockResolvedValue(value);
+}
+/** Configure `GET /labels` to reject (network-level failure). */
+function rejectLabels(error: unknown): void {
+  getLabelsMock.mockRejectedValue(error);
+}
+/** Configure a successful `GET /users` JSON response. */
+function usersJson(body: unknown): void {
+  getUsersMock.mockResolvedValue(mockResponse({ text: JSON.stringify(body) }));
+}
+/** Configure a raw-body `GET /users` response (e.g. empty body). */
+function usersRaw(text: string): void {
+  getUsersMock.mockResolvedValue(mockResponse({ text }));
+}
+/** Configure a non-2xx `GET /users` response (e.g. a 401). */
+function usersStatus(status: number, text: string): void {
+  getUsersMock.mockResolvedValue(mockResponse({ ok: false, status, text }));
+}
+/** Configure `GET /users` to reject (network-level failure). */
+function rejectUsers(error: unknown): void {
+  getUsersMock.mockRejectedValue(error);
 }
 
 describe('EntityResolver', () => {
   let resolver: EntityResolver;
-  let mockClient: jest.Mocked<TypedVikunjaClient>;
   let authManager: AuthManager;
 
   // Mock data
   const mockLabels: Label[] = [
-    { id: 1, title: 'Bug', description: 'Bug reports', color: '#ff0000' },
-    { id: 2, title: 'Feature', description: 'New features', color: '#00ff00' },
-    { id: 3, title: 'Documentation', description: 'Documentation tasks', color: '#0000ff' },
+    { id: 1, title: 'Bug', description: 'Bug reports', hex_color: '#ff0000' },
+    { id: 2, title: 'Feature', description: 'New features', hex_color: '#00ff00' },
+    { id: 3, title: 'Documentation', description: 'Documentation tasks', hex_color: '#0000ff' },
   ];
 
   const mockUsers: User[] = [
@@ -58,36 +86,42 @@ describe('EntityResolver', () => {
   beforeEach(() => {
     resolver = new EntityResolver();
 
-    // Create a comprehensive mock client
-    mockClient = {
-      labels: {
-        getLabels: jest.fn(),
-      },
-      users: {
-        getUsers: jest.fn(),
-      },
-    } as jest.Mocked<TypedVikunjaClient>;
-
     authManager = new AuthManager();
     authManager.connect('https://vikunja.test', 'tk_test-token');
 
     // Clear all mocks
     jest.clearAllMocks();
+    getLabelsMock.mockReset();
+    getUsersMock.mockReset();
     mockFetch.mockReset();
     // vikunjaRestRequest protects every call with a process-wide named
     // circuit breaker; clear accumulated stats so one test's deliberately
     // failing scenario doesn't trip the breaker for a later test.
     circuitBreakerRegistry.clear();
+
+    // Route the two GET endpoints EntityResolver now hits to their dedicated
+    // controllable mocks.
+    mockFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      const method = (init?.method ?? 'GET') as string;
+      if (method === 'GET' && /\/labels$/.test(url)) {
+        const value = await getLabelsMock();
+        return mockResponse({ text: value === undefined ? '' : JSON.stringify(value) });
+      }
+      if (method === 'GET' && /\/users$/.test(url)) {
+        return getUsersMock();
+      }
+      throw new Error(`Unexpected fetch ${method} ${url}`);
+    });
   });
 
   describe('resolveEntities', () => {
     it('should successfully resolve both labels and users', async () => {
       // Arrange
-      mockClient.labels.getLabels.mockResolvedValue(mockLabels);
-      fetchOkOnce(mockUsers);
+      respondLabels(mockLabels);
+      usersJson(mockUsers);
 
       // Act
-      const result = await resolver.resolveEntities(mockClient, authManager);
+      const result = await resolver.resolveEntities(authManager);
 
       // Assert
       expect(result.labelMap.size).toBe(3);
@@ -103,6 +137,11 @@ describe('EntityResolver', () => {
         'https://vikunja.test/api/v1/users',
         expect.objectContaining({ method: 'GET' }),
       );
+      // ...and GET /labels the same way.
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://vikunja.test/api/v1/labels',
+        expect.objectContaining({ method: 'GET' }),
+      );
 
       // Verify case-insensitive mapping (map stores lowercase keys)
       expect(result.labelMap.get('bug')).toBe(1);
@@ -116,11 +155,11 @@ describe('EntityResolver', () => {
 
     it('should handle empty arrays correctly', async () => {
       // Arrange
-      mockClient.labels.getLabels.mockResolvedValue([]);
-      fetchOkOnce([]);
+      respondLabels([]);
+      usersJson([]);
 
       // Act
-      const result = await resolver.resolveEntities(mockClient, authManager);
+      const result = await resolver.resolveEntities(authManager);
 
       // Assert
       expect(result.labelMap.size).toBe(0);
@@ -132,11 +171,11 @@ describe('EntityResolver', () => {
 
     it('should handle null label response', async () => {
       // Arrange
-      mockClient.labels.getLabels.mockResolvedValue(null as any);
-      fetchOkOnce(mockUsers);
+      respondLabels(null);
+      usersJson(mockUsers);
 
       // Act
-      const result = await resolver.resolveEntities(mockClient, authManager);
+      const result = await resolver.resolveEntities(authManager);
 
       // Assert
       expect(result.labelMap.size).toBe(0);
@@ -147,12 +186,13 @@ describe('EntityResolver', () => {
     });
 
     it('should handle undefined label response', async () => {
-      // Arrange
-      mockClient.labels.getLabels.mockResolvedValue(undefined as any);
-      fetchOkOnce(mockUsers);
+      // Arrange: an empty response body deserializes to `null` in the REST
+      // helper, matching the pre-migration undefined case.
+      respondLabels(undefined);
+      usersJson(mockUsers);
 
       // Act
-      const result = await resolver.resolveEntities(mockClient, authManager);
+      const result = await resolver.resolveEntities(authManager);
 
       // Assert
       expect(result.labelMap.size).toBe(0);
@@ -164,11 +204,11 @@ describe('EntityResolver', () => {
 
     it('should handle non-array label response', async () => {
       // Arrange
-      mockClient.labels.getLabels.mockResolvedValue({ invalid: 'response' } as any);
-      fetchOkOnce(mockUsers);
+      respondLabels({ invalid: 'response' });
+      usersJson(mockUsers);
 
       // Act
-      const result = await resolver.resolveEntities(mockClient, authManager);
+      const result = await resolver.resolveEntities(authManager);
 
       // Assert
       expect(result.labelMap.size).toBe(0);
@@ -184,17 +224,11 @@ describe('EntityResolver', () => {
       // fetchUsers — a plain MCPError from vikunjaRestRequest doesn't carry
       // the `.status`/`.response.status` properties isAuthenticationError's
       // structured checks look for).
-      mockClient.labels.getLabels.mockResolvedValue(mockLabels);
-      mockFetch.mockResolvedValueOnce(
-        mockResponse({
-          ok: false,
-          status: 401,
-          text: 'missing, malformed, expired or otherwise invalid token provided',
-        }),
-      );
+      respondLabels(mockLabels);
+      usersStatus(401, 'missing, malformed, expired or otherwise invalid token provided');
 
       // Act
-      const result = await resolver.resolveEntities(mockClient, authManager);
+      const result = await resolver.resolveEntities(authManager);
 
       // Assert
       expect(result.labelMap.size).toBe(3);
@@ -210,13 +244,13 @@ describe('EntityResolver', () => {
 
     it('should handle generic error for users', async () => {
       // Arrange
-      mockClient.labels.getLabels.mockResolvedValue(mockLabels);
+      respondLabels(mockLabels);
       // Not a message pattern isAuthenticationError/isRetryableError
       // recognizes, so this fails on the first attempt with no retries.
-      mockFetch.mockRejectedValue(new Error('Service unavailable'));
+      rejectUsers(new Error('Service unavailable'));
 
       // Act
-      const result = await resolver.resolveEntities(mockClient, authManager);
+      const result = await resolver.resolveEntities(authManager);
 
       // Assert
       expect(result.labelMap.size).toBe(3);
@@ -235,11 +269,11 @@ describe('EntityResolver', () => {
     it('should handle error for labels', async () => {
       // Arrange
       const labelError = new Error('Label service unavailable');
-      mockClient.labels.getLabels.mockRejectedValue(labelError);
-      fetchOkOnce(mockUsers);
+      rejectLabels(labelError);
+      usersJson(mockUsers);
 
       // Act
-      const result = await resolver.resolveEntities(mockClient, authManager);
+      const result = await resolver.resolveEntities(authManager);
 
       // Assert
       expect(result.labelMap.size).toBe(0);
@@ -247,10 +281,12 @@ describe('EntityResolver', () => {
       expect(result.userFetchFailedDueToAuth).toBe(false);
       expect(result.projectLabels).toEqual([]);
       expect(result.projectUsers).toEqual(mockUsers);
+      // GET /labels now flows through vikunjaRestRequest, which wraps the
+      // original message with its own request context — substring match.
       expect(logger.error).toHaveBeenCalledWith(
         'Failed to fetch labels',
         expect.objectContaining({
-          error: labelError.message,
+          error: expect.stringContaining('Label service unavailable'),
         })
       );
     });
@@ -258,13 +294,11 @@ describe('EntityResolver', () => {
     it('should handle both label and user errors simultaneously', async () => {
       // Arrange
       const labelError = new Error('Label service down');
-      mockClient.labels.getLabels.mockRejectedValue(labelError);
-      mockFetch.mockResolvedValueOnce(
-        mockResponse({ ok: false, status: 401, text: 'Auth failed' }),
-      );
+      rejectLabels(labelError);
+      usersStatus(401, 'Auth failed');
 
       // Act
-      const result = await resolver.resolveEntities(mockClient, authManager);
+      const result = await resolver.resolveEntities(authManager);
 
       // Assert
       expect(result.labelMap.size).toBe(0);
@@ -285,9 +319,9 @@ describe('EntityResolver', () => {
     it('should preserve case-insensitive behavior for edge cases', async () => {
       // Arrange
       const edgeCaseLabels: Label[] = [
-        { id: 1, title: '  Trimming  ', description: 'Spaces', color: '#ff0000' },
-        { id: 2, title: 'Special@Chars', description: 'Special characters', color: '#00ff00' },
-        { id: 3, title: '', description: 'Empty title', color: '#0000ff' },
+        { id: 1, title: '  Trimming  ', description: 'Spaces', hex_color: '#ff0000' },
+        { id: 2, title: 'Special@Chars', description: 'Special characters', hex_color: '#00ff00' },
+        { id: 3, title: '', description: 'Empty title', hex_color: '#0000ff' },
       ];
 
       const edgeCaseUsers: User[] = [
@@ -296,11 +330,11 @@ describe('EntityResolver', () => {
         { id: 103, username: '', email: 'empty@example.com', name: 'Empty' },
       ];
 
-      mockClient.labels.getLabels.mockResolvedValue(edgeCaseLabels);
-      fetchOkOnce(edgeCaseUsers);
+      respondLabels(edgeCaseLabels);
+      usersJson(edgeCaseUsers);
 
       // Act
-      const result = await resolver.resolveEntities(mockClient, authManager);
+      const result = await resolver.resolveEntities(authManager);
 
       // Assert
       expect(result.labelMap.size).toBe(3);
@@ -320,11 +354,11 @@ describe('EntityResolver', () => {
       // Arrange: an empty response body deserializes to `null` (see
       // vikunjaRestRequestRaw), matching the pre-migration
       // `getUsers.mockResolvedValue(undefined)` scenario (`|| []` fallback).
-      mockClient.labels.getLabels.mockResolvedValue(mockLabels);
-      mockFetch.mockResolvedValueOnce(mockResponse({ text: '' }));
+      respondLabels(mockLabels);
+      usersRaw('');
 
       // Act
-      const result = await resolver.resolveEntities(mockClient, authManager);
+      const result = await resolver.resolveEntities(authManager);
 
       // Assert
       expect(result.labelMap.size).toBe(3);
@@ -335,11 +369,11 @@ describe('EntityResolver', () => {
 
     it('should log debug information for successful resolution', async () => {
       // Arrange
-      mockClient.labels.getLabels.mockResolvedValue(mockLabels);
-      fetchOkOnce(mockUsers);
+      respondLabels(mockLabels);
+      usersJson(mockUsers);
 
       // Act
-      await resolver.resolveEntities(mockClient, authManager);
+      await resolver.resolveEntities(authManager);
 
       // Assert
       expect(logger.debug).toHaveBeenCalledWith('Labels fetched', {
@@ -367,38 +401,39 @@ describe('EntityResolver', () => {
 
   describe('Edge Cases and Error Conditions', () => {
     it('should handle label objects missing title property gracefully', async () => {
-      // Arrange
+      // Arrange. Labels now arrive over a real JSON HTTP response — JSON has
+      // no way to represent `undefined`, so `JSON.stringify` drops a
+      // `title: undefined` key entirely rather than preserving it as
+      // explicit-undefined. The pre-migration '[undefined]' sub-case is
+      // therefore no longer reachable via `fetchLabels`; '[missing]',
+      // '[null]', empty-string and valid-title are all still reachable and
+      // covered below (mirrors the user edge-case test).
       const invalidLabels: any[] = [
-        { id: 1, description: 'Missing title' }, // Missing title
-        { id: 2, title: null, description: 'Null title' }, // Null title
-        { id: 3, title: '', description: 'Empty title' }, // Empty title
-        { id: 4, title: undefined, description: 'Undefined title' }, // Undefined title
+        { id: 1, description: 'Missing title' }, // Missing title -> '[missing]'
+        { id: 2, title: null, description: 'Null title' }, // Null title -> '[null]'
+        { id: 3, title: '', description: 'Empty title' }, // Empty title -> ''
         { id: 5, title: 'Valid', description: 'Valid title' }, // Valid title
       ];
 
-      mockClient.labels.getLabels.mockResolvedValue(invalidLabels as any);
-      fetchOkOnce([]);
+      respondLabels(invalidLabels);
+      usersJson([]);
 
       // Act
-      const result = await resolver.resolveEntities(mockClient, authManager);
+      const result = await resolver.resolveEntities(authManager);
 
       // Assert
-      expect(result.labelMap.size).toBe(5); // missing title, explicit undefined, null, empty string, and valid
+      expect(result.labelMap.size).toBe(4);
       expect(result.labelMap.get('[missing]')).toBe(1); // missing title becomes '[missing]'
-      expect(result.labelMap.get('[undefined]')).toBe(4); // explicit undefined becomes '[undefined]'
       expect(result.labelMap.get('[null]')).toBe(2); // null becomes '[null]'
       expect(result.labelMap.get('')).toBe(3); // empty string
       expect(result.labelMap.get('valid')).toBe(5);
     });
 
     it('should handle user objects missing username property gracefully', async () => {
-      // Arrange. Unlike labels (still fetched via the node-vikunja client,
-      // which can hand back a JS object with an explicit `undefined`
-      // property), users now come from a real JSON HTTP response — JSON has
-      // no way to represent `undefined`, so `JSON.stringify` drops such a
-      // key entirely rather than preserving it as explicit-undefined. The
-      // '[undefined]' sub-case from before this migration is therefore no
-      // longer reachable via `fetchUsers` and is omitted here; '[missing]',
+      // Arrange. Users come from a real JSON HTTP response — JSON has no way
+      // to represent `undefined`, so `JSON.stringify` drops such a key
+      // entirely rather than preserving it as explicit-undefined. The
+      // '[undefined]' sub-case is therefore not reachable here; '[missing]',
       // '[null]', empty-string, and valid-username are all still reachable
       // and covered below.
       const invalidUsers: any[] = [
@@ -408,11 +443,11 @@ describe('EntityResolver', () => {
         { id: 105, username: 'validuser', email: 'valid@example.com' }, // Valid username
       ];
 
-      mockClient.labels.getLabels.mockResolvedValue([]);
-      fetchOkOnce(invalidUsers);
+      respondLabels([]);
+      usersJson(invalidUsers);
 
       // Act
-      const result = await resolver.resolveEntities(mockClient, authManager);
+      const result = await resolver.resolveEntities(authManager);
 
       // Assert
       expect(result.userMap.size).toBe(4);
@@ -424,16 +459,18 @@ describe('EntityResolver', () => {
 
     it('should preserve label and user objects in result for reference', async () => {
       // Arrange
-      mockClient.labels.getLabels.mockResolvedValue(mockLabels);
-      fetchOkOnce(mockUsers);
+      respondLabels(mockLabels);
+      usersJson(mockUsers);
 
       // Act
-      const result = await resolver.resolveEntities(mockClient, authManager);
+      const result = await resolver.resolveEntities(authManager);
 
-      // Assert
-      expect(result.projectLabels).toBe(mockLabels);
+      // Assert. Both labels and users now round-trip through JSON transport,
+      // so the arrays are structurally equal to the source data rather than
+      // the same object references.
+      expect(result.projectLabels).toEqual(mockLabels);
       expect(result.projectUsers).toEqual(mockUsers);
-      expect(result.projectLabels[0]).toBe(mockLabels[0]);
+      expect(result.projectLabels[0]).toEqual(mockLabels[0]);
     });
   });
 });

@@ -8,7 +8,6 @@ import { z } from 'zod';
 import type { AuthManager } from '../auth/AuthManager';
 import type { VikunjaClientFactory } from '../client/VikunjaClientFactory';
 import { MCPError, ErrorCode, createStandardResponse } from '../types';
-import { getClientFromContext } from '../client';
 import { storageManager } from '../storage';
 import { logger } from '../utils/logger';
 import { setTaskLabels } from '../utils/label-bulk';
@@ -82,7 +81,6 @@ export function registerTemplatesTool(server: McpServer, authManager: AuthManage
           );
         }
 
-        const client = await getClientFromContext();
         const storage = await getSessionStorage(authManager);
 
         switch (args.subcommand) {
@@ -104,7 +102,7 @@ export function registerTemplatesTool(server: McpServer, authManager: AuthManage
 
               // Get all tasks in the project. NOTE: `GET /projects/{id}/tasks` is
               // not present in the vendored OpenAPI spec (only `PUT` is documented
-              // there) — this mirrors node-vikunja's own `getProjectTasks`, which
+              // there) — this mirrors the legacy client's own `getProjectTasks`, which
               // calls this same undocumented-but-functional path. Preserved as-is
               // per this migration's "transport only, same behavior" scope; see
               // docs/API-COVERAGE.md's note on `GET /projects/{id}/tasks` for the
@@ -411,7 +409,7 @@ export function registerTemplatesTool(server: McpServer, authManager: AuthManage
                   // Add labels if any
                   if (taskTemplate.labels && taskTemplate.labels.length > 0) {
                     try {
-                      await setTaskLabels(client, createdTask.id ?? 0, taskTemplate.labels);
+                      await setTaskLabels(authManager, createdTask.id ?? 0, taskTemplate.labels);
                     } catch (labelError) {
                       logger.warn('Failed to add labels to task', {
                         taskId: createdTask.id,

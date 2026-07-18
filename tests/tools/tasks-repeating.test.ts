@@ -3,17 +3,21 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { AuthManager } from '../../src/auth/AuthManager';
 import { registerTasksTool } from '../../src/tools/tasks';
 import { MCPError, ErrorCode } from '../../src/types';
-import type { Task, User } from 'node-vikunja';
+import type { components } from '../../src/types/generated/vikunja-openapi';
 import type { MockVikunjaClient, MockAuthManager, MockServer } from '../types/mocks';
 import { parseMarkdown } from '../utils/markdown';
 
+type Task = components['schemas']['models.Task'];
+
 // Import the function we're mocking
-import { getClientFromContext } from '../../src/client';
+import { getClientFromContext, getAuthManagerFromContext } from '../../src/client';
 import { vikunjaRestRequest } from '../../src/utils/vikunja-rest';
 
-// Mock the modules
+// Mock the modules. The tasks tool's session guard now calls
+// getAuthManagerFromContext(); provide it so the guard resolves.
 jest.mock('../../src/client', () => ({
   getClientFromContext: jest.fn(),
+  getAuthManagerFromContext: jest.fn(),
   setGlobalClientFactory: jest.fn(),
   clearGlobalClientFactory: jest.fn(),
 }));
@@ -106,7 +110,10 @@ describe('Tasks Tool - Repeating Tasks', () => {
 
     // Mock the imported function to return our mock client
     (getClientFromContext as jest.Mock).mockResolvedValue(mockClient);
-    (getClientFromContext as jest.Mock).mockResolvedValue(mockClient);
+    // The tasks tool guards each call with getAuthManagerFromContext(); the
+    // result is discarded (all ops use the injected authManager), so resolving
+    // to any object is enough to pass the guard.
+    (getAuthManagerFromContext as jest.Mock).mockResolvedValue({});
 
     // Create mock auth manager that is authenticated
     mockAuthManager = {

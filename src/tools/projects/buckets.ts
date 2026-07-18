@@ -12,7 +12,7 @@
  * "don't make the caller pre-fetch ids they shouldn't have to know"
  * (docs/ENDPOINT-PLAYBOOK.md §1).
  *
- * node-vikunja does not expose the Kanban view endpoints, so this calls the
+ * legacy client does not expose the Kanban view endpoints, so this calls the
  * Vikunja REST API directly via the shared `vikunja-rest` helper.
  */
 

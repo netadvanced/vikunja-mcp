@@ -3,15 +3,18 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
-import { bulkUpdateTasks, bulkDeleteTasks, bulkCreateTasks } from '../../../src/tools/tasks/bulk-operations';
-import { getClientFromContext, getAuthManagerFromContext } from '../../../src/client';
+import {
+  bulkUpdateTasks as _bulkUpdateTasks,
+  bulkDeleteTasks as _bulkDeleteTasks,
+  bulkCreateTasks as _bulkCreateTasks,
+} from '../../../src/tools/tasks/bulk-operations';
+import { AuthManager } from '../../../src/auth/AuthManager';
 import { MCPError, ErrorCode } from '../../../src/types';
 import { isAuthenticationError } from '../../../src/utils/auth-error-handler';
 import { withRetry } from '../../../src/utils/retry';
 import { vikunjaRestRequest } from '../../../src/utils/vikunja-rest';
 import { parseMarkdown } from '../../utils/markdown';
 
-jest.mock('../../../src/client');
 jest.mock('../../../src/utils/auth-error-handler');
 jest.mock('../../../src/utils/retry');
 jest.mock('../../../src/utils/logger');
@@ -39,17 +42,24 @@ describe('Bulk operations', () => {
   };
   const mockRest = vikunjaRestRequest as jest.Mock;
 
+  // The bulk ops now take an AuthManager directly (REST transport). These thin
+  // wrappers inject a live session so each call site stays argument-for-argument
+  // identical to the pre-migration tests.
+  let authManager: AuthManager;
+  const bulkUpdateTasks = (args: Parameters<typeof _bulkUpdateTasks>[0]) =>
+    _bulkUpdateTasks(args, authManager);
+  const bulkDeleteTasks = (args: Parameters<typeof _bulkDeleteTasks>[0]) =>
+    _bulkDeleteTasks(args, authManager);
+  const bulkCreateTasks = (args: Parameters<typeof _bulkCreateTasks>[0]) =>
+    _bulkCreateTasks(args, authManager);
+
   beforeEach(() => {
     jest.clearAllMocks();
-    (getClientFromContext as jest.Mock).mockResolvedValue(mockClient);
     (isAuthenticationError as jest.Mock).mockReturnValue(false);
     (withRetry as jest.Mock).mockImplementation((fn) => fn());
 
-    // setTaskLabels (src/utils/label-bulk.ts) recovers its session via
-    // getAuthManagerFromContext before issuing the direct-REST label-bulk POST.
-    (getAuthManagerFromContext as jest.Mock).mockResolvedValue({
-      getSession: () => ({ apiUrl: 'https://mock.vikunja.test', apiToken: 'mock-token' }),
-    });
+    authManager = new AuthManager();
+    authManager.connect('https://vikunja.test', 'tk_test-token');
 
     // Proxy the core REST calls (GET/POST /tasks/{id}, PUT
     // /projects/{id}/tasks, DELETE /tasks/{id}) through the existing
@@ -57,11 +67,19 @@ describe('Bulk operations', () => {
     // every test's per-scenario mock configuration (and call-count/args
     // assertions on those methods) keeps driving behavior unchanged. The
     // label sub-resource POST /tasks/{id}/labels/bulk (setTaskLabels, post
-    // Wave-D #71) also flows through this same mocked vikunjaRestRequest and
-    // resolves success by default; label-specific tests assert on mockRest.
+    // Wave-D #71) and the per-user assignee PUT/DELETE (post Wave-D #70) also
+    // flow through this same mocked vikunjaRestRequest and resolve success by
+    // default; label/assignee-specific tests assert on mockRest directly.
     mockRest.mockImplementation(async (_auth: unknown, method: string, path: string, body?: unknown) => {
       const labelBulkMatch = /^\/tasks\/(\d+)\/labels\/bulk$/.exec(path);
       if (method === 'POST' && labelBulkMatch?.[1] !== undefined) {
+        return undefined;
+      }
+      // Additive per-user assign / single-user unassign endpoints.
+      if (method === 'PUT' && /^\/tasks\/\d+\/assignees$/.test(path)) {
+        return undefined;
+      }
+      if (method === 'DELETE' && /^\/tasks\/\d+\/assignees\/\d+$/.test(path)) {
         return undefined;
       }
       const taskIdMatch = /^\/tasks\/(\d+)$/.exec(path);
@@ -192,7 +210,6 @@ describe('Bulk operations', () => {
 
         for (const [mode, expectedNumeric] of Object.entries(repeatModeConversions)) {
           jest.clearAllMocks();
-          (getClientFromContext as jest.Mock).mockResolvedValue(mockClient);
           (isAuthenticationError as jest.Mock).mockReturnValue(false);
           (withRetry as jest.Mock).mockImplementation((fn) => fn());
 
@@ -362,13 +379,23 @@ describe('Bulk operations', () => {
           .mockResolvedValueOnce({ id: 1, title: 'Task 1', assignees: [{ id: 1 }] })
           .mockResolvedValueOnce({ id: 1, title: 'Task 1', assignees: [{ id: 1 }] });
         mockClient.tasks.updateTask.mockResolvedValue(mockTask);
-        mockClient.tasks.assignUserToTask.mockResolvedValue({});
 
         const result = await bulkUpdateTasks({ taskIds: [1], field: 'assignees', value: [1] });
 
-        // Additive per-user assign, not the destructive bulk endpoint (upstream #15)
-        expect(mockClient.tasks.assignUserToTask).toHaveBeenCalledWith(1, 1);
-        expect(mockClient.tasks.bulkAssignUsersToTask).not.toHaveBeenCalled();
+        // Additive per-user assign (PUT /tasks/{id}/assignees, body { user_id }),
+        // not the destructive bulk endpoint (upstream #15).
+        expect(mockRest).toHaveBeenCalledWith(
+          expect.anything(),
+          'PUT',
+          '/tasks/1/assignees',
+          { user_id: 1 },
+        );
+        expect(mockRest).not.toHaveBeenCalledWith(
+          expect.anything(),
+          'POST',
+          '/tasks/1/assignees/bulk',
+          expect.anything(),
+        );
 
         const markdown = result.content[0].text;
         expect(markdown).toContain('## ✅ Success');
@@ -635,7 +662,6 @@ describe('Bulk operations', () => {
         const mockTask = { id: 1, title: 'Test Task', project_id: 1 };
 
         mockClient.tasks.createTask.mockResolvedValue(mockTask);
-        mockClient.tasks.assignUserToTask.mockResolvedValue({});
         mockClient.tasks.getTask.mockResolvedValue({
           ...mockTask,
           labels: [{ id: 1 }],
@@ -659,9 +685,20 @@ describe('Bulk operations', () => {
           '/tasks/1/labels/bulk',
           { labels: [{ id: 1 }] },
         );
-        // Additive per-user assign, not the destructive bulk endpoint (upstream #15)
-        expect(mockClient.tasks.assignUserToTask).toHaveBeenCalledWith(1, 1);
-        expect(mockClient.tasks.bulkAssignUsersToTask).not.toHaveBeenCalled();
+        // Additive per-user assign (PUT /tasks/{id}/assignees, body { user_id }),
+        // not the destructive bulk endpoint (upstream #15).
+        expect(mockRest).toHaveBeenCalledWith(
+          expect.anything(),
+          'PUT',
+          '/tasks/1/assignees',
+          { user_id: 1 },
+        );
+        expect(mockRest).not.toHaveBeenCalledWith(
+          expect.anything(),
+          'POST',
+          '/tasks/1/assignees/bulk',
+          expect.anything(),
+        );
 
         const markdown = result.content[0].text;
         const parsed = parseMarkdown(markdown);

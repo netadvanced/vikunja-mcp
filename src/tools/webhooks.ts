@@ -8,7 +8,7 @@ import { z } from 'zod';
 import type { AuthManager } from '../auth/AuthManager';
 import type { VikunjaClientFactory } from '../client/VikunjaClientFactory';
 import { MCPError, ErrorCode } from '../types';
-import { getClientFromContext } from '../client';
+import { getAuthManagerFromContext } from '../client';
 import type { Webhook } from '../types/vikunja';
 import { logger } from '../utils/logger';
 import { validateAndConvertId } from '../utils/validation';
@@ -143,7 +143,7 @@ export function registerWebhooksTool(server: McpServer, authManager: AuthManager
         );
       }
 
-      await getClientFromContext(); // Ensure client is initialized
+      await getAuthManagerFromContext(); // Ensure the session is initialized
       const subcommand = args.subcommand;
 
       logger.debug('Webhooks tool called', { subcommand, args });

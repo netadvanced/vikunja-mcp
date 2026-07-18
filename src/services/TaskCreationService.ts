@@ -3,25 +3,48 @@ import type { TaskCreationData } from '../types';
 import { MCPError, ErrorCode } from '../types';
 import { isAuthenticationError } from '../utils/auth-error-handler';
 import { setTaskLabels } from '../utils/label-bulk';
-import type { Task, Label, User } from 'node-vikunja';
-import type { TypedVikunjaClient } from '../types/node-vikunja-extended';
 import type { ImportedTask } from '../parsers/InputParserFactory';
 import type { EntityResolutionResult } from './EntityResolver';
 import type { AuthManager } from '../auth/AuthManager';
 import { vikunjaRestRequest } from '../utils/vikunja-rest';
+import { getTaskViaRest } from '../utils/task-rest-transport';
 import type { components } from '../types/generated/vikunja-openapi';
 
 // Sourced from the vendored OpenAPI spec (docs/vikunja-openapi.json).
 type VikunjaTask = components['schemas']['models.Task'];
+/** `user.User` per the OpenAPI spec — resolved project users for assignment. */
+type VikunjaUser = components['schemas']['user.User'];
 
 /**
- * Converts TaskCreationData to a Task object compatible with node-vikunja API
- * This ensures type safety by properly mapping fields and handling optional properties
+ * Request-body shape for `PUT /projects/{id}/tasks` as this batch-import path
+ * builds it. Deliberately a local interface, NOT the generated `models.Task`:
+ * this path carries `repeat_mode` as Vikunja's string enum
+ * (`'day'|'week'|'month'|'year'`), whereas `models.Task` types `repeat_mode`
+ * as the numeric `0|1|2`. Retyping to the generated shape would change the
+ * wire payload; this migration is transport-only and must preserve the
+ * existing (string) body the legacy-client-backed path sent.
  */
-function convertTaskCreationDataToTask(taskData: TaskCreationData): Task {
-  // TaskCreationData is a subset of Task with all the required fields for API creation
-  // The node-vikunja Task interface accepts these fields, making them compatible
-  const convertedTask: Task = {
+interface TaskCreateRequest {
+  title: string;
+  project_id: number;
+  done?: boolean;
+  priority?: number;
+  percent_done?: number;
+  description?: string;
+  due_date?: string;
+  start_date?: string;
+  end_date?: string;
+  hex_color?: string;
+  repeat_after?: number;
+  repeat_mode?: 'day' | 'week' | 'month' | 'year';
+}
+
+/**
+ * Converts TaskCreationData to the request body Vikunja expects for task
+ * creation, mapping fields and handling optional properties.
+ */
+function convertTaskCreationDataToTask(taskData: TaskCreationData): TaskCreateRequest {
+  const convertedTask: TaskCreateRequest = {
     title: taskData.title,
     project_id: taskData.project_id,
   };
@@ -86,9 +109,8 @@ export class TaskCreationService {
    *
    * @param task - The task data to create
    * @param projectId - The project ID to create the task in
-   * @param client - The Vikunja client instance
-   * @param authManager - Active auth manager, used for the direct-REST task
-   *   creation call (see `createBaseTask`)
+   * @param authManager - Active auth manager holding the session credentials,
+   *   used for every direct-REST call this service makes
    * @param entityMaps - Resolved entity mappings for labels and users
    * @param catchErrors - Whether to catch errors and return them in TaskCreationResult (default: true)
    * @returns Promise<TaskCreationResult> - Result of the task creation operation
@@ -96,7 +118,6 @@ export class TaskCreationService {
   async createTask(
     task: ImportedTask,
     projectId: number,
-    client: TypedVikunjaClient,
     authManager: AuthManager,
     entityMaps: EntityResolutionResult,
     catchErrors: boolean = true
@@ -109,7 +130,7 @@ export class TaskCreationService {
       const createdTask = await this.createBaseTask(authManager, taskData, task.title);
 
       const labelWarnings = await this.handleLabelAssignment(
-        client,
+        authManager,
         createdTask,
         task,
         entityMaps.labelMap
@@ -117,7 +138,7 @@ export class TaskCreationService {
       warnings.push(...labelWarnings);
 
       const assigneeWarnings = await this.handleUserAssignment(
-        client,
+        authManager,
         createdTask,
         task,
         entityMaps.userMap,
@@ -132,7 +153,7 @@ export class TaskCreationService {
       const result: TaskCreationResult = {
         success: true,
         taskId: createdTask.id ?? 0,
-        title: createdTask.title,
+        title: createdTask.title ?? '',
       };
 
       if (warnings.length > 0) {
@@ -203,7 +224,7 @@ export class TaskCreationService {
 
   /**
    * Creates the base task in Vikunja via `PUT /projects/{id}/tasks`
-   * (direct-REST; see docs/ENDPOINT-PLAYBOOK.md §3 — node-vikunja is
+   * (direct-REST; see docs/ENDPOINT-PLAYBOOK.md §3 — legacy client is
    * end-of-life for this project).
    *
    * @param authManager - Active auth manager holding session credentials
@@ -216,22 +237,16 @@ export class TaskCreationService {
     authManager: AuthManager,
     taskData: TaskCreationData,
     taskTitle: string
-  ): Promise<Task> {
+  ): Promise<VikunjaTask> {
     try {
       // Safely convert TaskCreationData to the request body shape Vikunja expects
       const taskForApi = convertTaskCreationDataToTask(taskData);
-      const created = await vikunjaRestRequest<VikunjaTask>(
+      return await vikunjaRestRequest<VikunjaTask>(
         authManager,
         'PUT',
         `/projects/${taskData.project_id}/tasks`,
         taskForApi,
       );
-      // The OpenAPI-generated response type marks every field optional (Go
-      // `omitempty` semantics), but a successful task creation always
-      // returns title/project_id — matching node-vikunja's typed `Task`,
-      // which the label/assignee/reminder helpers below (out of this
-      // migration's scope; see docs/ENDPOINT-PLAYBOOK.md) still consume.
-      return created as unknown as Task;
     } catch (error) {
       // Check if it's an authentication error. Checked directly via
       // `details.statusCode` (set by `vikunjaRestRequest` on every non-2xx
@@ -255,7 +270,7 @@ export class TaskCreationService {
       // `catchErrors`-gated graceful-degradation path below — that
       // short-circuit exists for OUR deliberately-thrown MCPErrors (like
       // the auth one just above), not for generic transport failures.
-      // Pre-migration, node-vikunja's `createTask` threw plain `Error`s
+      // Pre-migration, the legacy client's `createTask` threw plain `Error`s
       // here (never `MCPError`), so `catchErrors` correctly gated whether a
       // non-auth API failure aborted the whole batch or was reported as a
       // per-task failure; unwrapping here restores that behavior instead of
@@ -268,15 +283,15 @@ export class TaskCreationService {
   /**
    * Handles label assignment for a created task
    *
-   * @param client - The Vikunja client
+   * @param authManager - Active auth manager holding the session credentials
    * @param createdTask - The task that was created
    * @param task - Original task data with labels
    * @param labelMap - Mapping of label names to IDs
    * @returns Array of warnings from label assignment
    */
   private async handleLabelAssignment(
-    client: TypedVikunjaClient,
-    createdTask: Task,
+    authManager: AuthManager,
+    createdTask: VikunjaTask,
     task: ImportedTask,
     labelMap: Map<string, number>
   ): Promise<string[]> {
@@ -311,10 +326,10 @@ export class TaskCreationService {
     if (labelIds.length > 0 && createdTask.id) {
       try {
         // Try to update labels
-        await setTaskLabels(client, createdTask.id, labelIds);
+        await setTaskLabels(authManager, createdTask.id, labelIds);
 
         // Verify the labels were actually assigned (API tokens may silently fail)
-        const labelsActuallyAssigned = await this.verifyLabelAssignment(client, createdTask.id, labelIds);
+        const labelsActuallyAssigned = await this.verifyLabelAssignment(authManager, createdTask.id, labelIds);
 
         if (!labelsActuallyAssigned) {
           // Label assignment silently failed (common with API tokens)
@@ -343,20 +358,20 @@ export class TaskCreationService {
   /**
    * Verifies that labels were actually assigned to a task
    *
-   * @param client - The Vikunja client
+   * @param authManager - Active auth manager holding the session credentials
    * @param taskId - The task ID to verify
    * @param expectedLabelIds - Labels that should be assigned
    * @returns True if labels are actually assigned, false otherwise
    */
   private async verifyLabelAssignment(
-    client: TypedVikunjaClient,
+    authManager: AuthManager,
     taskId: number,
     expectedLabelIds: number[]
   ): Promise<boolean> {
     try {
-      const updatedTask = await client.tasks.getTask(taskId);
+      const updatedTask = await getTaskViaRest(authManager, taskId);
       if (updatedTask && updatedTask.labels && Array.isArray(updatedTask.labels)) {
-        const assignedLabelIds = updatedTask.labels.map((l: Label) => l.id);
+        const assignedLabelIds = updatedTask.labels.map((l) => l.id);
         return expectedLabelIds.every((id) => assignedLabelIds.includes(id));
       }
       return false;
@@ -400,7 +415,7 @@ export class TaskCreationService {
   /**
    * Handles user assignment for a created task
    *
-   * @param client - The Vikunja client
+   * @param authManager - Active auth manager holding the session credentials
    * @param createdTask - The task that was created
    * @param task - Original task data with assignees
    * @param userMap - Mapping of usernames to IDs
@@ -408,11 +423,11 @@ export class TaskCreationService {
    * @returns Array of warnings from user assignment
    */
   private async handleUserAssignment(
-    client: TypedVikunjaClient,
-    createdTask: Task,
+    authManager: AuthManager,
+    createdTask: VikunjaTask,
     task: ImportedTask,
     userMap: Map<string, number>,
-    projectUsers: User[]
+    projectUsers: VikunjaUser[]
   ): Promise<string[]> {
     const warnings: string[] = [];
 
@@ -446,13 +461,13 @@ export class TaskCreationService {
 
     if (userIds.length > 0 && createdTask.id) {
       try {
-        // Assign each user via the ADDITIVE single-assign endpoint rather than
-        // the bulk endpoint. node-vikunja's bulkAssignUsersToTask sends
-        // `{ user_ids }` to Vikunja's bulk endpoint, which expects `{ assignees }`
-        // and REPLACES the whole assignee list — the mismatched field is parsed
-        // as "assign nobody", silently unassigning everyone (upstream issue #15).
+        // Assign each user via the ADDITIVE single-assign endpoint (PUT
+        // /tasks/{taskID}/assignees, body { user_id }, models.TaskAssginee)
+        // rather than the bulk endpoint (POST .../assignees/bulk), which
+        // REPLACES the whole assignee list — a bulk call would silently
+        // unassign everyone (upstream issue #15).
         const taskId = createdTask.id;
-        await Promise.all(userIds.map((userId) => client.tasks.assignUserToTask(taskId, userId)));
+        await Promise.all(userIds.map((userId) => vikunjaRestRequest(authManager, 'PUT', `/tasks/${taskId}/assignees`, { user_id: userId })));
       } catch (assignError) {
         logger.error('Failed to assign users to task', {
           taskId: createdTask.id,

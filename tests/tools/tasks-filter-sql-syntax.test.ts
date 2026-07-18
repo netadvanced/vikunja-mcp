@@ -9,17 +9,19 @@ import type { AuthManager } from '../../src/auth/AuthManager';
 import { createMockTestableAuthManager } from '../utils/test-utils';
 import { registerTasksTool } from '../../src/tools/tasks';
 import { MCPError } from '../../src/types';
-import type { Task } from 'node-vikunja';
+import type { components } from '../../src/types/generated/vikunja-openapi';
+
+type Task = components['schemas']['models.Task'];
 import type { MockVikunjaClient, MockAuthManager, MockServer } from '../types/mocks';
 import { parseMarkdown } from '../utils/markdown';
 import { circuitBreakerRegistry } from '../../src/utils/retry';
 
 // Import the function we're mocking
-import { getClientFromContext } from '../../src/client';
+import { getAuthManagerFromContext } from '../../src/client';
 
 // Mock the modules
 jest.mock('../../src/client', () => ({
-  getClientFromContext: jest.fn(),
+  getAuthManagerFromContext: jest.fn(),
   setGlobalClientFactory: jest.fn(),
   clearGlobalClientFactory: jest.fn(),
 }));
@@ -150,13 +152,11 @@ describe('Tasks Tool - SQL-like Filter Syntax', () => {
       tool: jest.fn() as jest.MockedFunction<(name: string, description: string, schema: any, handler: any) => void>,
     } as MockServer;
 
-    // Set up the mock client
-    (getClientFromContext as jest.MockedFunction<typeof getClientFromContext>).mockResolvedValue(
-      mockClient,
-    );
-    (getClientFromContext as jest.MockedFunction<typeof getClientFromContext>).mockResolvedValue(
-      mockClient,
-    );
+    // Set up the session guard (returns the AuthManager now; the actual task
+    // listing goes through the mocked global fetch).
+    (
+      getAuthManagerFromContext as jest.MockedFunction<typeof getAuthManagerFromContext>
+    ).mockResolvedValue(mockAuthManager as unknown as AuthManager);
 
     // Register the tool
     registerTasksTool(mockServer, mockAuthManager);

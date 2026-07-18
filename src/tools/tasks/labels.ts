@@ -4,11 +4,11 @@
 
 import type { MinimalTask } from '../../types';
 import { MCPError, ErrorCode } from '../../types';
-import { getClientFromContext } from '../../client';
 import type { AuthManager } from '../../auth/AuthManager';
 import { isAuthenticationError } from '../../utils/auth-error-handler';
 import { withRetry, RETRY_CONFIG } from '../../utils/retry';
 import { vikunjaRestRequest } from '../../utils/vikunja-rest';
+import { getTaskViaRest } from '../../utils/task-rest-transport';
 import { validateId } from './validation';
 import { createSimpleResponse, formatAorpAsMarkdown } from '../../utils/response-factory';
 import type { components } from '../../types/generated/vikunja-openapi';
@@ -124,11 +124,9 @@ export async function applyLabels(
       }
     }
 
-    // Fetch the updated task to show current labels. GET /tasks/{id} is task
-    // CRUD (owned elsewhere) — this call site is a deliberate leftover on
-    // node-vikunja, kept only to refresh the response payload.
-    const client = await getClientFromContext();
-    const task = await client.tasks.getTask(taskId);
+    // Fetch the updated task to show current labels via GET /tasks/{id}
+    // (direct-REST), kept only to refresh the response payload.
+    const task = await getTaskViaRest(authManager, taskId);
 
     let message: string;
     if (newlyApplied.length > 0) {
@@ -224,10 +222,9 @@ export async function removeLabels(
       }
     }
 
-    // Fetch the updated task to show current labels. Deliberate node-vikunja
-    // leftover — see the matching comment in applyLabels above.
-    const client = await getClientFromContext();
-    const task = await client.tasks.getTask(args.id);
+    // Fetch the updated task to show current labels via GET /tasks/{id}
+    // (direct-REST) — see the matching comment in applyLabels above.
+    const task = await getTaskViaRest(authManager, args.id);
 
     const response = createSimpleResponse(
       'remove-label',
@@ -282,14 +279,13 @@ export async function listTaskLabels(
     );
     const labels = Array.isArray(taskLabels) ? taskLabels : [];
 
-    // Fetch the task itself only for its identifying fields. Deliberate
-    // node-vikunja leftover — see the matching comment in applyLabels above.
-    const client = await getClientFromContext();
-    const task = await client.tasks.getTask(args.id);
+    // Fetch the task itself only for its identifying fields via GET /tasks/{id}
+    // (direct-REST) — see the matching comment in applyLabels above.
+    const task = await getTaskViaRest(authManager, args.id);
 
     const minimalTask: MinimalTask = {
       ...(task.id !== undefined && { id: task.id }),
-      title: task.title,
+      title: task.title ?? '',
     };
 
     const response = createSimpleResponse(

@@ -10,7 +10,7 @@
  * `(neighbourA.position - neighbourB.position) / 2` midpoint technique for
  * inserting between two existing positions).
  *
- * node-vikunja does not expose this endpoint, so this calls the Vikunja
+ * legacy client does not expose this endpoint, so this calls the Vikunja
  * REST API directly via the shared `vikunja-rest` helper.
  */
 

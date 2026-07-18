@@ -224,10 +224,52 @@ describe('Batch Import Tool', () => {
           return toFetchOutcome(error);
         }
       }
+      // EntityResolver.fetchUsers -> GET /users (migrated to direct REST).
       if (method === 'GET' && url.endsWith('/users')) {
         try {
           const users = await mockClient.users.getUsers({});
           return mockResponse({ text: JSON.stringify(users ?? []) });
+        } catch (error) {
+          return toFetchOutcome(error);
+        }
+      }
+      // EntityResolver.fetchLabels -> GET /labels (migrated to direct REST,
+      // same wave as fetchUsers). Delegated to the SAME mockClient.labels
+      // .getLabels mock every existing arrange/assert already drives. A
+      // `null`/`undefined`/non-array return is serialized straight through so
+      // EntityResolver's own defensive branches (null warn, non-array warn)
+      // still run.
+      if (method === 'GET' && url.endsWith('/labels')) {
+        try {
+          const labels = await mockClient.labels.getLabels({});
+          return mockResponse({ text: labels === undefined ? '' : JSON.stringify(labels) });
+        } catch (error) {
+          return toFetchOutcome(error);
+        }
+      }
+      // TaskCreationService.handleUserAssignment -> PUT /tasks/{id}/assignees
+      // (additive single-assign per user, body { user_id }). Delegated to the
+      // mockClient.tasks.assignUserToTask mock so existing call-count/argument
+      // assertions keep working unchanged.
+      const assigneeMatch = /\/tasks\/(\d+)\/assignees$/.exec(url);
+      if (method === 'PUT' && assigneeMatch) {
+        const taskId = Number(assigneeMatch[1]);
+        const body = init?.body ? JSON.parse(init.body as string) : undefined;
+        try {
+          await mockClient.tasks.assignUserToTask(taskId, body?.user_id);
+          return mockResponse({ text: JSON.stringify({}) });
+        } catch (error) {
+          return toFetchOutcome(error);
+        }
+      }
+      // TaskCreationService.verifyLabelAssignment -> GET /tasks/{id} (reads
+      // back .labels). Delegated to mockClient.tasks.getTask.
+      const getTaskMatch = /\/tasks\/(\d+)$/.exec(url);
+      if (method === 'GET' && getTaskMatch) {
+        const taskId = Number(getTaskMatch[1]);
+        try {
+          const task = await mockClient.tasks.getTask(taskId);
+          return mockResponse({ text: JSON.stringify(task) });
         } catch (error) {
           return toFetchOutcome(error);
         }
@@ -1111,8 +1153,13 @@ Description,1`;
     });
 
     it('should handle general errors with stack trace', async () => {
-      // Mock getClientFromContext to throw a general error
-      (getClientFromContext as jest.Mock).mockRejectedValue(new Error('Connection failed'));
+      // batch-import.ts no longer calls getClientFromContext; it drives the
+      // flow off the injected authManager. Throw a general (non-MCPError)
+      // error from the first thing it touches inside the try — the auth
+      // check — to reach the top-level catch's stack-logging branch.
+      mockAuthManager.isAuthenticated.mockImplementation(() => {
+        throw new Error('Connection failed');
+      });
 
       const result = await toolHandler({
         projectId: 1,
@@ -1576,8 +1623,12 @@ Description,1`;
     });
 
     it('should handle non-Error in final catch block', async () => {
-      // Test lines 596-599
-      (getClientFromContext as jest.Mock).mockRejectedValue('String rejection');
+      // Test the top-level catch's non-Error fallback. batch-import.ts no
+      // longer calls getClientFromContext; throw a raw (non-Error) value from
+      // the auth check to reach that branch.
+      mockAuthManager.isAuthenticated.mockImplementation(() => {
+        throw 'String rejection';
+      });
 
       const result = await toolHandler({
         projectId: 1,
@@ -1746,11 +1797,14 @@ Description,1`;
         data: JSON.stringify(taskData),
       });
 
+      // GET /tasks/{id} now flows through vikunjaRestRequest, which wraps the
+      // raw rejection into an MCPError whose message prefixes the original —
+      // so this is a substring match rather than the exact raw value.
       expect(logger.debug).toHaveBeenCalledWith(
         'Could not verify label assignment',
         expect.objectContaining({
           taskId: 2201,
-          error: 'Verification failed',
+          error: expect.stringContaining('Verification failed'),
         })
       );
     });
@@ -1818,7 +1872,11 @@ Description,1`;
     });
 
     it('should handle getLabels error that is not Error instance', async () => {
-      // Test line 291 - error not instanceof Error
+      // GET /labels now flows through vikunjaRestRequest, which wraps ANY
+      // rejection (including this raw string) into a real MCPError. So the
+      // logged error is that MCPError's message (containing the original
+      // string) with a defined stack, not the pre-migration raw string /
+      // undefined-stack pair.
       mockClient.labels.getLabels.mockRejectedValue('Labels fetch failed');
       mockClient.tasks.createTask.mockResolvedValue({ id: 2501, title: 'Test' });
 
@@ -1831,8 +1889,8 @@ Description,1`;
       expect(logger.error).toHaveBeenCalledWith(
         'Failed to fetch labels',
         expect.objectContaining({
-          error: 'Labels fetch failed',
-          stack: undefined,
+          error: expect.stringContaining('Labels fetch failed'),
+          stack: expect.any(String),
         })
       );
     });
@@ -2094,10 +2152,14 @@ Description,1`;
         data: JSON.stringify({ title: 'Test' }),
       });
 
+      // GET /labels now flows through vikunjaRestRequest, which wraps the
+      // (empty-message) rejection into an MCPError carrying its own request
+      // context — so the logged error is that non-empty wrapped message with
+      // a defined stack, not the pre-migration empty string.
       expect(logger.error).toHaveBeenCalledWith(
         'Failed to fetch labels',
         expect.objectContaining({
-          error: '',
+          error: expect.stringContaining('GET /labels'),
           stack: expect.any(String),
         })
       );
@@ -2123,11 +2185,13 @@ Description,1`;
         data: JSON.stringify(taskData),
       });
 
+      // GET /tasks/{id} now flows through vikunjaRestRequest, which wraps the
+      // original error message with its own context — substring match.
       expect(logger.debug).toHaveBeenCalledWith(
         'Could not verify label assignment',
         expect.objectContaining({
           taskId: 3801,
-          error: 'Verification error',
+          error: expect.stringContaining('Verification error'),
         })
       );
     });
@@ -2179,9 +2243,13 @@ Description,1`;
     });
 
     it('should handle final error catch with MCPError instance', async () => {
-      // Ensure MCPError is handled differently in final catch
+      // Ensure MCPError is handled differently in final catch. batch-import.ts
+      // no longer calls getClientFromContext; throw the MCPError from the auth
+      // check so it reaches the top-level `instanceof MCPError` passthrough.
       const mcpError = new MCPError(ErrorCode.INTERNAL_ERROR, 'Test MCP error');
-      (getClientFromContext as jest.Mock).mockRejectedValue(mcpError);
+      mockAuthManager.isAuthenticated.mockImplementation(() => {
+        throw mcpError;
+      });
 
       const result = await toolHandler({
         projectId: 1,

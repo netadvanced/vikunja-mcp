@@ -130,5 +130,5 @@ export { createStandardResponse, createAorpErrorResponse as createErrorResponse 
 // Additional exports for task modules
 export type { SimpleResponse } from './utils/simple-response';
 
-// Client utilities for external usage
-export { getClientFromContext, clearGlobalClientFactory } from './client';
+// Session utilities for external usage
+export { getAuthManagerFromContext, clearGlobalClientFactory } from './client';

@@ -1,21 +1,22 @@
 /**
- * Vikunja Client Factory Exports
+ * Vikunja session context
+ *
+ * Holds the active session (via {@link VikunjaClientFactory}, which now wraps
+ * only an {@link AuthManager}) and exposes it to the direct-REST transport.
+ * The legacy typed-client surface that used to live here was removed when the
+ * upstream client library was retired (docs/ROADMAP.md §3 decision 2) — all
+ * API calls now go through `vikunjaRestRequest` (`src/utils/vikunja-rest.ts`).
  */
 
-import type { VikunjaClient } from 'node-vikunja';
 import type { AuthManager } from './auth/AuthManager';
-import type {
-  VikunjaModule
-} from './types/node-vikunja-extended';
-import { isVikunjaClientConstructor } from './types/node-vikunja-extended';
 import { VikunjaClientFactory } from './client/VikunjaClientFactory';
 import { Mutex } from 'async-mutex';
-import { createAuthRequiredError, createInternalError } from './utils/error-handler';
+import { createAuthRequiredError } from './utils/error-handler';
 
 export { VikunjaClientFactory } from './client/VikunjaClientFactory';
 
 /**
- * Client context for dependency injection with thread safety
+ * Session context for dependency injection with thread safety.
  *
  * NOTE: Only async getInstanceAsync() method is available to prevent race conditions.
  */
@@ -67,26 +68,10 @@ class ClientContext {
   }
 
   /**
-   * Get a client instance using the factory (thread-safe)
-   */
-  async getClient(): Promise<VikunjaClient> {
-    const release = await this.factoryMutex.acquire();
-    try {
-      if (this.clientFactory) {
-        return this.clientFactory.getClient();
-      }
-      throw createAuthRequiredError('get Vikunja client');
-    } finally {
-      release();
-    }
-  }
-
-  /**
-   * Get the AuthManager backing the active client factory (thread-safe).
+   * Get the AuthManager backing the active session factory (thread-safe).
    *
-   * See `VikunjaClientFactory.getAuthManager()` for why this exists: it lets
-   * REST-migrated utilities recover session credentials without requiring
-   * every caller up the stack to thread an `AuthManager` parameter through.
+   * REST-migrated call sites recover the session credentials through this
+   * rather than threading an `AuthManager` down every call stack.
    */
   async getAuthManager(): Promise<AuthManager> {
     const release = await this.factoryMutex.acquire();
@@ -111,14 +96,6 @@ class ClientContext {
       release();
     }
   }
-}
-
-/**
- * Convenience function to get client from context (thread-safe)
- */
-export async function getClientFromContext(): Promise<VikunjaClient> {
-  const context = await ClientContext.getInstanceAsync();
-  return context.getClient();
 }
 
 /**
@@ -149,15 +126,12 @@ export async function clearGlobalClientFactory(): Promise<void> {
 export { ClientContext };
 
 /**
- * Creates a new VikunjaClientFactory with dependency injection
+ * Creates a new VikunjaClientFactory bound to the given session.
+ *
+ * Returns a Promise to keep the call signature stable for existing awaiting
+ * callers, even though construction is now synchronous (there is no longer a
+ * dynamic client-library import to await).
  */
-export async function createVikunjaClientFactory(authManager: AuthManager): Promise<VikunjaClientFactory> {
-  // Dynamically import VikunjaClient
-  const module: VikunjaModule = await import('node-vikunja');
-  if (!isVikunjaClientConstructor(module.VikunjaClient)) {
-    throw createInternalError('Invalid VikunjaClient constructor imported from node-vikunja module');
-  }
-  
-  return new VikunjaClientFactory(authManager, module.VikunjaClient);
+export function createVikunjaClientFactory(authManager: AuthManager): Promise<VikunjaClientFactory> {
+  return Promise.resolve(new VikunjaClientFactory(authManager));
 }
-

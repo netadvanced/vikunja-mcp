@@ -69,7 +69,7 @@ export async function deleteTask(
     };
   } catch (error) {
     // A REST 404 is translated to the same friendly "not found" message the
-    // pre-migration node-vikunja error path produced via handleStatusCodeError
+    // pre-migration legacy client error path produced via handleStatusCodeError
     // (which keys off a bare `.statusCode` property). vikunjaRestRequest
     // always throws MCPError with the status nested under `.details`.
     if (error instanceof MCPError) {

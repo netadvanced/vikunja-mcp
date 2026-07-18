@@ -8,10 +8,10 @@
  * reused here for its field/value validation.
  */
 
-import { MCPError, ErrorCode, createStandardResponse, getClientFromContext, logger, isAuthenticationError, RETRY_CONFIG, transformApiError, handleFetchError } from '../../index';
-import type { Assignee } from '../../types';
+import { MCPError, ErrorCode, createStandardResponse, logger, isAuthenticationError, RETRY_CONFIG, transformApiError, handleFetchError } from '../../index';
 import type { AuthManager } from '../../auth/AuthManager';
 import { vikunjaRestRequest } from '../../utils/vikunja-rest';
+import { getTaskViaRest } from '../../utils/task-rest-transport';
 import { withRetry } from '../../utils/retry';
 import { setTaskLabels } from '../../utils/label-bulk';
 import { BatchProcessor } from '../../utils/performance/batch-processor';
@@ -85,10 +85,6 @@ export async function bulkUpdateTasks(args: BulkUpdateArgs, authManager: AuthMan
     validateBulkUpdate(args);
     // Validation ensures taskIds exists
     const taskIds = args.taskIds ?? [];
-    // Assignees/labels are a task sub-resource (sibling item M-B) — still
-    // applied via the node-vikunja client below when the requested field is
-    // 'assignees' or 'labels'.
-    const client = await getClientFromContext();
     const fieldValue = resolveBulkUpdateValue(args.field, args.value);
 
     const updateResult = await processors.update.processBatches(taskIds, async (taskId) => {
@@ -99,29 +95,32 @@ export async function bulkUpdateTasks(args: BulkUpdateArgs, authManager: AuthMan
       const updated = await vikunjaRestRequest<Task>(authManager, 'POST', `/tasks/${taskId}`, update);
 
       if (args.field === 'assignees' && Array.isArray(args.value)) {
-        const currentAssignees = (await client.tasks.getTask(taskId)).assignees?.map((a: Assignee) => a.id) || [];
+        const currentTask = await getTaskViaRest(authManager, taskId);
+        const currentAssignees = (currentTask.assignees ?? [])
+          .map((a) => a.id)
+          .filter((id): id is number => typeof id === 'number');
         if (args.value.length > 0) {
           try {
-            // Per-user additive assign (assignUserToTask) instead of the bulk
-            // endpoint: node-vikunja's bulkAssignUsersToTask sends `{ user_ids }`
-            // to Vikunja's bulk endpoint which expects `{ assignees }` and
-            // REPLACES the whole list, silently unassigning everyone on the
-            // field mismatch (upstream issue #15). Run concurrently.
-            await Promise.all((args.value as number[]).map((userId) => withRetry(() => client.tasks.assignUserToTask(taskId, userId), { ...RETRY_CONFIG.AUTH_ERRORS, shouldRetry: isAuthenticationError })));
+            // Per-user additive assign (PUT /tasks/{taskID}/assignees, body
+            // { user_id }, models.TaskAssginee) instead of the bulk endpoint,
+            // which REPLACES the whole list and would silently unassign
+            // everyone (upstream issue #15). Run concurrently.
+            await Promise.all((args.value as number[]).map((userId) => withRetry(() => vikunjaRestRequest(authManager, 'PUT', `/tasks/${taskId}/assignees`, { user_id: userId }), { ...RETRY_CONFIG.AUTH_ERRORS, shouldRetry: isAuthenticationError })));
           } catch (assigneeError) {
             if (isAuthenticationError(assigneeError)) throw new MCPError(ErrorCode.API_ERROR, 'Assignee operations may have authentication issues');
             throw assigneeError;
           }
         }
+        // DELETE /tasks/{taskID}/assignees/{userID} per the OpenAPI spec — no body.
         for (const userId of currentAssignees) {
-          try { await withRetry(() => client.tasks.removeUserFromTask(taskId, userId), { ...RETRY_CONFIG.AUTH_ERRORS, shouldRetry: isAuthenticationError }); }
+          try { await withRetry(() => vikunjaRestRequest(authManager, 'DELETE', `/tasks/${taskId}/assignees/${userId}`), { ...RETRY_CONFIG.AUTH_ERRORS, shouldRetry: isAuthenticationError }); }
           catch (e) { if (isAuthenticationError(e)) throw new MCPError(ErrorCode.API_ERROR, `${AUTH_ERROR_MESSAGES.ASSIGNEE_REMOVE_PARTIAL} (Retried ${RETRY_CONFIG.AUTH_ERRORS.maxRetries} times)`); throw e; }
         }
       }
       // Labels are never applied by Vikunja's task update payload; persist them
-      // explicitly via setTaskLabels (correct label_ids payload shape) — re-impl #49.
+      // explicitly via setTaskLabels (correct labels payload shape) — re-impl #49.
       if (args.field === 'labels' && Array.isArray(args.value)) {
-        await withRetry(() => setTaskLabels(client, taskId, args.value as number[]), { ...RETRY_CONFIG.AUTH_ERRORS, shouldRetry: isAuthenticationError });
+        await withRetry(() => setTaskLabels(authManager, taskId, args.value as number[]), { ...RETRY_CONFIG.AUTH_ERRORS, shouldRetry: isAuthenticationError });
       }
       return updated;
     });
@@ -186,9 +185,6 @@ export async function bulkCreateTasks(args: BulkCreateArgs, authManager: AuthMan
   }
 
   try {
-    // Assignees/labels are a task sub-resource (sibling item M-B) — still
-    // applied via the node-vikunja client below.
-    const client = await getClientFromContext();
     // Validation ensures projectId and tasks exist
     const projectId = args.projectId ?? 0;
     const tasks = args.tasks ?? [];
@@ -218,15 +214,15 @@ export async function bulkCreateTasks(args: BulkCreateArgs, authManager: AuthMan
 
         try {
           const labels = t.labels;
-          if (labels && labels.length > 0) await withRetry(() => setTaskLabels(client, createdId, labels), { maxRetries: RETRY_CONFIG.AUTH_ERRORS.maxRetries ?? 3, timeout: (RETRY_CONFIG.AUTH_ERRORS.initialDelay ?? 1000) + (RETRY_CONFIG.AUTH_ERRORS.maxDelay ?? 10000), shouldRetry: isAuthenticationError });
+          if (labels && labels.length > 0) await withRetry(() => setTaskLabels(authManager, createdId, labels), { maxRetries: RETRY_CONFIG.AUTH_ERRORS.maxRetries ?? 3, timeout: (RETRY_CONFIG.AUTH_ERRORS.initialDelay ?? 1000) + (RETRY_CONFIG.AUTH_ERRORS.maxDelay ?? 10000), shouldRetry: isAuthenticationError });
           const assignees = t.assignees;
           if (assignees && assignees.length > 0) {
             try {
-              // Per-user additive assign (assignUserToTask) instead of the bulk
-              // endpoint, which silently unassigns everyone due to node-vikunja's
-              // `{ user_ids }` vs Vikunja's `{ assignees }` field mismatch
+              // Per-user additive assign (PUT /tasks/{taskID}/assignees, body
+              // { user_id }, models.TaskAssginee) instead of the bulk endpoint,
+              // which REPLACES the list and would silently unassign everyone
               // (upstream issue #15). Run concurrently.
-              await Promise.all(assignees.map((userId) => withRetry(() => client.tasks.assignUserToTask(createdId, userId), { maxRetries: RETRY_CONFIG.AUTH_ERRORS.maxRetries ?? 3, timeout: (RETRY_CONFIG.AUTH_ERRORS.initialDelay ?? 1000) + (RETRY_CONFIG.AUTH_ERRORS.maxDelay ?? 10000), shouldRetry: isAuthenticationError })));
+              await Promise.all(assignees.map((userId) => withRetry(() => vikunjaRestRequest(authManager, 'PUT', `/tasks/${createdId}/assignees`, { user_id: userId }), { maxRetries: RETRY_CONFIG.AUTH_ERRORS.maxRetries ?? 3, timeout: (RETRY_CONFIG.AUTH_ERRORS.initialDelay ?? 1000) + (RETRY_CONFIG.AUTH_ERRORS.maxDelay ?? 10000), shouldRetry: isAuthenticationError })));
             } catch (assigneeError) {
               if (isAuthenticationError(assigneeError)) {
                 throw new MCPError(ErrorCode.API_ERROR, 'Assignee operations may have authentication issues');

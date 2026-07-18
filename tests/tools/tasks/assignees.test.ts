@@ -4,18 +4,15 @@
 
 import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
 import { assignUsers, unassignUsers, listAssignees } from '../../../src/tools/tasks/assignees';
-import { getClientFromContext } from '../../../src/client';
 import { AuthManager } from '../../../src/auth/AuthManager';
 import { MCPError, ErrorCode } from '../../../src/types';
 import { isAuthenticationError } from '../../../src/utils/auth-error-handler';
 import { withRetry, circuitBreakerRegistry } from '../../../src/utils/retry';
-import { parseMarkdown } from '../../utils/markdown';
 
-jest.mock('../../../src/client');
 jest.mock('../../../src/utils/auth-error-handler');
 // Partial mock: only withRetry is overridden (assignUsers/unassignUsers tests
 // drive it directly), while createCircuitBreaker/circuitBreakerRegistry stay
-// real — listAssignees goes through the direct-REST helper
+// real — every REST op goes through the direct-REST helper
 // (vikunjaRestRequest), which needs a working circuit breaker around the
 // mocked global fetch below.
 jest.mock('../../../src/utils/retry', () => {
@@ -28,20 +25,11 @@ jest.mock('../../../src/utils/retry', () => {
 jest.mock('../../../src/utils/logger');
 
 describe('Assignee operations', () => {
-  // fetchTaskWithAssignees/verifyAssignees still read the task via
-  // node-vikunja's client.tasks.getTask (a deliberate leftover — GET
-  // /tasks/{id} is task CRUD, owned by a different wave item), so it's still
-  // mocked here even though assign/unassign themselves now go through REST.
-  const mockClient = {
-    tasks: {
-      getTask: jest.fn(),
-    },
-  };
-
-  // assignUsers/unassignUsers/listAssignees all call the direct-REST helper
-  // (vikunjaRestRequest) now, so tests drive a mocked global fetch and a real
-  // AuthManager session rather than node-vikunja assignUserToTask/
-  // removeUserFromTask mocks.
+  // assignUsers/unassignUsers/listAssignees all go through the direct-REST
+  // helper (vikunjaRestRequest) now — including the task refresh/verification
+  // reads (fetchTaskWithAssignees -> getTaskViaRest -> GET /tasks/{id}). So
+  // tests drive a mocked global fetch and a real AuthManager session rather
+  // than node-vikunja client method mocks.
   let fetchMock: jest.Mock;
   let originalFetch: typeof fetch;
   let authManager: AuthManager;
@@ -54,9 +42,22 @@ describe('Assignee operations', () => {
       text: jest.fn(async () => JSON.stringify(body)),
     }) as unknown as Response;
 
+  // Route GET /tasks/{id} (the verify + refresh reads) to a supplied task,
+  // while PUT (assign) / DELETE (unassign) resolve to an empty success body.
+  const routeTaskFetch = (taskProvider: unknown | (() => unknown)): void => {
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? 'GET';
+      const path = new URL(url).pathname;
+      if (method === 'GET' && /^\/api\/v1\/tasks\/\d+$/.test(path)) {
+        const task = typeof taskProvider === 'function' ? (taskProvider as () => unknown)() : taskProvider;
+        return restOk(task);
+      }
+      return restOk({});
+    });
+  };
+
   beforeEach(() => {
     jest.clearAllMocks();
-    (getClientFromContext as jest.Mock).mockResolvedValue(mockClient);
     (isAuthenticationError as jest.Mock).mockReturnValue(false);
     (withRetry as jest.Mock).mockImplementation((fn) => fn());
 
@@ -80,8 +81,7 @@ describe('Assignee operations', () => {
         title: 'Test Task',
         assignees: [{ id: 1, name: 'User 1' }, { id: 2, name: 'User 2' }],
       };
-
-      mockClient.tasks.getTask.mockResolvedValue(mockTask);
+      routeTaskFetch(mockTask);
 
       const result = await assignUsers({
         id: 123,
@@ -98,11 +98,15 @@ describe('Assignee operations', () => {
         'https://vikunja.test/api/v1/tasks/123/assignees',
         expect.objectContaining({ method: 'PUT', body: JSON.stringify({ user_id: 2 }) }),
       );
-      expect(fetchMock).toHaveBeenCalledTimes(2);
-      expect(mockClient.tasks.getTask).toHaveBeenCalledWith(123);
+      const putCalls = fetchMock.mock.calls.filter((c) => (c[1] as RequestInit)?.method === 'PUT');
+      expect(putCalls).toHaveLength(2);
+      // Verification + refresh read the task back via GET /tasks/{id}.
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://vikunja.test/api/v1/tasks/123',
+        expect.objectContaining({ method: 'GET' }),
+      );
 
       const markdown = result.content[0].text;
-      const parsed = parseMarkdown(markdown);
       expect(markdown).toContain("## ✅ Success");
       expect(markdown).toContain('assign');
       expect(markdown).toContain('Users assigned to task successfully');
@@ -116,8 +120,7 @@ describe('Assignee operations', () => {
         title: 'Test Task',
         assignees: [], // API reported success but nothing persisted
       };
-
-      mockClient.tasks.getTask.mockResolvedValue(mockTaskNoAssignees);
+      routeTaskFetch(mockTaskNoAssignees);
 
       const result = await assignUsers({
         id: 123,
@@ -131,17 +134,25 @@ describe('Assignee operations', () => {
     });
 
     it('should not warn and should fail open when verification re-fetch errors', async () => {
-      // The REST PUT succeeds; the verification re-fetch throws, but the
-      // main fetch succeeds — verification must fail open (no false warning).
+      // The REST PUTs succeed; the first GET (verification) throws, but the
+      // second GET (refresh) succeeds — verification must fail open (no false
+      // warning) and the operation still reports success.
       const mockTask = {
         id: 123,
         title: 'Test Task',
         assignees: [{ id: 1, name: 'User 1' }, { id: 2, name: 'User 2' }],
       };
-
-      mockClient.tasks.getTask
-        .mockRejectedValueOnce(new Error('verification fetch failed'))
-        .mockResolvedValueOnce(mockTask);
+      let getCount = 0;
+      fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+        const method = init?.method ?? 'GET';
+        const path = new URL(url).pathname;
+        if (method === 'GET' && /^\/api\/v1\/tasks\/\d+$/.test(path)) {
+          getCount += 1;
+          if (getCount === 1) throw new Error('verification fetch failed');
+          return restOk(mockTask);
+        }
+        return restOk({});
+      });
 
       const result = await assignUsers({
         id: 123,
@@ -217,12 +228,22 @@ describe('Assignee operations', () => {
       );
     });
 
-    it('should handle MCPError instances properly', async () => {
+    it('should handle MCPError instances propagated from the task read', async () => {
+      // The assign PUTs succeed (withRetry default), then the task read throws
+      // an MCPError; the REST layer wraps its message, and assignUsers surfaces
+      // it under its own "Failed to assign users to task" prefix.
       const mcpError = new MCPError(ErrorCode.VALIDATION_ERROR, 'Validation failed');
-      mockClient.tasks.getTask.mockRejectedValue(mcpError);
+      fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+        const method = init?.method ?? 'GET';
+        const path = new URL(url).pathname;
+        if (method === 'GET' && /^\/api\/v1\/tasks\/\d+$/.test(path)) {
+          throw mcpError;
+        }
+        return restOk({});
+      });
 
       await expect(assignUsers({ id: 123, assignees: [1, 2] }, authManager)).rejects.toThrow(
-        'Failed to assign users to task: Validation failed'
+        /Failed to assign users to task:.*Validation failed/
       );
     });
   });
@@ -234,15 +255,15 @@ describe('Assignee operations', () => {
         title: 'Test Task',
         assignees: [],
       };
-
-      mockClient.tasks.getTask.mockResolvedValue(mockTask);
+      routeTaskFetch(mockTask);
 
       const result = await unassignUsers({
         id: 123,
         assignees: [1, 2],
       }, authManager);
 
-      expect(fetchMock).toHaveBeenCalledTimes(2);
+      const deleteCalls = fetchMock.mock.calls.filter((c) => (c[1] as RequestInit)?.method === 'DELETE');
+      expect(deleteCalls).toHaveLength(2);
       expect(fetchMock).toHaveBeenCalledWith(
         'https://vikunja.test/api/v1/tasks/123/assignees/1',
         expect.objectContaining({ method: 'DELETE' }),
@@ -251,10 +272,13 @@ describe('Assignee operations', () => {
         'https://vikunja.test/api/v1/tasks/123/assignees/2',
         expect.objectContaining({ method: 'DELETE' }),
       );
-      expect(mockClient.tasks.getTask).toHaveBeenCalledWith(123);
+      // Refresh reads the task back via GET /tasks/{id}.
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://vikunja.test/api/v1/tasks/123',
+        expect.objectContaining({ method: 'GET' }),
+      );
 
       const markdown = result.content[0].text;
-      const parsed = parseMarkdown(markdown);
       expect(markdown).toContain("## ✅ Success");
       expect(markdown).toContain('unassign');
       expect(markdown).toContain('Users removed from task successfully');
@@ -322,7 +346,7 @@ describe('Assignee operations', () => {
     // Uses the dedicated GET /tasks/{taskID}/assignees endpoint directly
     // (see docs/API-COVERAGE.md's row for this endpoint) rather than reading
     // task.assignees off GET /tasks/{id} — so these tests assert against the
-    // mocked global fetch, not mockClient.tasks.getTask.
+    // mocked global fetch.
     const restOk = (body: unknown): Response =>
       ({
         ok: true,
@@ -347,7 +371,6 @@ describe('Assignee operations', () => {
       );
 
       const markdown = result.content[0].text;
-      const parsed = parseMarkdown(markdown);
       expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('get');
       expect(markdown).toContain('Task 123 has 2 assignee(s)');
@@ -463,31 +486,26 @@ describe('Assignee operations', () => {
   // Integration tests
   describe('Integration scenarios', () => {
     it('should handle complete assign-unassign workflow', async () => {
-      const initialTask = {
-        id: 123,
-        title: 'Test Task',
-        assignees: [],
-      };
-      
-      const assignedTask = {
+      // A single mutable "current task" backs the GET /tasks/{id} reads for
+      // both the assign (verify + refresh) and unassign (refresh) flows.
+      let currentTask: unknown = {
         id: 123,
         title: 'Test Task',
         assignees: [{ id: 1, name: 'User 1' }],
       };
-      
-      // Mock assignment
-      mockClient.tasks.getTask.mockResolvedValue(assignedTask);
+      routeTaskFetch(() => currentTask);
 
       const assignResult = await assignUsers({ id: 123, assignees: [1] }, authManager);
-
       const assignMarkdown = assignResult.content[0].text;
       expect(assignMarkdown).toContain('Users assigned to task successfully');
 
-      // Mock unassignment
-      mockClient.tasks.getTask.mockResolvedValue(initialTask);
+      currentTask = {
+        id: 123,
+        title: 'Test Task',
+        assignees: [],
+      };
 
       const unassignResult = await unassignUsers({ id: 123, assignees: [1] }, authManager);
-
       const unassignMarkdown = unassignResult.content[0].text;
       expect(unassignMarkdown).toContain('Users removed from task successfully');
     });

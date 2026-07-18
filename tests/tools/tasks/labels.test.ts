@@ -1,32 +1,21 @@
 import { applyLabels, removeLabels, listTaskLabels } from '../../../src/tools/tasks/labels';
-import { getClientFromContext } from '../../../src/client';
 import { AuthManager } from '../../../src/auth/AuthManager';
 import { circuitBreakerRegistry } from '../../../src/utils/retry';
 import { MCPError } from '../../../src/types/index';
 
-// applyLabels/removeLabels/listTaskLabels now call the direct-REST helper
-// (vikunjaRestRequest) for the label-on-task endpoints, but still fetch the
-// task itself via node-vikunja's client.tasks.getTask (a deliberate
-// leftover — GET /tasks/{id} is task CRUD, owned by a different wave item),
-// so both a mocked client and a mocked global fetch are needed.
-jest.mock('../../../src/client', () => ({
-  getClientFromContext: jest.fn(),
-}));
+// applyLabels/removeLabels/listTaskLabels drive every Vikunja call through the
+// direct-REST helper (vikunjaRestRequest) now: the label-on-task endpoints for
+// the writes, and GET /tasks/{id} (via getTaskViaRest) to refresh the task
+// afterwards. There is no node-vikunja client involved any more, so the tests
+// route a single mocked global fetch for all of it.
 
 // Mock withRetry to call the operation directly without circuit breaker caching
 jest.mock('../../../src/utils/retry', () => ({
   ...jest.requireActual('../../../src/utils/retry'),
   withRetry: async <T>(operation: () => Promise<T>) => operation(),
 }));
-const mockGetClientFromContext = jest.mocked(getClientFromContext);
 
 describe('Label operations', () => {
-  const mockClient = {
-    tasks: {
-      getTask: jest.fn(),
-    },
-  };
-
   let authManager: AuthManager;
   let fetchMock: jest.Mock;
   let originalFetch: typeof fetch;
@@ -51,7 +40,6 @@ describe('Label operations', () => {
     // Use resetAllMocks to also reset mock implementations (not just call history)
     jest.resetAllMocks();
     circuitBreakerRegistry.clear();
-    mockGetClientFromContext.mockResolvedValue(mockClient as any);
 
     authManager = new AuthManager();
     authManager.connect('https://vikunja.test', 'tk_test-token');
@@ -60,7 +48,8 @@ describe('Label operations', () => {
     fetchMock = jest.fn();
     globalThis.fetch = fetchMock as unknown as typeof fetch;
 
-    // Default: task has no labels yet, and label writes succeed.
+    // Default: task has no labels yet, label writes succeed, and the GET
+    // /tasks/{id} refresh returns a bare task (its content is not asserted).
     fetchMock.mockImplementation((url: string) => {
       if (url.endsWith('/labels')) {
         return Promise.resolve(restOk([]));
@@ -75,21 +64,17 @@ describe('Label operations', () => {
 
   describe('applyLabels', () => {
     it('should apply labels to a task successfully', async () => {
-      const mockTask = {
-        id: 1,
-        title: 'Test Task',
-        labels: [{ id: 1, title: 'research', hex_color: '3498db' }],
-      };
-
-      mockClient.tasks.getTask.mockResolvedValue(mockTask);
-
       const result = await applyLabels({ id: 1, labels: [1] }, authManager);
 
       expect(fetchMock).toHaveBeenCalledWith(
         'https://vikunja.test/api/v1/tasks/1/labels',
         expect.objectContaining({ method: 'PUT', body: JSON.stringify({ label_id: 1 }) }),
       );
-      expect(mockClient.tasks.getTask).toHaveBeenCalledWith(1);
+      // The task is refreshed afterwards via GET /tasks/{id} (direct-REST).
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://vikunja.test/api/v1/tasks/1',
+        expect.objectContaining({ method: 'GET' }),
+      );
       expect(result.content[0].text).toContain('Label applied to task successfully');
     });
 
@@ -102,9 +87,6 @@ describe('Label operations', () => {
     });
 
     it('should handle multiple labels', async () => {
-      const mockTask = { id: 1, title: 'Test Task', labels: [] };
-      mockClient.tasks.getTask.mockResolvedValue(mockTask);
-
       const result = await applyLabels({ id: 1, labels: [1, 2] }, authManager);
 
       const putCalls = fetchMock.mock.calls.filter(
@@ -115,7 +97,6 @@ describe('Label operations', () => {
     });
 
     it('should skip labels already present on the task', async () => {
-      const mockTask = { id: 1, title: 'Test Task', labels: [] };
       // Label 1 is already on the task; only label 2 should be applied.
       fetchMock.mockImplementation((url: string, init?: RequestInit) => {
         if (init?.method === 'GET' && url.endsWith('/labels')) {
@@ -123,8 +104,6 @@ describe('Label operations', () => {
         }
         return Promise.resolve(restOk({}));
       });
-      mockClient.tasks.getTask.mockResolvedValue(mockTask);
-
       const result = await applyLabels({ id: 1, labels: [1, 2] }, authManager);
 
       const putCalls = fetchMock.mock.calls.filter(
@@ -136,7 +115,6 @@ describe('Label operations', () => {
     });
 
     it('should not abort when a label is already on the task', async () => {
-      const mockTask = { id: 1, title: 'Test Task', labels: [] };
       // GET /labels reports nothing, but the first PUT races and rejects the
       // first label as a duplicate; the rest must still be applied.
       let putCalls = 0;
@@ -153,8 +131,6 @@ describe('Label operations', () => {
         }
         return Promise.resolve(restOk({}));
       });
-      mockClient.tasks.getTask.mockResolvedValue(mockTask);
-
       const result = await applyLabels({ id: 1, labels: [1, 2] }, authManager);
 
       expect(putCalls).toBe(2);
@@ -162,7 +138,6 @@ describe('Label operations', () => {
     });
 
     it('should report when every requested label is already present', async () => {
-      const mockTask = { id: 1, title: 'Test Task', labels: [] };
       fetchMock.mockImplementation((url: string, init?: RequestInit) => {
         if (init?.method === 'GET' && url.endsWith('/labels')) {
           return Promise.resolve(
@@ -174,8 +149,6 @@ describe('Label operations', () => {
         }
         return Promise.resolve(restOk({}));
       });
-      mockClient.tasks.getTask.mockResolvedValue(mockTask);
-
       const result = await applyLabels({ id: 1, labels: [1, 2] }, authManager);
 
       const putCalls = fetchMock.mock.calls.filter(
@@ -199,9 +172,6 @@ describe('Label operations', () => {
 
   describe('removeLabels', () => {
     it('should remove labels from a task successfully', async () => {
-      const mockTask = { id: 1, title: 'Test Task', labels: null };
-      mockClient.tasks.getTask.mockResolvedValue(mockTask);
-
       const result = await removeLabels({ id: 1, labels: [1] }, authManager);
 
       expect(fetchMock).toHaveBeenCalledWith(
@@ -220,9 +190,6 @@ describe('Label operations', () => {
     });
 
     it('should handle multiple labels removal', async () => {
-      const mockTask = { id: 1, title: 'Test Task', labels: null };
-      mockClient.tasks.getTask.mockResolvedValue(mockTask);
-
       const result = await removeLabels({ id: 1, labels: [1, 2] }, authManager);
 
       const deleteCalls = fetchMock.mock.calls.filter(
@@ -235,10 +202,7 @@ describe('Label operations', () => {
 
   describe('listTaskLabels', () => {
     it('should list labels for a task successfully', async () => {
-      const mockTask = { id: 1, title: 'Test Task' };
       fetchMock.mockResolvedValue(restOk([{ id: 1, title: 'research', hex_color: '3498db' }]));
-      mockClient.tasks.getTask.mockResolvedValue(mockTask);
-
       const result = await listTaskLabels({ id: 1 }, authManager);
 
       expect(fetchMock).toHaveBeenCalledWith(
@@ -253,10 +217,7 @@ describe('Label operations', () => {
     });
 
     it('should handle task with no labels', async () => {
-      const mockTask = { id: 1, title: 'Test Task' };
       fetchMock.mockResolvedValue(restOk([]));
-      mockClient.tasks.getTask.mockResolvedValue(mockTask);
-
       const result = await listTaskLabels({ id: 1 }, authManager);
 
       expect(result.content[0].text).toContain('Task has 0 label(s)');

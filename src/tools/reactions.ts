@@ -24,7 +24,7 @@ import { z } from 'zod';
 import type { AuthManager } from '../auth/AuthManager';
 import type { VikunjaClientFactory } from '../client/VikunjaClientFactory';
 import { MCPError, ErrorCode } from '../types';
-import { getClientFromContext } from '../client';
+import { getAuthManagerFromContext } from '../client';
 import { logger } from '../utils/logger';
 import { validateAndConvertId } from '../utils/validation';
 import { createAorpResponse } from '../utils/response-factory';
@@ -73,7 +73,7 @@ export function registerReactionsTool(
         );
       }
 
-      await getClientFromContext(); // Ensure client is initialized
+      await getAuthManagerFromContext(); // Ensure the session is initialized
       const subcommand = args.subcommand;
       const kind = args.kind;
 

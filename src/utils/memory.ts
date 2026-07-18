@@ -5,9 +5,12 @@
  * Uses object-sizeof library for accurate memory estimation.
  */
 
-import type { Task } from 'node-vikunja';
+import type { components } from '../types/generated/vikunja-openapi';
 import { logger } from './logger';
 import objectSizeof from 'object-sizeof';
+
+/** `models.Task` per the OpenAPI spec — sample task for memory estimation. */
+type Task = components['schemas']['models.Task'];
 
 /**
  * Interface for query parameters used in memory estimation

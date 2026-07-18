@@ -24,8 +24,8 @@ interface VikunjaProjectSummary {
 
 /**
  * Fetches a single project's tasks. Calls the same `GET /projects/{id}/tasks`
- * path node-vikunja's `getProjectTasks` used pre-migration — this is a
- * literal call-site migration (node-vikunja client -> `vikunjaRestRequest`),
+ * path the legacy client's `getProjectTasks` used pre-migration — this is a
+ * literal call-site migration (legacy client -> `vikunjaRestRequest`),
  * not an endpoint redesign, so it is preserved byte-for-byte even though
  * `docs/vikunja-openapi.json` does not document a GET method at this path
  * (verified via `jq '.paths["/projects/{id}/tasks"]'`) — the per-view
@@ -51,7 +51,7 @@ async function fetchProjectTasks(
 /**
  * Loads tasks from every project the user can access.
  *
- * Vikunja's dedicated "all tasks" endpoint (node-vikunja's `getAllTasks` ->
+ * Vikunja's dedicated "all tasks" endpoint (the legacy client's `getAllTasks` ->
  * GET /tasks/all) returns HTTP 400 "Invalid model provided" on some servers
  * (reproduced on v2.3.0), so it cannot be relied on for cross-project listing.
  * This aggregates GET /projects/{id}/tasks across every project instead, which
@@ -134,9 +134,9 @@ export class ClientSideFilteringStrategy implements TaskFilteringStrategy {
 
     if (filterExpression) {
       const originalCount = safeTasks.length;
-      // applyFilter's Task type comes from node-vikunja (out of this item's
-      // scope — see evaluators.ts); its shape mostly matches the generated
-      // model.Task, structurally-cast at this boundary.
+      // applyFilter (evaluators.ts) and this strategy both type tasks as the
+      // generated `models.Task`; the cast here bridges the two nominally-
+      // distinct aliases at this boundary.
       filteredTasks = applyFilter(
         safeTasks as unknown as Parameters<typeof applyFilter>[0],
         filterExpression,

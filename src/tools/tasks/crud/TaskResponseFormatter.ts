@@ -148,9 +148,9 @@ export function createTaskResponse(
 
   // Copy task data if present
   if (_data.task) {
-    responseData.tasks = [_data.task as unknown as Task]; // Convert from node-vikunja Task to our Task interface (reminders shape drifted, cast via unknown)
+    responseData.tasks = [_data.task as unknown as Task]; // Convert from legacy client Task to our Task interface (reminders shape drifted, cast via unknown)
   } else if (_data.tasks) {
-    responseData.tasks = _data.tasks as unknown as Task[]; // Convert from node-vikunja Task[] to our Task[] interface (reminders shape drifted, cast via unknown)
+    responseData.tasks = _data.tasks as unknown as Task[]; // Convert from legacy client Task[] to our Task[] interface (reminders shape drifted, cast via unknown)
   }
 
   // Copy other properties

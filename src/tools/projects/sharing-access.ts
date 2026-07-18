@@ -6,10 +6,10 @@
  * this MCP server previously exposed no way to share a project with a user
  * or team directly (see docs/API-COVERAGE.md, HIGH finding). Built
  * direct-REST per the Wave D playbook (docs/ENDPOINT-PLAYBOOK.md); there is
- * no existing node-vikunja call site here to migrate.
+ * no existing legacy client call site here to migrate.
  *
  * Endpoints (verified against docs/vikunja-openapi.json — note the body
- * field is `permission`, NOT node-vikunja's stale `right`):
+ * field is `permission`, NOT the legacy client's stale `right`):
  *   - GET    /projects/{id}/users                list users on a project
  *   - PUT    /projects/{id}/users                 add a user to a project
  *   - POST   /projects/{projectID}/users/{userID} update a user's permission

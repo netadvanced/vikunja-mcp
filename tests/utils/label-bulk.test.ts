@@ -1,11 +1,6 @@
 import { setTaskLabels } from '../../src/utils/label-bulk';
-import { getAuthManagerFromContext } from '../../src/client';
 import { AuthManager } from '../../src/auth/AuthManager';
 import { circuitBreakerRegistry } from '../../src/utils/retry';
-
-jest.mock('../../src/client', () => ({
-  getAuthManagerFromContext: jest.fn(),
-}));
 
 describe('setTaskLabels', () => {
   let authManager: AuthManager;
@@ -26,7 +21,6 @@ describe('setTaskLabels', () => {
 
     authManager = new AuthManager();
     authManager.connect('https://vikunja.test', 'tk_test-token');
-    (getAuthManagerFromContext as jest.Mock).mockResolvedValue(authManager);
 
     originalFetch = globalThis.fetch;
     fetchMock = jest.fn().mockResolvedValue(restOk({ labels: [] }));
@@ -38,9 +32,8 @@ describe('setTaskLabels', () => {
   });
 
   it('sends the { labels: [{ id }] } body shape that Vikunja requires', async () => {
-    // `client` is intentionally unused by the REST implementation (see the
-    // doc comment on setTaskLabels) — any value satisfies the signature.
-    await setTaskLabels(null as never, 42, [3, 8]);
+    // setTaskLabels takes the AuthManager directly now (REST transport).
+    await setTaskLabels(authManager, 42, [3, 8]);
 
     expect(fetchMock).toHaveBeenCalledWith(
       'https://vikunja.test/api/v1/tasks/42/labels/bulk',
@@ -52,7 +45,7 @@ describe('setTaskLabels', () => {
   });
 
   it('sends an empty labels array to clear every label', async () => {
-    await setTaskLabels(null as never, 7, []);
+    await setTaskLabels(authManager, 7, []);
 
     expect(fetchMock).toHaveBeenCalledWith(
       'https://vikunja.test/api/v1/tasks/7/labels/bulk',
@@ -74,6 +67,6 @@ describe('setTaskLabels', () => {
       text: jest.fn(async () => 'boom'),
     } as unknown as Response);
 
-    await expect(setTaskLabels(null as never, 1, [1])).rejects.toThrow('boom');
+    await expect(setTaskLabels(authManager, 1, [1])).rejects.toThrow('boom');
   });
 });

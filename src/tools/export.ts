@@ -14,19 +14,16 @@ import type { AuthManager } from '../auth/AuthManager';
 import type { VikunjaClientFactory } from '../client/VikunjaClientFactory';
 import { MCPError, ErrorCode, createStandardResponse } from '../types';
 import { formatAorpAsMarkdown } from '../utils/response-factory';
-import { getClientFromContext } from '../client';
-import type { Label, User, VikunjaClient } from 'node-vikunja';
-import type { TypedVikunjaClient } from '../types/node-vikunja-extended';
 import { logger } from '../utils/logger';
 import { validateId as validateSharedId } from '../utils/validation';
 import { vikunjaRestRequest } from '../utils/vikunja-rest';
 import type { components } from '../types/generated/vikunja-openapi';
 
-// Sourced from the vendored OpenAPI spec (docs/vikunja-openapi.json). Label
-// fetching (`client.labels.getLabel`, below) stays on the node-vikunja client
-// — that domain's node-vikunja retirement is a separate item's scope.
+// Sourced from the vendored OpenAPI spec (docs/vikunja-openapi.json).
 type VikunjaProject = components['schemas']['models.Project'];
 type VikunjaTask = components['schemas']['models.Task'];
+type VikunjaLabel = components['schemas']['models.Label'];
+type VikunjaUser = components['schemas']['user.User'];
 
 /**
  * Shape of the JSON body Vikunja returns from both `POST /user/export/request`
@@ -46,33 +43,28 @@ interface VikunjaMessageResponse {
 interface ProjectExportData {
   project: VikunjaProject;
   tasks: VikunjaTask[];
-  labels: Label[];
-  team_members?: User[];
+  labels: VikunjaLabel[];
+  team_members?: VikunjaUser[];
   child_projects?: ProjectExportData[];
   exported_at: string;
   version: string;
 }
 
 /**
- * Recursively exports a project and its children
+ * Recursively exports a project and its children.
  *
- * `getProject`/`getProjectTasks`/`getProjects` are migrated to the direct-REST
- * helper (`vikunjaRestRequest`); `client` is retained only for
- * `labels.getLabel` below, which stays on node-vikunja — the labels domain's
- * node-vikunja retirement is a separate item's scope. This function
- * deliberately keeps the documented O(depth) refetch shape (one
+ * All calls go through the direct-REST helper (`vikunjaRestRequest`). This
+ * function deliberately keeps the documented O(depth) refetch shape (one
  * `GET /projects` per recursion level to re-derive that level's children) —
  * that inefficiency is a pre-existing, documented tradeoff, not something
  * this transport migration is meant to fix.
  */
 async function exportProjectRecursive(
-  client: VikunjaClient,
   authManager: AuthManager,
   projectId: number,
   includeChildren: boolean = false,
   visitedIds: Set<number> = new Set(),
 ): Promise<ProjectExportData> {
-  const vikunjaClient = client as TypedVikunjaClient;
   // Prevent infinite recursion
   if (visitedIds.has(projectId)) {
     throw new MCPError(
@@ -94,7 +86,7 @@ async function exportProjectRecursive(
 
   // Get all tasks for the project. NOTE: `GET /projects/{id}/tasks` is not
   // present in the vendored OpenAPI spec (only `PUT` is documented there) —
-  // this mirrors node-vikunja's own `getProjectTasks`, which calls this same
+  // this mirrors the legacy client's own `getProjectTasks`, which calls this same
   // undocumented-but-functional path. Preserved as-is per this migration's
   // "transport only, same behavior" scope.
   const tasks = await vikunjaRestRequest<VikunjaTask[]>(
@@ -115,11 +107,15 @@ async function exportProjectRecursive(
     }
   });
 
-  // Fetch full label details
-  const labels: Label[] = [];
+  // Fetch full label details. GET /labels/{id} per the OpenAPI spec.
+  const labels: VikunjaLabel[] = [];
   for (const labelId of labelIds) {
     try {
-      const label = await vikunjaClient.labels.getLabel(labelId);
+      const label = await vikunjaRestRequest<VikunjaLabel>(
+        authManager,
+        'GET',
+        `/labels/${labelId}`,
+      );
       if (label) {
         labels.push(label);
       }
@@ -150,7 +146,6 @@ async function exportProjectRecursive(
       for (const child of childProjects) {
         if (child.id) {
           const childExport = await exportProjectRecursive(
-            client,
             authManager,
             child.id,
             true,
@@ -197,11 +192,8 @@ export function registerExportTool(server: McpServer, authManager: AuthManager, 
 
         validateSharedId(projectId, 'projectId');
 
-        const client = await getClientFromContext();
-
         // Export the project data
         const exportData = await exportProjectRecursive(
-          client,
           authManager,
           projectId,
           includeChildren,

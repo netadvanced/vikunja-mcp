@@ -49,7 +49,7 @@ export class ServerSideFilteringStrategy implements TaskFilteringStrategy {
         // Validate project ID
         validateId(args.projectId, 'projectId');
         // Get tasks for specific project with server-side filter. Calls the
-        // same `GET /projects/{id}/tasks` path node-vikunja's
+        // same `GET /projects/{id}/tasks` path the legacy client's
         // `getProjectTasks` used pre-migration — a literal call-site
         // migration, not an endpoint redesign (see
         // ClientSideFilteringStrategy's `fetchProjectTasks` doc comment for
@@ -60,7 +60,7 @@ export class ServerSideFilteringStrategy implements TaskFilteringStrategy {
       } else {
         // Get all tasks across all projects with server-side filter. Calls
         // the same (non-existent, confirmed 400 "Invalid model provided" on
-        // real servers) `GET /tasks/all` path node-vikunja's `getAllTasks`
+        // real servers) `GET /tasks/all` path the legacy client's `getAllTasks`
         // used pre-migration. This branch is unreachable in production —
         // `FilteringContext` always routes cross-project listings through
         // `RestCrossProjectFilteringStrategy` (real `GET /tasks`) before

@@ -9,7 +9,7 @@ import { z } from 'zod';
 import type { AuthManager } from '../auth/AuthManager';
 import type { VikunjaClientFactory } from '../client/VikunjaClientFactory';
 import { MCPError, ErrorCode } from '../types';
-import { getClientFromContext, setGlobalClientFactory } from '../client';
+import { getAuthManagerFromContext, setGlobalClientFactory } from '../client';
 import { logger } from '../utils/logger';
 import { createAuthRequiredError } from '../utils/error-handler';
 import { handleRelationSubcommands } from '../tools/tasks-relations';
@@ -65,7 +65,7 @@ export function registerTaskRelationsTool(
         }
 
         // Test client connection
-        await getClientFromContext();
+        await getAuthManagerFromContext();
 
         // Use the existing relation handler
         return handleRelationSubcommands(

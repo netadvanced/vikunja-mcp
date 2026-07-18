@@ -5,7 +5,7 @@
  * across every project the user can access, with `page`, `per_page`, `s`,
  * `sort_by`, `order_by`, `filter`, `filter_timezone`, `filter_include_nulls`
  * and `expand` query params (see docs/vikunja-openapi.json). Neither
- * node-vikunja's `getAllTasks` (which calls the non-existent `GET
+ * the legacy client's `getAllTasks` (which calls the non-existent `GET
  * /tasks/all`, confirmed to 400 "Invalid model provided" on real servers —
  * see `ClientSideFilteringStrategy`) nor any other code path in this
  * project ever called the real endpoint.
@@ -37,7 +37,7 @@ import { logger } from '../logger';
  * task-list-only extras (`order_by`, `filter_timezone`,
  * `filter_include_nulls`, `expand`) — single-project listing
  * (`ClientSideFilteringStrategy`/`ServerSideFilteringStrategy`) does not
- * honor these, since they were never part of node-vikunja's `GetTasksParams`
+ * honor these, since they were never part of the legacy client's `GetTasksParams`
  * shape that the pre-migration single-project call sites used (see
  * docs/ENDPOINT-PLAYBOOK.md's direct-REST rule).
  */

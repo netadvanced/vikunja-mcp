@@ -15,13 +15,13 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { AuthManager } from '../../src/auth/AuthManager';
 import { registerSubscriptionsTool } from '../../src/tools/subscriptions';
 import { MCPError, ErrorCode } from '../../src/types';
-import { getClientFromContext } from '../../src/client';
+import { getAuthManagerFromContext } from '../../src/client';
 import * as validationUtils from '../../src/utils/validation';
 import type { MockVikunjaClient, MockAuthManager, MockServer } from '../types/mocks';
 import { circuitBreakerRegistry } from '../../src/utils/retry';
 
 jest.mock('../../src/client', () => ({
-  getClientFromContext: jest.fn(),
+  getAuthManagerFromContext: jest.fn(),
   setGlobalClientFactory: jest.fn(),
   clearGlobalClientFactory: jest.fn(),
 }));
@@ -69,7 +69,7 @@ describe('Subscriptions Tool', () => {
       tool: jest.fn() as jest.MockedFunction<(name: string, schema: any, handler: any) => void>,
     } as MockServer;
 
-    (getClientFromContext as jest.Mock).mockResolvedValue(mockClient);
+    (getAuthManagerFromContext as jest.Mock).mockResolvedValue(mockClient);
 
     mockAuthManager.getSession.mockReturnValue({
       apiUrl: 'https://api.vikunja.test',

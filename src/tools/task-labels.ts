@@ -9,7 +9,7 @@ import { z } from 'zod';
 import type { AuthManager } from '../auth/AuthManager';
 import type { VikunjaClientFactory } from '../client/VikunjaClientFactory';
 import { MCPError, ErrorCode } from '../types';
-import { getClientFromContext, setGlobalClientFactory } from '../client';
+import { getAuthManagerFromContext, setGlobalClientFactory } from '../client';
 import { logger } from '../utils/logger';
 import { createAuthRequiredError } from '../utils/error-handler';
 import { applyLabels, removeLabels, listTaskLabels } from '../tools/tasks/labels';
@@ -46,7 +46,7 @@ export function registerTaskLabelsTool(
         }
 
         // Test client connection
-        await getClientFromContext();
+        await getAuthManagerFromContext();
 
         switch (args.operation) {
           case 'apply-label':
