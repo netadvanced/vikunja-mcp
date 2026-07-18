@@ -11,6 +11,38 @@ pre-1.0 semantics — see [docs/RELEASING.md](docs/RELEASING.md) for what that m
 Nothing yet.
 
 
+
+## [0.4.0] - 2026-07-18
+
+A capability batch: 20 newly implemented API operations (API coverage now 123/169, 73%), a native single-request bulk-update, and two new local test harnesses. No breaking changes; four new tool surfaces are disabled by default and opt-in via module config.
+
+### Added
+
+- `vikunja_caldav_tokens` tool (list/create/delete) behind a new deny-by-default `caldavTokens` module key, and a `vikunja_user_export_status` tool completing the user-export request/status/download trio (#98)
+- `vikunja_users` avatar subcommands: `get-avatar`, `set-avatar` (provider validated against the server's accepted values), `upload-avatar` (multipart) (#99)
+- `vikunja_user_deletion` tool (request/confirm/cancel) wired to the reserved deny-by-default `userDeletion` module key, with explicit `confirm: true` gates and secret masking (#100)
+- `vikunja_webhooks` account-wide `scope: 'user'` covering `/user/settings/webhooks*` — list/create/update/delete/list-events (#101)
+- `vikunja_projects` opt-in cosmetic backgrounds module (`remove-background`, `set-unsplash-background`, `search-unsplash`) behind a new default-off `backgrounds` key (#102)
+- `vikunja_tasks` `duplicate` and `mark-read` subcommands (#103)
+- Agent battle-testing harness: `npm run battle` spawns a headless AI agent against the tool surface and grades correctness (direct REST verification) and ergonomics (transcript friction metrics) (#96)
+- Version-matrix e2e testing: `VIKUNJA_VERSION`-parameterized local stack and one-command `npm run test:matrix` verdict runner (#94)
+
+### Fixed
+
+- Bulk-update now uses Vikunja's native `POST /tasks/bulk` `{task_ids, fields, values}` contract — one request instead of N concurrent per-task writes, eliminating silent task loss under SQLite lock contention; per-task merge kept as fallback. Contributed by @angusmaul (#89), with follow-ups for server-derived success counts, surfaced assignee-restore failures (#95), and a single bulk-replace assignee restore per task (#103)
+- Concurrent per-user assignee write loops serialized across six call sites (same SQLite lock-contention class); task-listing `sort` fields now validated against an allowlist with camelCase normalization instead of being silently ignored (#97)
+- MCP e2e harness absence checks now model MCP SDK >=1.22 `{isError: true}` results instead of expecting thrown errors
+
+### Documentation
+
+- README factual pass: tool count corrected to 27, unshipped claims removed, safety wording aligned with actual behavior (#104)
+- Endpoint-tail re-triage of all 64 not-implemented operations under the direct-REST architecture: 20 IMPLEMENT / 36 PARKED / 8 NEVER, with per-op rationale (#93)
+- API coverage recounted after the endpoint-tail wave: 123 implemented / 44 not implemented; server-behavior notes replaced with Go-source-verified mechanisms
+
+### Chores
+
+- Coverage ratchet raised to 89/89/80/77 (statements/lines/branches/functions)
+
 ## [0.3.1] - 2026-07-18
 
 A small patch release: a response-formatting bugfix plus the release engineering machinery
