@@ -252,14 +252,16 @@ narrower tool surface exposed to a client): `vikunja_task_bulk` (`operation`:
 
 ## Webhook Management
 
-- `vikunja_webhooks` - Webhook operations for project automation
-  - `list-events` - Get all available webhook event types
-  - `list` - List webhooks for a project (required: projectId)
-  - `get` - Get a specific webhook (required: projectId, webhookId)
-  - `create` - Create a new webhook (required: projectId, targetUrl, events array; optional: secret for HMAC signing) — events are validated against available event types
-  - `update` - Update webhook events (required: projectId, webhookId, events array) — validated the same way
-  - `delete` - Delete a webhook (required: projectId, webhookId)
-  - Valid events are cached for 5 minutes to improve performance; invalid events in `create`/`update` produce a clear error listing all valid options.
+- `vikunja_webhooks` - Webhook operations for project automation, plus the current user's account-wide webhooks
+  - `scope` - `'project'` (default) or `'user'`. `'project'` operates on a single project's webhooks (`/projects/{id}/webhooks*`) and requires `projectId`. `'user'` operates on the current user's account-wide webhooks (`/user/settings/webhooks*`, G4), which fire across every project the user has access to, and must **not** be combined with `projectId`. Both scopes share the identical `models.Webhook` shape and the same subcommands below.
+  - `list-events` - Get all available webhook event types (for the selected scope)
+  - `list` - List webhooks (required: `projectId` when `scope` is `'project'`)
+  - `get` - Get a specific webhook (required: `webhookId`; also `projectId` when `scope` is `'project'`) — emulated client-side via `list` + filter-by-id, since the spec has no single-webhook GET in either scope
+  - `create` - Create a new webhook (required: `targetUrl`, `events` array; also `projectId` when `scope` is `'project'`; optional: `secret` for HMAC signing) — events are validated against available event types
+  - `update` - Update webhook events (required: `webhookId`, `events` array; also `projectId` when `scope` is `'project'`) — validated the same way. The API only allows changing `events`, not `targetUrl`/`secret`, in either scope.
+  - `delete` - Delete a webhook (required: `webhookId`; also `projectId` when `scope` is `'project'`)
+  - Valid events are cached for 5 minutes per scope to improve performance (project and user-level events are cached separately); invalid events in `create`/`update` produce a clear error listing all valid options.
+  - **Note:** per the OpenAPI spec, `/user/settings/webhooks*` (`scope: 'user'`) is JWT-only. Calls made with an API token (`tk_*`) session may be rejected by the server; the tool surfaces a specific, actionable error in that case rather than the generic webhook-permissions message.
 
 ## Notifications
 

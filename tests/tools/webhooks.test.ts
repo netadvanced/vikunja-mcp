@@ -943,6 +943,211 @@ describe('Webhooks Tool', () => {
     });
   });
 
+  describe("User-scoped webhooks (scope: 'user')", () => {
+    const mockUserWebhook: Webhook = {
+      id: 5,
+      user_id: 42,
+      target_url: 'https://example.com/user-webhook',
+      events: ['task.created'],
+      created: '2023-01-01T00:00:00Z',
+      updated: '2023-01-01T00:00:00Z',
+    };
+
+    it('should list webhooks for the current user', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: [mockUserWebhook] }));
+
+      const result = await mockHandler({ subcommand: 'list', scope: 'user' });
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://api.vikunja.test/api/v1/user/settings/webhooks',
+        {
+          method: 'GET',
+          headers: {
+            Authorization: 'Bearer test-token',
+            'Content-Type': 'application/json',
+          },
+        },
+      );
+      expect(result.content[0].text).toContain('**operation:** list');
+      expect(result.content[0].text).toContain('Retrieved 1 webhooks for the current user');
+    });
+
+    it('should get a specific user-level webhook', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: [mockUserWebhook] }));
+
+      const result = await mockHandler({ subcommand: 'get', scope: 'user', webhookId: 5 });
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://api.vikunja.test/api/v1/user/settings/webhooks',
+        expect.objectContaining({ method: 'GET' }),
+      );
+      expect(result.content[0].text).toContain('**operation:** get');
+      expect(result.content[0].text).toContain('"id": 5');
+    });
+
+    it('should throw error when the user-level webhook is not found', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: [] }));
+
+      await expect(
+        mockHandler({ subcommand: 'get', scope: 'user', webhookId: 999 }),
+      ).rejects.toThrow(
+        new MCPError(ErrorCode.NOT_FOUND, 'Webhook with ID 999 not found for the current user'),
+      );
+    });
+
+    it('should create a user-level webhook', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: mockEvents }));
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: mockUserWebhook }));
+
+      const result = await mockHandler({
+        subcommand: 'create',
+        scope: 'user',
+        targetUrl: 'https://example.com/user-webhook',
+        events: ['task.created'],
+      });
+
+      expect(mockFetch).toHaveBeenLastCalledWith(
+        'https://api.vikunja.test/api/v1/user/settings/webhooks',
+        {
+          method: 'PUT',
+          headers: {
+            Authorization: 'Bearer test-token',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            target_url: 'https://example.com/user-webhook',
+            events: ['task.created'],
+          }),
+        },
+      );
+      expect(result.content[0].text).toContain('Webhook created successfully with ID 5');
+    });
+
+    it('should update a user-level webhook', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: mockEvents }));
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ body: { ...mockUserWebhook, events: ['task.updated'] } }),
+      );
+
+      const result = await mockHandler({
+        subcommand: 'update',
+        scope: 'user',
+        webhookId: 5,
+        events: ['task.updated'],
+      });
+
+      expect(mockFetch).toHaveBeenLastCalledWith(
+        'https://api.vikunja.test/api/v1/user/settings/webhooks/5',
+        {
+          method: 'POST',
+          headers: {
+            Authorization: 'Bearer test-token',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ events: ['task.updated'] }),
+        },
+      );
+      expect(result.content[0].text).toContain('Webhook events updated successfully');
+    });
+
+    it('should delete a user-level webhook', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: {} }));
+
+      const result = await mockHandler({ subcommand: 'delete', scope: 'user', webhookId: 5 });
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://api.vikunja.test/api/v1/user/settings/webhooks/5',
+        {
+          method: 'DELETE',
+          headers: {
+            Authorization: 'Bearer test-token',
+            'Content-Type': 'application/json',
+          },
+        },
+      );
+      expect(result.content[0].text).toContain('Webhook 5 deleted successfully');
+    });
+
+    it('should list user-level webhook events from a separate endpoint/cache than project events', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: ['task.created', 'task.updated'] }));
+
+      const result = await mockHandler({ subcommand: 'list-events', scope: 'user' });
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://api.vikunja.test/api/v1/user/settings/webhooks/events',
+        {
+          method: 'GET',
+          headers: {
+            Authorization: 'Bearer test-token',
+            'Content-Type': 'application/json',
+          },
+        },
+      );
+      expect(result.content[0].text).toContain('Retrieved 2 available user-level webhook events');
+    });
+
+    it('should reject projectId when scope is user', async () => {
+      await expect(
+        mockHandler({ subcommand: 'list', scope: 'user', projectId: 1 }),
+      ).rejects.toThrow(
+        new MCPError(
+          ErrorCode.VALIDATION_ERROR,
+          "projectId must not be provided when scope is 'user' (user-level webhooks are account-wide, not project-scoped)",
+        ),
+      );
+    });
+
+    it('should require projectId when scope is project (default) and it is missing', async () => {
+      await expect(mockHandler({ subcommand: 'list' })).rejects.toThrow(
+        new MCPError(ErrorCode.VALIDATION_ERROR, "projectId is required when scope is 'project'"),
+      );
+    });
+
+    it('should provide a JWT-specific error message for user-scope auth failures', async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({
+          ok: false,
+          status: 401,
+          statusText: 'Unauthorized',
+          body: { message: 'missing, malformed, expired or otherwise invalid token provided' },
+        }),
+      );
+
+      await expect(
+        mockHandler({ subcommand: 'list', scope: 'user' }),
+      ).rejects.toThrow(
+        new MCPError(
+          ErrorCode.API_ERROR,
+          "User-level webhook operations require JWT authentication (per the OpenAPI spec, /user/settings/webhooks* endpoints are JWTKeyAuth-only). Reconnect via vikunja_auth.connect with a JWT token, or use scope: 'project' if you only have an API token.",
+        ),
+      );
+    });
+
+    it('does not raise the read-only error for user-scope reads when readOnly is on', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: true } });
+
+      expect(
+        isReadOnlyRejection(await callAndCatch(mockHandler, { subcommand: 'list', scope: 'user' })),
+      ).toBe(false);
+
+      ConfigurationManager.reset();
+    });
+
+    it('rejects user-scope delete when readOnly is on', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: true } });
+
+      expect(
+        isReadOnlyRejection(
+          await callAndCatch(mockHandler, { subcommand: 'delete', scope: 'user', webhookId: 5 }),
+        ),
+      ).toBe(true);
+
+      ConfigurationManager.reset();
+    });
+  });
+
   describe('Tool Registration', () => {
     it('should register with correct schema', () => {
       expect(mockServer.tool).toHaveBeenCalledWith(
@@ -950,6 +1155,7 @@ describe('Webhooks Tool', () => {
         expect.any(String), // description
         expect.objectContaining({
           subcommand: expect.any(Object),
+          scope: expect.any(Object),
           projectId: expect.any(Object),
           webhookId: expect.any(Object),
           targetUrl: expect.any(Object),

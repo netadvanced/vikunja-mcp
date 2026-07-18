@@ -253,6 +253,13 @@ const TEMPLATES: ClassificationTable = {
   instantiate: 'write',
 };
 
+// G4 (docs/ENDPOINT-TAIL-RETRIAGE.md): vikunja_webhooks also takes a
+// `scope: 'user' | 'project'` argument selecting /user/settings/webhooks*
+// vs /projects/{id}/webhooks*. Scope never changes a subcommand's
+// read/write/destructive nature (both scopes' `list`/`get`/`list-events`
+// are pure reads, `create`/`update` are writes, `delete` is destructive),
+// so one table covers every subcommand x scope combination - no
+// scope-suffixed keys needed here.
 const WEBHOOKS: ClassificationTable = {
   list: 'read',
   get: 'read',

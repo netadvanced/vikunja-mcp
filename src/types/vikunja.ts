@@ -256,7 +256,11 @@ export interface Bucket {
 // Webhook Types
 export interface Webhook {
   id?: number;
-  project_id: number;
+  // Mutually exclusive per models.Webhook in the spec: project-scoped
+  // webhooks carry project_id, user-scoped ones (G4, /user/settings/webhooks*)
+  // carry user_id instead. Neither is documented as required.
+  project_id?: number;
+  user_id?: number;
   target_url: string;
   events: string[];
   secret?: string;

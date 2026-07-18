@@ -923,6 +923,69 @@ async function testSavedFilters(h: McpHarness, ctx: FlowContext): Promise<void> 
   }
 }
 
+/**
+ * G4 (docs/ENDPOINT-TAIL-RETRIAGE.md): user-level webhooks
+ * (`/user/settings/webhooks*`, `scope: 'user'`). Per the OpenAPI spec these
+ * routes are JWTKeyAuth-only, but this harness always runs under a minted
+ * `tk_*` API token (see the file header's safety note) - a rejection here
+ * is an *expected*, tolerated outcome, not a bug, so it is recorded via
+ * `driftTolerated` rather than `fail`. Anything else (a genuine crash, a
+ * wrong path, a malformed response) still fails normally.
+ */
+function isAuthRejection(text: string): boolean {
+  return /jwt|permission|token|auth/i.test(text);
+}
+
+async function testUserWebhooks(h: McpHarness): Promise<void> {
+  log('\n[User-scoped webhooks (scope: user)]');
+
+  const listEvents = await h.call('vikunja_webhooks', { subcommand: 'list-events', scope: 'user' });
+  if (!listEvents.isError) {
+    assertOk('user-scope list-events', listEvents);
+  } else if (isAuthRejection(listEvents.text)) {
+    driftTolerated(
+      'user-scope list-events',
+      'rejected under tk_* API-token auth (spec: JWTKeyAuth-only, expected)',
+      listEvents.text.slice(0, 300),
+    );
+  } else {
+    fail('user-scope list-events', listEvents.text.slice(0, 300));
+  }
+
+  const list = await h.call('vikunja_webhooks', { subcommand: 'list', scope: 'user' });
+  if (!list.isError) {
+    assertOk('user-scope list', list);
+  } else if (isAuthRejection(list.text)) {
+    driftTolerated(
+      'user-scope list',
+      'rejected under tk_* API-token auth (spec: JWTKeyAuth-only, expected)',
+      list.text.slice(0, 300),
+    );
+  } else {
+    fail('user-scope list', list.text.slice(0, 300));
+  }
+
+  // These are pure Zod/argument-consistency checks (no server round-trip),
+  // so they must fail the same way regardless of auth type.
+  const projectIdOnUserScope = await h.call('vikunja_webhooks', {
+    subcommand: 'list',
+    scope: 'user',
+    projectId: 1,
+  });
+  assertStep(
+    'user-scope rejects projectId',
+    projectIdOnUserScope.isError,
+    projectIdOnUserScope.text.slice(0, 300),
+  );
+
+  const missingProjectIdOnProjectScope = await h.call('vikunja_webhooks', { subcommand: 'list' });
+  assertStep(
+    "project-scope (default) requires projectId",
+    missingProjectIdOnProjectScope.isError,
+    missingProjectIdOnProjectScope.text.slice(0, 300),
+  );
+}
+
 async function finalCleanup(h: McpHarness, ctx: FlowContext): Promise<void> {
   log('\n[Final cleanup]');
 
@@ -1031,6 +1094,7 @@ async function main(): Promise<void> {
       await testNotifications(h);
       await testAvatarSettings(h);
       await testSavedFilters(h, ctx);
+      await testUserWebhooks(h);
     } finally {
       await finalCleanup(h, ctx);
     }
