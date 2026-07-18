@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","cwd":"/tmp","session_id":"s1","tools":[],"mcp_servers":[]}
+{"type":"assistant","message":{"model":"claude-haiku-4-5","role":"assistant","content":[{"type":"thinking","thinking":"Just reply."}]}}
+{"type":"assistant","message":{"model":"claude-haiku-4-5","role":"assistant","content":[{"type":"text","text":"pong"}]}}
+{"type":"result","subtype":"success","is_error":false,"duration_ms":1200,"num_turns":1,"result":"pong","total_cost_usd":0.01,"usage":{"input_tokens":10,"output_tokens":4,"cache_creation_input_tokens":100,"cache_read_input_tokens":0}}

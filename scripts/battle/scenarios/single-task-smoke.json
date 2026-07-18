@@ -1,0 +1,12 @@
+{
+  "id": "single-task-smoke",
+  "title": "Single-task smoke test (cheapest scenario)",
+  "description": "Deliberately the cheapest, simplest scenario in the library -- exists so `npm run battle -- --scenario single-task-smoke --model haiku` can prove the whole harness's plumbing end-to-end without spending much on the live smoke test (see docs/BATTLE-TESTING.md).",
+  "promptTemplate": "Create a project called \"{{prefix}}Smoke Test\" and add one task called \"{{prefix}}hello world\" with priority 3.",
+  "optimalCallCount": 2,
+  "verify": [
+    { "type": "project-exists", "titleContains": "{{prefix}}Smoke Test" },
+    { "type": "min-tasks-in-project", "projectTitleContains": "{{prefix}}Smoke Test", "min": 1 },
+    { "type": "tasks-field-match-count", "projectTitleContains": "{{prefix}}Smoke Test", "field": "priority", "op": "eq", "value": 3, "min": 1 }
+  ]
+}

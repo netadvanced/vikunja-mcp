@@ -1,0 +1,14 @@
+{
+  "id": "labels-due-date-combo",
+  "title": "Labels + due-date combo",
+  "description": "Probes the combined label-creation + label-application + due-date-setting flow across several tasks at once -- a common realistic ask that touches three different concepts in one request.",
+  "promptTemplate": "Create a project called \"{{prefix}}Sprint Tasks\" with a label called \"{{prefix}}urgent\". Create 5 tasks in that project, each tagged with the \"{{prefix}}urgent\" label and due next Friday.",
+  "optimalCallCount": 3,
+  "verify": [
+    { "type": "project-exists", "titleContains": "{{prefix}}Sprint Tasks" },
+    { "type": "label-exists", "titleContains": "{{prefix}}urgent" },
+    { "type": "min-tasks-in-project", "projectTitleContains": "{{prefix}}Sprint Tasks", "min": 5 },
+    { "type": "tasks-with-label-count", "projectTitleContains": "{{prefix}}Sprint Tasks", "labelTitleContains": "{{prefix}}urgent", "min": 5 },
+    { "type": "tasks-field-match-count", "projectTitleContains": "{{prefix}}Sprint Tasks", "field": "due_date", "op": "set", "min": 5 }
+  ]
+}

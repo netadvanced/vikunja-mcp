@@ -1,0 +1,17 @@
+{
+  "id": "subtask-breakdown",
+  "title": "Subtask creation ergonomics",
+  "description": "Vikunja has no first-class subtask resource (see src/tools/tasks/subtasks.ts's header) -- a subtask is a task-relation under the hood. Probes whether the agent finds create-subtask rather than manually wiring a raw task relation.",
+  "promptTemplate": "Create a project called \"{{prefix}}Launch Plan\" with one task called \"{{prefix}}Prepare launch\". Break that task down into 3 subtasks: \"{{prefix}}Write docs\", \"{{prefix}}Record demo\", and \"{{prefix}}Notify customers\".",
+  "optimalCallCount": 5,
+  "verify": [
+    { "type": "project-exists", "titleContains": "{{prefix}}Launch Plan" },
+    { "type": "min-tasks-in-project", "projectTitleContains": "{{prefix}}Launch Plan", "min": 4 },
+    {
+      "type": "task-has-subtasks",
+      "projectTitleContains": "{{prefix}}Launch Plan",
+      "parentTitleContains": "{{prefix}}Prepare launch",
+      "min": 3
+    }
+  ]
+}

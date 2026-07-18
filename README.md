@@ -114,6 +114,7 @@ Every entity is a toggle you can disable in config, `vikunja_admin`/`vikunja_tok
 - [Roadmap](docs/ROADMAP.md) — where the project is headed and why
 - [Contributing / endpoint playbook](docs/ENDPOINT-PLAYBOOK.md) — conventions for adding new coverage
 - [Local test stack](docs/LOCAL-TESTING.md) — disposable Vikunja+Postgres via Docker for trying this out safely
+- [Agent battle-testing harness](docs/BATTLE-TESTING.md) — spawns a real AI agent against the tool surface and grades it on correctness and ergonomics (manual, costs real money — see the doc before running)
 - [Docker Desktop MCP Toolkit how-to](docs/DOCKER-DESKTOP-MCP.md) — registering this server with `docker mcp`
 - [Releasing](docs/RELEASING.md) — versioning policy and the release checklist · [CHANGELOG](CHANGELOG.md)
 

@@ -1,0 +1,20 @@
+{
+  "id": "q3-offsite-kanban",
+  "title": "Q3 offsite Kanban setup (Pierre's canonical example)",
+  "description": "A single, deceptively simple sentence hiding a multi-step composite task: a new project, a 3-column Kanban board, 10 tasks distributed across those columns, priorities, and due dates spread across a month.",
+  "promptTemplate": "Set up a project called \"{{prefix}}Q3 Offsite\" to plan our Q3 offsite: a kanban board with three columns, ten tasks distributed across those columns, each task given a priority, and due dates spread across September 2026.",
+  "optimalCallCount": 15,
+  "verify": [
+    { "type": "project-exists", "titleContains": "{{prefix}}Q3 Offsite" },
+    { "type": "min-tasks-in-project", "projectTitleContains": "{{prefix}}Q3 Offsite", "min": 10 },
+    { "type": "min-buckets-in-project", "projectTitleContains": "{{prefix}}Q3 Offsite", "min": 3 },
+    { "type": "tasks-field-match-count", "projectTitleContains": "{{prefix}}Q3 Offsite", "field": "priority", "op": "set", "min": 8 },
+    {
+      "type": "tasks-due-date-in-range",
+      "projectTitleContains": "{{prefix}}Q3 Offsite",
+      "startDate": "2026-09-01T00:00:00Z",
+      "endDate": "2026-09-30T23:59:59Z",
+      "min": 8
+    }
+  ]
+}
