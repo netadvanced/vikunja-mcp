@@ -2,31 +2,39 @@
 /**
  * One-command version-matrix test runner (Wave item T1, tracking issue #28).
  *
- * For a chosen Vikunja server version, this script:
+ * For a chosen Vikunja server version *and* DB backend, this script:
  *
  *   1. Ensures the local e2e stack (docker/e2e/docker-compose.yml) is up and
- *      healthy *on that version* — recreating it (`npm run e2e:down` +
- *      `npm run e2e:up`) if a running stack reports a different version via
- *      GET /api/v1/info, or bringing it up fresh if it isn't running at all.
- *      The stack's own version pin defaults to 2.3.0 but is env-driven (see
- *      docker/e2e/docker-compose.yml's `VIKUNJA_VERSION` interpolation) —
- *      this script drives that the same way a human would:
- *      `VIKUNJA_VERSION=X.Y.Z npm run e2e:up`.
+ *      healthy *on that version and backend* — recreating it (`npm run
+ *      e2e:down` + `npm run e2e:up`) if a running stack reports a different
+ *      version via GET /api/v1/info or a different DB backend (detected via
+ *      `docker compose ps`, see `getRunningBackend`), or bringing it up
+ *      fresh if it isn't running at all. The stack's own version pin
+ *      defaults to 2.3.0 but is env-driven (see docker/e2e/docker-compose.yml's
+ *      `VIKUNJA_VERSION` interpolation) — this script drives that the same
+ *      way a human would: `VIKUNJA_VERSION=X.Y.Z npm run e2e:up`. The DB
+ *      backend (item F2, tracking issue #28 — added so SQLite-only failure
+ *      classes like #116's lock-storm-under-circuit-breaker aren't invisible
+ *      to every run) works the same way: `VIKUNJA_DB=sqlite npm run e2e:up`,
+ *      default `postgres` (see docker/e2e/bootstrap.sh).
  *   2. Runs BOTH existing test harnesses against it:
  *        - `npm run test:mcp`     (scripts/test-mcp.ts,  ~23 direct-REST checks)
- *        - `npm run test:e2e:mcp` (scripts/mcp-e2e.ts,   ~51 MCP-tool-layer checks)
+ *        - `npm run test:e2e:mcp` (scripts/mcp-e2e.ts,   ~50+ MCP-tool-layer checks)
  *   3. Reads the *actual* running server version from GET /api/v1/info
  *      (never trusted from the env var alone — a requested tag might not
  *      exist, or the server might report something more specific).
  *   4. Parses each harness's own pass/fail/skip/server-drift lines out of
  *      its stdout (both harnesses already print one line per check in a
  *      stable, greppable format — see `parseHarnessOutput` below) and
- *      writes a verdict file to `e2e-verdicts/vikunja-<server-ver>.md`
- *      with a `PASS`/`FAIL` header and the full per-check list.
+ *      writes a verdict file to `e2e-verdicts/vikunja-<server-ver>-<db>.md`
+ *      (the matrix is now version × db) with a `PASS`/`FAIL` header and the
+ *      full per-check list.
  *
  * Usage:
- *   npm run test:matrix                       # VIKUNJA_VERSION defaults to 2.3.0
- *   VIKUNJA_VERSION=2.4.0 npm run test:matrix # test against a different tag
+ *   npm run test:matrix                                          # 2.3.0 / postgres (defaults)
+ *   VIKUNJA_VERSION=2.4.0 npm run test:matrix                     # a different tag, still postgres
+ *   VIKUNJA_DB=sqlite npm run test:matrix                         # default version, sqlite backend
+ *   VIKUNJA_VERSION=2.4.0 VIKUNJA_DB=sqlite npm run test:matrix   # both dimensions
  *
  * See docs/LOCAL-TESTING.md's "Version-matrix testing" section for the full
  * writeup, including what to do when a new Vikunja release ships.
@@ -135,6 +143,8 @@ interface VikunjaInfo {
   version?: string;
 }
 
+type DbBackend = 'postgres' | 'sqlite';
+
 async function getRunningServerVersion(): Promise<string | null> {
   try {
     const res = await fetch(`${LOCAL_API_URL}/info`, { signal: AbortSignal.timeout(5000) });
@@ -146,28 +156,70 @@ async function getRunningServerVersion(): Promise<string | null> {
   }
 }
 
+/**
+ * Detects which DB-backend variant of the e2e stack (if any) is currently
+ * running, by asking `docker compose ps` which of the two mutually
+ * exclusive `vikunja`/`vikunja-sqlite` services (see docker-compose.yml's
+ * profile design) is up. GET /api/v1/info doesn't report the DB backend, so
+ * this is the only reliable signal short of inspecting container env vars.
+ * Returns `null` if neither is running (or the docker compose call itself
+ * fails, e.g. Docker not running).
+ */
+async function getRunningBackend(): Promise<DbBackend | null> {
+  const composeFile = path.join(REPO_ROOT, 'docker', 'e2e', 'docker-compose.yml');
+  const res = await runCaptureQuiet(
+    'docker',
+    ['compose', '-f', composeFile, '--profile', 'postgres', '--profile', 'sqlite', 'ps', '--services', '--filter', 'status=running'],
+    safeBaseEnv(),
+  );
+  if (res.code !== 0) return null;
+  const services = res.output
+    .split('\n')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (services.includes('vikunja-sqlite')) return 'sqlite';
+  if (services.includes('vikunja')) return 'postgres';
+  return null;
+}
+
+/** Like runCapture, but doesn't echo to this process's own stdout/stderr -- for status probes. */
+function runCaptureQuiet(cmd: string, args: string[], env: NodeJS.ProcessEnv): Promise<RunResult> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, { cwd: REPO_ROOT, env });
+    let output = '';
+    child.stdout.on('data', (d: Buffer) => (output += d.toString()));
+    child.stderr.on('data', (d: Buffer) => (output += d.toString()));
+    child.on('error', reject);
+    child.on('close', (code) => resolve({ code: code ?? 1, output }));
+  });
+}
+
 /** "v2.3.0" -> "2.3.0"; leaves already-bare versions untouched. */
 function normalizeVersion(v: string): string {
   return v.replace(/^v/, '');
 }
 
 /**
- * Brings the local e2e stack up on `desiredVersion`, recreating it
- * (down -v, then up) if it's currently running a different version, and
- * returns the *actual* server-reported version string (from GET /info)
- * once confirmed healthy.
+ * Brings the local e2e stack up on `desiredVersion`/`desiredDb`, recreating
+ * it (down -v, then up) if it's currently running a different version or a
+ * different DB backend, and returns the *actual* server-reported version
+ * string (from GET /info) once confirmed healthy.
  */
-async function ensureStack(desiredVersion: string): Promise<string> {
-  log(`Desired Vikunja version: ${desiredVersion}`);
+async function ensureStack(desiredVersion: string, desiredDb: DbBackend): Promise<string> {
+  log(`Desired Vikunja version: ${desiredVersion} (db backend: ${desiredDb})`);
   const running = await getRunningServerVersion();
+  const runningDb = running ? await getRunningBackend() : null;
 
-  if (running && normalizeVersion(running) === desiredVersion) {
-    log(`Stack already up reporting ${running} (matches ${desiredVersion}) -- reusing it.`);
+  if (running && normalizeVersion(running) === desiredVersion && runningDb === desiredDb) {
+    log(`Stack already up reporting ${running} on ${runningDb} (matches ${desiredVersion}/${desiredDb}) -- reusing it.`);
   } else if (running) {
-    log(`Stack is up but reports ${running}, not ${desiredVersion} -- recreating it.`);
+    log(
+      `Stack is up but reports ${running} on ${runningDb ?? 'an undetected backend'}, not ` +
+        `${desiredVersion}/${desiredDb} -- recreating it.`,
+    );
     const down = await runCapture('npm', ['run', 'e2e:down'], safeBaseEnv());
     if (down.code !== 0) {
-      throw new Error('npm run e2e:down failed while switching Vikunja versions -- see output above.');
+      throw new Error('npm run e2e:down failed while switching Vikunja versions/backends -- see output above.');
     }
   } else {
     log(`Stack not reachable at ${LOCAL_API_URL} -- bringing it up fresh.`);
@@ -175,8 +227,12 @@ async function ensureStack(desiredVersion: string): Promise<string> {
 
   // Always run e2e:up (idempotent, and mints a fresh docker/e2e/.env token
   // in *this* worktree) even when the stack was already on the right
-  // version and didn't need recreating.
-  const up = await runCapture('npm', ['run', 'e2e:up'], { ...safeBaseEnv(), VIKUNJA_VERSION: desiredVersion });
+  // version/backend and didn't need recreating.
+  const up = await runCapture('npm', ['run', 'e2e:up'], {
+    ...safeBaseEnv(),
+    VIKUNJA_VERSION: desiredVersion,
+    VIKUNJA_DB: desiredDb,
+  });
   if (up.code !== 0) {
     throw new Error('npm run e2e:up failed -- see output above.');
   }
@@ -289,18 +345,20 @@ function harnessIsGreen(run: HarnessRun): boolean {
 function renderVerdict(params: {
   serverVersion: string;
   requestedVersion: string;
+  db: DbBackend;
   runs: HarnessRun[];
 }): { verdict: 'PASS' | 'FAIL'; markdown: string } {
-  const { serverVersion, requestedVersion, runs } = params;
+  const { serverVersion, requestedVersion, db, runs } = params;
   const normalizedServerVersion = normalizeVersion(serverVersion);
   const overallPass = runs.every(harnessIsGreen);
   const verdict: 'PASS' | 'FAIL' = overallPass ? 'PASS' : 'FAIL';
 
   const lines: string[] = [];
-  lines.push(`# vikunja-mcp-ng ${OUR_VERSION} vs Vikunja ${normalizedServerVersion}: ${verdict}`);
+  lines.push(`# vikunja-mcp-ng ${OUR_VERSION} vs Vikunja ${normalizedServerVersion} (${db}): ${verdict}`);
   lines.push('');
   lines.push(`Generated: ${new Date().toISOString()}`);
   lines.push(`Requested VIKUNJA_VERSION: ${requestedVersion}`);
+  lines.push(`DB backend (VIKUNJA_DB): ${db}`);
   lines.push(`Server-reported version (GET /api/v1/info): ${serverVersion}`);
   lines.push('');
 
@@ -357,10 +415,15 @@ function renderVerdict(params: {
 
 async function main(): Promise<void> {
   const requestedVersion = (process.env.VIKUNJA_VERSION || '2.3.0').trim();
+  const requestedDb = (process.env.VIKUNJA_DB || 'postgres').trim();
+  if (requestedDb !== 'postgres' && requestedDb !== 'sqlite') {
+    throw new Error(`VIKUNJA_DB must be 'postgres' or 'sqlite', got '${requestedDb}'.`);
+  }
+  const db: DbBackend = requestedDb;
 
-  log(`vikunja-mcp-ng ${OUR_VERSION} -- version-matrix run against Vikunja ${requestedVersion}`);
+  log(`vikunja-mcp-ng ${OUR_VERSION} -- version-matrix run against Vikunja ${requestedVersion} (db: ${db})`);
 
-  const serverVersion = await ensureStack(requestedVersion);
+  const serverVersion = await ensureStack(requestedVersion, db);
 
   if (!fs.existsSync(ENV_FILE)) {
     throw new Error(`Expected ${ENV_FILE} to exist after npm run e2e:up -- bootstrap did not write it.`);
@@ -397,10 +460,10 @@ async function main(): Promise<void> {
     findingsBlock: extractFindingsBlock(e2eRun.output),
   });
 
-  const { verdict, markdown } = renderVerdict({ serverVersion, requestedVersion, runs });
+  const { verdict, markdown } = renderVerdict({ serverVersion, requestedVersion, db, runs });
 
   fs.mkdirSync(VERDICT_DIR, { recursive: true });
-  const verdictPath = path.join(VERDICT_DIR, `vikunja-${normalizeVersion(serverVersion)}.md`);
+  const verdictPath = path.join(VERDICT_DIR, `vikunja-${normalizeVersion(serverVersion)}-${db}.md`);
   fs.writeFileSync(verdictPath, markdown);
 
   log(`\n=== Verdict: ${verdict} ===`);

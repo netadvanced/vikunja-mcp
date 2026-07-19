@@ -34,12 +34,38 @@
 # Re-pin the *default* by bumping the fallback value below (see
 # docs/LOCAL-TESTING.md's version-refresh note) once a newer stable
 # release ships and becomes the new baseline everyone gets by default.
+#
+# DB BACKEND VARIANT (`VIKUNJA_DB=postgres|sqlite`, default `postgres`):
+# item F2 (tracking issue #28) adds a SQLite-backed variant of this stack so
+# SQLite-only failure classes (e.g. #116's "database is locked" write-storm
+# under the circuit breaker) aren't invisible to every local/CI-adjacent run
+# just because this stack always ran Postgres. Implemented with Compose
+# *profiles* rather than a merged overlay file: `db` and `files-init` (the
+# files-volume chown helper, shared by both variants) are tagged
+# `profiles: [postgres]` / `[postgres, sqlite]` respectively, and there are
+# two mutually-exclusive `vikunja*` service definitions — `vikunja`
+# (profile `postgres`, unchanged from before this variant existed) and
+# `vikunja-sqlite` (profile `sqlite`, no `db` dependency, backed by its own
+# named volume, `vikunja-mcp-e2e-sqlite-db`, holding the embedded SQLite
+# file). Two service blocks (rather than one templated block with a
+# conditional `depends_on`) because Compose can't conditionally omit a
+# `depends_on` entry per-profile in a single service — and referencing a
+# profile-excluded service from `depends_on` is a hard error — so this is
+# the cleaner of the two options the item called out (profiles vs. a second
+# overlay file). Both variants publish the same host port (33456); only one
+# is ever active at a time because a caller always selects exactly one
+# profile via `docker/e2e/bootstrap.sh` (`VIKUNJA_DB` env var, defaulting to
+# `postgres` -- unset/default behavior is byte-for-byte what this stack did
+# before this variant existed). `npm run e2e:down` always activates *both*
+# profiles so `-v` reliably removes all three named volumes regardless of
+# which variant was last up -- see package.json.
 name: vikunja-mcp-e2e
 
 services:
   db:
     image: postgres:16-alpine
     restart: unless-stopped
+    profiles: [postgres]
     environment:
       POSTGRES_USER: vikunja
       POSTGRES_PASSWORD: vikunja
@@ -60,16 +86,30 @@ services:
   # One-shot helper: the vikunja image runs as uid 1000 with no shell (it's
   # built FROM scratch), so it cannot chown its own files volume on first
   # boot. Named volumes are created root-owned by the Docker daemon, so we
-  # fix ownership here, once, before the vikunja service starts.
+  # fix ownership here, once, before the vikunja service starts. Shared by
+  # both DB-backend variants (the files volume holds attachments, unrelated
+  # to which database backend is in play).
   files-init:
     image: busybox:1.36
+    profiles: [postgres, sqlite]
     command: ['sh', '-c', 'chown -R 1000:1000 /files']
     volumes:
       - vikunja-mcp-e2e-files:/files
 
+  # Same chown problem as files-init above, but for the SQLite variant's
+  # own data-file volume (only relevant in `sqlite` profile).
+  sqlite-db-init:
+    image: busybox:1.36
+    profiles: [sqlite]
+    command: ['sh', '-c', 'chown -R 1000:1000 /db']
+    volumes:
+      - vikunja-mcp-e2e-sqlite-db:/db
+
+  # Postgres-backed variant (default; `VIKUNJA_DB=postgres`, `profiles: [postgres]`).
   vikunja:
     image: vikunja/vikunja:${VIKUNJA_VERSION:-2.3.0}
     restart: unless-stopped
+    profiles: [postgres]
     depends_on:
       db:
         condition: service_healthy
@@ -102,6 +142,43 @@ services:
       retries: 20
       start_period: 10s
 
+  # SQLite-backed variant (`VIKUNJA_DB=sqlite`, `profiles: [sqlite]`) — the
+  # embedded, file-backed database SQLite-lock-contention bugs (e.g. #116)
+  # need a real backend to reproduce against. No `db` dependency at all: the
+  # whole point is that there's no separate database service. The db file
+  # lives in the `vikunja-mcp-e2e-sqlite-db` named volume so `e2e:down -v`
+  # cleans it up exactly like the Postgres variant's own volume.
+  vikunja-sqlite:
+    image: vikunja/vikunja:${VIKUNJA_VERSION:-2.3.0}
+    restart: unless-stopped
+    profiles: [sqlite]
+    depends_on:
+      files-init:
+        condition: service_completed_successfully
+      sqlite-db-init:
+        condition: service_completed_successfully
+    environment:
+      VIKUNJA_DATABASE_TYPE: sqlite
+      VIKUNJA_DATABASE_PATH: /db/vikunja.db
+      # Local-only, throwaway secret -- same value as the postgres variant,
+      # see the comment there. Kept identical so bootstrap.sh/harnesses
+      # don't need per-variant secrets.
+      VIKUNJA_SERVICE_SECRET: 'e2e-local-only-not-for-production-use'
+      VIKUNJA_SERVICE_PUBLICURL: 'http://localhost:33456'
+      VIKUNJA_SERVICE_ENABLEREGISTRATION: 'false'
+    ports:
+      - '33456:3456'
+    volumes:
+      - vikunja-mcp-e2e-files:/app/vikunja/files
+      - vikunja-mcp-e2e-sqlite-db:/db
+    healthcheck:
+      test: ['CMD', '/app/vikunja/vikunja', 'healthcheck']
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
 volumes:
   vikunja-mcp-e2e-db:
   vikunja-mcp-e2e-files:
+  vikunja-mcp-e2e-sqlite-db:

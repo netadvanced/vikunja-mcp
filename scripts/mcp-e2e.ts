@@ -719,6 +719,86 @@ async function testTasks(h: McpHarness, ctx: FlowContext): Promise<void> {
   }
 }
 
+/**
+ * Bulk-create stress check (item F2, tracking issue #28) -- SQLITE-SENSITIVE.
+ *
+ * Fires one `bulk-create` call for `STRESS_COUNT` tasks in a single project,
+ * exercising `processors.create`'s `maxConcurrency: 8` write fan-out
+ * (src/tools/tasks/bulk-operations-simplified.ts) exactly the way
+ * netadvanced/vikunja-mcp-ng#116 describes: concurrent `PUT
+ * /projects/{id}/tasks` writes trip "database is locked" 500s on a
+ * SQLite-backed Vikunja instance, whose retries re-enter the still-contended
+ * pool and trip the shared REST-layer circuit breaker, turning a lock storm
+ * into a full outage of the create endpoint group.
+ *
+ * On Postgres (this repo's e2e stack default) this is expected to pass
+ * 12/12 every run -- Postgres's MVCC concurrency control doesn't serialize
+ * writers the way SQLite's single-writer lock does. On SQLite, until a fix
+ * like #116 lands, this check is EXPECTED to fail or flake with partial
+ * creates -- that is its entire purpose: making a SQLite-only failure class
+ * visible to a live run instead of invisible, the way it was before this
+ * item added a SQLite variant of the e2e stack at all. See
+ * docs/LOCAL-TESTING.md's version-matrix section (db dimension) and this
+ * item's PR description for recorded before/after evidence.
+ */
+async function testBulkCreateStress(h: McpHarness, ctx: FlowContext): Promise<void> {
+  log('\n[Bulk-create stress (sqlite-sensitive, see #116)]');
+  const STRESS_COUNT = 12;
+  const name = `bulk-create stress: ${STRESS_COUNT} concurrent creates (sqlite-sensitive, see #116)`;
+
+  if (!ctx.projectId) {
+    skip(name, 'no project id from earlier step');
+    return;
+  }
+
+  const tasks = Array.from({ length: STRESS_COUNT }, (_, i) => ({
+    title: `${NAME_PREFIX}bulk-stress-${i + 1}`,
+  }));
+
+  const result = await h.call('vikunja_tasks', {
+    subcommand: 'bulk-create',
+    projectId: ctx.projectId,
+    tasks,
+  });
+
+  if (result.isError) {
+    fail(name, `tool returned isError: ${result.text.slice(0, 500)}`);
+    record(
+      'tool-bug',
+      `bulk-create of ${STRESS_COUNT} tasks failed entirely under concurrent writes`,
+      `vikunja_tasks {subcommand:"bulk-create", tasks: ${STRESS_COUNT} items} returned isError: ` +
+        `${result.text.slice(0, 800)}. Matches the failure signature of netadvanced/vikunja-mcp-ng#116 ` +
+        '("database is locked" lock storm + circuit-breaker cascade) on SQLite-backed Vikunja -- see ' +
+        'docs/LOCAL-TESTING.md\'s version-matrix section.',
+    );
+    return;
+  }
+
+  // Both success shapes literally include this message text (see
+  // successResponse() in bulk-operations-simplified.ts):
+  //   full:    "Successfully created 12 tasks"
+  //   partial: "Bulk create partially completed. Successfully created 9 tasks, 3 failed."
+  const partialMatch = /Successfully created (\d+) tasks,\s*(\d+) failed/.exec(result.text);
+  const fullMatch = /Successfully created (\d+) tasks/.exec(result.text);
+  const createdCount = partialMatch ? Number(partialMatch[1]) : fullMatch ? Number(fullMatch[1]) : 0;
+  const failedCount = partialMatch ? Number(partialMatch[2]) : 0;
+
+  if (createdCount === STRESS_COUNT && failedCount === 0) {
+    pass(name);
+    return;
+  }
+
+  fail(name, `only ${createdCount}/${STRESS_COUNT} tasks created (${failedCount} reported failed)`);
+  record(
+    'tool-bug',
+    `bulk-create of ${STRESS_COUNT} tasks only created ${createdCount}/${STRESS_COUNT} under concurrent writes`,
+    `vikunja_tasks {subcommand:"bulk-create"} reported ${createdCount}/${STRESS_COUNT} created, ${failedCount} ` +
+      'failed. Matches the failure signature of netadvanced/vikunja-mcp-ng#116 (SQLite lock-contention storm ' +
+      'plus circuit-breaker cascade) -- expected on an unfixed SQLite-backed stack; a real regression if seen ' +
+      `on Postgres or on a build that includes #116's fix. Response: ${result.text.slice(0, 500)}`,
+  );
+}
+
 async function testSubtaskComposites(h: McpHarness, ctx: FlowContext): Promise<void> {
   log('\n[Subtask composites]');
   if (!ctx.taskId) {
@@ -1250,6 +1330,7 @@ async function main(): Promise<void> {
       await testProjects(h, ctx);
       await testProjectBackgroundsAbsence(h, ctx);
       await testTasks(h, ctx);
+      await testBulkCreateStress(h, ctx);
       await testSubtaskComposites(h, ctx);
       await testLabels(h, ctx);
       await testAssignees(h, ctx);

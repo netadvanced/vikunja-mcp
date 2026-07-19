@@ -30,6 +30,14 @@
 #
 # See docs/LOCAL-TESTING.md for the full workflow, including the
 # version-matrix runner (`npm run test:matrix`) that drives this.
+#
+# DB BACKEND VARIANT (`VIKUNJA_DB=postgres|sqlite`, default `postgres`, item
+# F2 / tracking issue #28): selects which Compose profile -- and therefore
+# which `vikunja*` service -- gets brought up (see the comment block at the
+# top of docker-compose.yml for the full profile design). Unset/default
+# behavior is unchanged from before this variant existed.
+#
+#   VIKUNJA_DB=sqlite npm run e2e:up
 
 set -euo pipefail
 
@@ -41,6 +49,26 @@ ENV_FILE="$SCRIPT_DIR/.env"
 # compose` sees it regardless of how this script was invoked.
 export VIKUNJA_VERSION="${VIKUNJA_VERSION:-2.3.0}"
 
+# Default + validate. Only "postgres" and "sqlite" select a real profile;
+# anything else is a caller mistake, not a case to fall through silently.
+VIKUNJA_DB="${VIKUNJA_DB:-postgres}"
+case "$VIKUNJA_DB" in
+  postgres|sqlite) ;;
+  *)
+    echo "[bootstrap] ERROR: VIKUNJA_DB must be 'postgres' or 'sqlite', got '$VIKUNJA_DB'." >&2
+    exit 1
+    ;;
+esac
+
+# The service name differs per backend (docker-compose.yml: `vikunja` for
+# postgres, `vikunja-sqlite` for sqlite) since the two are separate service
+# definitions, not one templated service -- see that file's comment block.
+if [ "$VIKUNJA_DB" = "sqlite" ]; then
+  VIKUNJA_SERVICE="vikunja-sqlite"
+else
+  VIKUNJA_SERVICE="vikunja"
+fi
+
 VIKUNJA_URL="http://localhost:33456/api/v1"
 TEST_USERNAME="e2e-test"
 TEST_EMAIL="e2e-test@vikunja-mcp.local"
@@ -50,11 +78,11 @@ TOKEN_TITLE="vikunja-mcp-e2e"
 log() { echo "[bootstrap] $*" >&2; }
 
 compose() {
-  docker compose -f "$COMPOSE_FILE" "$@"
+  docker compose -f "$COMPOSE_FILE" --profile "$VIKUNJA_DB" "$@"
 }
 
 wait_for_health() {
-  log "Waiting for db + vikunja services to report healthy..."
+  log "Waiting for the $VIKUNJA_DB-backed stack (service: $VIKUNJA_SERVICE) to report healthy..."
   compose up -d --wait --wait-timeout 180
   log "Stack is healthy."
 }
@@ -77,7 +105,7 @@ try_login() {
 
 create_test_user() {
   log "Creating test user '$TEST_USERNAME' via container CLI..."
-  if compose exec -T vikunja /app/vikunja/vikunja user create \
+  if compose exec -T "$VIKUNJA_SERVICE" /app/vikunja/vikunja user create \
     -u "$TEST_USERNAME" -e "$TEST_EMAIL" -p "$TEST_PASSWORD"; then
     log "User created."
   else
@@ -122,7 +150,7 @@ mint_api_token() {
 }
 
 main() {
-  log "Vikunja version: $VIKUNJA_VERSION"
+  log "Vikunja version: $VIKUNJA_VERSION (DB backend: $VIKUNJA_DB, service: $VIKUNJA_SERVICE)"
   wait_for_health
 
   local jwt

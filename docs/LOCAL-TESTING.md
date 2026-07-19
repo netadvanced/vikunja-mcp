@@ -1,8 +1,10 @@
 # Local End-to-End Testing
 
-This document describes the disposable local Vikunja + Postgres stack in
-`docker/e2e/`, used to run `scripts/test-mcp.ts` (`npm run test:mcp`) against
-a real Vikunja server instead of mocks.
+This document describes the disposable local Vikunja stack in `docker/e2e/`,
+used to run `scripts/test-mcp.ts` (`npm run test:mcp`) against a real Vikunja
+server instead of mocks. The stack supports two DB backends — Postgres
+(default) and SQLite (`VIKUNJA_DB=sqlite`, item F2 / tracking issue #28) —
+see "DB backend variant" below.
 
 > **Production safety.** This stack — and `npm run test:mcp` in general — is
 > for a throwaway local Vikunja instance only. Never point `VIKUNJA_URL` /
@@ -13,14 +15,20 @@ a real Vikunja server instead of mocks.
 
 ## What's in `docker/e2e/`
 
-- `docker-compose.yml` — a three-service stack (`db`, `files-init`,
-  `vikunja`), namespaced under the compose project name `vikunja-mcp-e2e`
-  so it can't collide with anything else running on the machine. Uses
-  non-default host ports: **33456** for Vikunja (`VIKUNJA_URL` points here)
-  and 33457 for Postgres (optional, for ad-hoc `psql` debugging only).
-  Both services have healthchecks and their data lives in named volumes
-  (`vikunja-mcp-e2e-db`, `vikunja-mcp-e2e-files`) so the stack survives a
-  restart.
+- `docker-compose.yml` — a multi-service stack, namespaced under the compose
+  project name `vikunja-mcp-e2e` so it can't collide with anything else
+  running on the machine. Uses non-default host ports: **33456** for
+  Vikunja (`VIKUNJA_URL` points here, same for both DB backends) and 33457
+  for Postgres (optional, for ad-hoc `psql` debugging only, postgres backend
+  only). Two DB-backend variants are defined as Compose *profiles* —
+  `postgres` (`db` + `files-init` + `vikunja`, the pre-existing default) and
+  `sqlite` (`sqlite-db-init` + `files-init` + `vikunja-sqlite`, added by item
+  F2) — see the comment block at the top of the file for the full profile
+  design and why it's profiles rather than a merged overlay file. All
+  services have healthchecks and their data lives in named volumes
+  (`vikunja-mcp-e2e-db`, `vikunja-mcp-e2e-sqlite-db`, `vikunja-mcp-e2e-files`)
+  so the stack survives a restart. Only one profile is ever active at a
+  time; both variants publish the same host port.
 - `bootstrap.sh` — waits for the stack to become healthy, creates a test
   user via the Vikunja container CLI, logs in to get a JWT, and uses that
   JWT to mint a long-lived `tk_*` API token (falling back to the JWT itself
@@ -28,7 +36,48 @@ a real Vikunja server instead of mocks.
   prints `export VIKUNJA_URL=...` / `export VIKUNJA_API_TOKEN=...` lines.
   Safe to re-run against an already-bootstrapped stack (idempotent: it logs
   in with the existing test user instead of re-creating it, and mints a
-  fresh token each time).
+  fresh token each time). Reads `VIKUNJA_DB` (default `postgres`) to select
+  which Compose profile/service to bring up and bootstrap against.
+
+## DB backend variant (`VIKUNJA_DB=postgres|sqlite`)
+
+By default (`VIKUNJA_DB` unset, or `postgres`) this stack behaves exactly as
+it always has: Vikunja backed by a real Postgres service. Set
+`VIKUNJA_DB=sqlite` to instead run Vikunja against its own embedded SQLite
+database (a file in the `vikunja-mcp-e2e-sqlite-db` named volume, no
+separate DB service at all):
+
+```bash
+VIKUNJA_DB=sqlite npm run e2e:up
+```
+
+This exists because SQLite and Postgres have different concurrency
+characteristics under concurrent writes — SQLite serializes writers with a
+file lock, Postgres uses MVCC — so a whole class of bug (concurrent-write
+lock contention, e.g. netadvanced/vikunja-mcp-ng#116: `bulk-create`'s
+`maxConcurrency: 8` write fan-out 500ing with "database is locked" on
+SQLite, then tripping the shared circuit breaker into a full create-endpoint
+outage) was **structurally invisible** to every local/matrix run before this
+variant existed, because this stack only ever ran Postgres. Running the
+same harnesses against the `sqlite` variant surfaces that class of bug
+instead of silently passing.
+
+`npm run e2e:down` always tears down *both* profiles (`--profile postgres
+--profile sqlite down -v`, see `package.json`) so `-v` reliably removes all
+three named volumes regardless of which variant was last up — there is no
+"leftover sqlite volume" case to worry about after a plain `e2e:down`.
+
+`scripts/mcp-e2e.ts` includes one check explicitly written to catch this
+class of bug: a 12-task `bulk-create` stress check, labeled
+`(sqlite-sensitive, see #116)` in its output. It's expected to pass 12/12 on
+Postgres and on a SQLite stack whose `bulk-create` write concurrency has
+been fixed (e.g. serialized); on an *unfixed* SQLite stack it is expected to
+intermittently under-create (partial success, e.g. 11/12) with
+`"database is locked"` visible in `docker compose logs vikunja-sqlite` even
+though the HTTP response body only ever says `"Internal Server Error"`. A
+`FAIL` on this one check against `VIKUNJA_DB=sqlite` is expected and
+documented, not a harness bug — see the PR that introduced this check for
+recorded before/after evidence.
 
 ## Bringing the stack up
 
@@ -294,44 +343,59 @@ gap.
 ## Version-matrix testing (`npm run test:matrix`)
 
 `scripts/test-matrix.ts` is the one-command runner that ties the two
-harnesses above together against a *chosen* Vikunja server version, so
-re-validating this project against a newly-released Vikunja tag (or
-re-confirming it against the current pin) is a single command instead of a
-manual sequence of stack-recreation and harness-invocation steps.
+harnesses above together against a *chosen* Vikunja server version **and**
+DB backend, so re-validating this project against a newly-released Vikunja
+tag, a different DB backend, or re-confirming it against the current
+defaults, is a single command instead of a manual sequence of
+stack-recreation and harness-invocation steps. The matrix is version × db
+(item F2 / tracking issue #28 added the db dimension — see "DB backend
+variant" above).
 
 ```bash
-npm run test:matrix                        # against the default pin, 2.3.0
-VIKUNJA_VERSION=2.4.0 npm run test:matrix  # against a different tag
+npm run test:matrix                                          # 2.3.0 / postgres (defaults)
+VIKUNJA_VERSION=2.4.0 npm run test:matrix                     # a different tag, still postgres
+VIKUNJA_DB=sqlite npm run test:matrix                         # default version, sqlite backend
+VIKUNJA_VERSION=2.4.0 VIKUNJA_DB=sqlite npm run test:matrix   # both dimensions
 ```
 
 For the chosen `VIKUNJA_VERSION` (default `2.3.0`, matching the compose
-file's own default — see "Version pinning and refresh" above), it:
+file's own default — see "Version pinning and refresh" above) and
+`VIKUNJA_DB` (default `postgres` — see "DB backend variant" above), it:
 
-1. **Ensures the stack is up on that version.** If the local stack is
-   already running and `GET /api/v1/info` reports the requested version,
-   it's reused as-is (still re-running `npm run e2e:up` to mint a fresh
-   token into `docker/e2e/.env`, cheap and idempotent). If it's running a
-   *different* version, it's fully recreated (`npm run e2e:down` — which
-   drops the named volumes, so there's no stale-schema risk when going
-   from a newer version back down to an older one — then `VIKUNJA_VERSION=
-   <version> npm run e2e:up`). If it's not running at all, it's brought up
-   fresh on the requested version.
+1. **Ensures the stack is up on that version and backend.** If the local
+   stack is already running and `GET /api/v1/info` reports the requested
+   version *and* `docker compose ps` shows the requested backend's service
+   (`vikunja` for postgres, `vikunja-sqlite` for sqlite) is up, it's reused
+   as-is (still re-running `npm run e2e:up` to mint a fresh token into
+   `docker/e2e/.env`, cheap and idempotent). If it's running a *different*
+   version or backend, it's fully recreated (`npm run e2e:down` — which
+   drops all three named volumes regardless of which variant was up, so
+   there's no stale-schema/stale-backend risk — then `VIKUNJA_VERSION=
+   <version> VIKUNJA_DB=<db> npm run e2e:up`). If it's not running at all,
+   it's brought up fresh on the requested version/backend.
 2. **Runs both harnesses against it**: `npm run test:mcp` (the ~23-check
-   direct-REST suite) and `npm run test:e2e:mcp` (the ~51-check MCP-tool
-   -layer suite), streaming their output live and also capturing it.
+   direct-REST suite) and `npm run test:e2e:mcp` (the ~50+-check MCP-tool
+   -layer suite, including the `bulk-create` stress check labeled
+   `sqlite-sensitive` — see "DB backend variant" above), streaming their
+   output live and also capturing it.
 3. **Reads the actual server version from `GET /api/v1/info`** rather than
    trusting the `VIKUNJA_VERSION` input — if the requested tag doesn't
    exist on Docker Hub (or the server otherwise comes up reporting
    something else), the run fails loudly with that mismatch instead of
    silently mislabeling results.
-4. **Writes a verdict file** to `e2e-verdicts/vikunja-<server-version>.md`
+4. **Writes a verdict file** to `e2e-verdicts/vikunja-<server-version>-<db>.md`
    (gitignored — see "Verdict files aren't committed" below) with a
-   `# vikunja-mcp-ng <our-version> vs Vikunja <server-version>: PASS/FAIL`
+   `# vikunja-mcp-ng <our-version> vs Vikunja <server-version> (<db>): PASS/FAIL`
    header, the full per-check list from both harnesses (parsed from their
    own `✓`/`✗`/`⊘`/`⚠` stdout lines — see "Findings categorization" above
    for what those mean), and a closing verdict paragraph. The overall
    verdict is `PASS` only if *both* harnesses exit 0 with zero non-tolerated
-   (`✗`) failures; `⚠ server-drift` entries don't block a `PASS`.
+   (`✗`) failures; `⚠ server-drift` entries don't block a `PASS`. Note that
+   until the `bulk-create` write-concurrency fix for #116 lands, a
+   `sqlite`-backend run is *expected* to `FAIL` on that one check — see "DB
+   backend variant" above — so a `FAIL` verdict on `vikunja-2.3.0-sqlite.md`
+   alone is not, by itself, a regression signal the way a `postgres` `FAIL`
+   would be; check *which* check failed.
 5. **Exits 0 on `PASS`, 1 on `FAIL`** — usable as a plain shell gate even
    without CI (GitHub Actions are disabled repo-wide by explicit owner
    decision; this is why this entire workflow is a local script rather
