@@ -42,7 +42,19 @@ type BulkAssignees = components['schemas']['models.BulkAssignees'];
 const processors = {
   update: new BatchProcessor({ maxConcurrency: 5, batchSize: 10, enableMetrics: true, batchDelay: 0 }),
   delete: new BatchProcessor({ maxConcurrency: 3, batchSize: 5, enableMetrics: true, batchDelay: 100 }),
-  create: new BatchProcessor({ maxConcurrency: 8, batchSize: 15, enableMetrics: true, batchDelay: 0 }),
+  // Creates are WRITES and must run sequentially. On SQLite-backed Vikunja
+  // (the default deployment), N concurrent task creates 500 with "database is
+  // locked"; the REST layer's 5xx retry then re-enters the still-contended
+  // pool, and the burst of failures trips the shared
+  // `vikunja-rest-projects-tasks` circuit breaker — after which EVERY create
+  // fails instantly with "Breaker is open" until the reset timeout. Live
+  // repro on 2.3.0: three 12-task bulk-creates at maxConcurrency 8 yielded
+  // 2/12, 0/12, 0/12. Sequential creates never storm the lock, so the
+  // existing retry absorbs the odd transient 500 and the breaker stays
+  // closed (36/36 in the same scenario). Same reasoning as the #97 sweep's
+  // "bounded/sequential writes" rule — this call site was previously ruled
+  // safe-as-is on the assumption that bounded-at-8 plus retry was enough.
+  create: new BatchProcessor({ maxConcurrency: 1, batchSize: 15, enableMetrics: true, batchDelay: 0 }),
 };
 
 // ==================== VALIDATION WRAPPERS ====================

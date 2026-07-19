@@ -2901,6 +2901,35 @@ describe('Tasks Tool', () => {
       expect(markdown).toContain('**Results:** 3 item(s)');
     });
 
+    it('serializes create writes (never more than one in flight)', async () => {
+      // On SQLite-backed Vikunja, concurrent creates 500 with "database is
+      // locked" and the failure burst trips the vikunja-rest-projects-tasks
+      // circuit breaker. Creates must therefore run one at a time.
+      let inFlight = 0;
+      let peakInFlight = 0;
+      mockClient.tasks.createTask.mockImplementation(async (projectId: number, task: Record<string, unknown>) => {
+        inFlight += 1;
+        peakInFlight = Math.max(peakInFlight, inFlight);
+        // Yield twice so overlapping calls would be observable
+        await new Promise((resolve) => setImmediate(resolve));
+        await new Promise((resolve) => setImmediate(resolve));
+        inFlight -= 1;
+        return { ...task, id: mockClient.tasks.createTask.mock.calls.length, project_id: projectId };
+      });
+      mockClient.tasks.getTask.mockImplementation(async (id: number) =>
+        Promise.resolve({ ...mockTask, id }),
+      );
+
+      const tasks = Array.from({ length: 12 }, (_, i) => ({ title: `Serial ${i + 1}` }));
+      const result = await callTool('bulk-create', { projectId: 1, tasks });
+
+      expect(mockClient.tasks.createTask).toHaveBeenCalledTimes(12);
+      expect(peakInFlight).toBe(1);
+
+      const markdown = result.content[0].text;
+      expect(markdown).toContain('Successfully created 12 tasks');
+    });
+
     it('should require projectId', async () => {
       await expect(
         callTool('bulk-create', {
