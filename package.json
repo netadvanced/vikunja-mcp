@@ -136,7 +136,8 @@
     "body-parser": "^2.3.0",
     "@modelcontextprotocol/sdk": {
       "ajv": "^8.20.0"
-    }
+    },
+    "js-yaml": "^4.2.1"
   },
   "engines": {
     "node": ">=20.0.0"
