@@ -190,25 +190,41 @@ Vikunja instance listening on localhost between sessions.
 
 ## Version pinning and refresh
 
-The stack pins `vikunja/vikunja:2.3.0` — see the comment block at the top
-of `docker/e2e/docker-compose.yml` for the full reasoning. Short version:
-`2.3.0` is the latest stable tag on Docker Hub, and it's the closest
-reproducible baseline to the vendored OpenAPI spec at
-`docs/vikunja-openapi.json` (`info.version` = `v2.3.0-1019-g95b7e673`,
-i.e. an `unstable` build 1019 commits ahead of the `v2.3.0` tag — that
-spec was fetched from `try.vikunja.io`, which always runs `unstable`, via
-`npm run fetch:api-spec`). Expect the vendored spec to document some
-endpoints/fields slightly ahead of what `2.3.0` actually serves; that's a
-**known, expected gap**, not test drift, unless it manifests as an actual
-failure in a real run.
+**Policy: minimum supported Vikunja is 2.3.0 (the v1-floor); aligned/tested
+default is 2.4.0.** Some workarounds in `src/` (see e.g.
+`src/tools/projects/sharing.ts`'s by-id-share-GET workaround) exist
+specifically for upstream bugs still present at 2.3.0 but fixed by 2.4.0 —
+those stay until 2.3.0 support is actually dropped, not merely because the
+default pin moved past the fix. Both versions are worth running locally
+(see "Version-matrix testing" below): 2.4.0 as the everyday default, 2.3.0
+as the periodic v1-floor regression check.
+
+The stack pins `vikunja/vikunja:2.4.0` by default — see the comment block
+at the top of `docker/e2e/docker-compose.yml` for the full reasoning and
+history (aligned 2026-07-20, tracking issue #28 item A1, after a clean
+`test:matrix` pass on both DB backends with zero tolerated drifts). The
+vendored OpenAPI spec at `docs/vikunja-openapi.json` is fetched directly
+from this same pinned container's own `/api/v1/docs.json` (`npm run
+fetch:api-spec:container`, see `docs/API-SPEC.md`) — its `info.version`
+matches the pin exactly (`v2.4.0`, confirmed byte-for-byte, no ahead-of-tag
+drift), unlike the previous approach of fetching from `try.vikunja.io`
+(`npm run fetch:api-spec`), which always runs `unstable` and is confirmed
+to run ahead of any tagged release (the prior 2.3.0-era vendored spec
+reported `v2.3.0-1019-g95b7e673`, i.e. 1019 commits past the tag). Use
+`npm run fetch:api-spec:container` as the default refresh path; reach for
+`npm run fetch:api-spec` only if you deliberately want to preview
+upstream's `unstable` build.
 
 To refresh the pin when a newer stable Vikunja release ships:
 
 1. Check available tags: `curl -s https://hub.docker.com/v2/repositories/vikunja/vikunja/tags?page_size=100`
    (or the [releases page](https://github.com/go-vikunja/vikunja/releases)).
-2. Bump the tag in `docker/e2e/docker-compose.yml` and its comment block.
-3. `npm run fetch:api-spec` to refresh `docs/vikunja-openapi.json` against
-   the (unstable) spec, if you also want to re-check spec/tool alignment.
+2. Bump the tag in `docker/e2e/docker-compose.yml` and its comment block
+   (and `docker/e2e/bootstrap.sh`'s matching default/comment).
+3. Bring the stack up on the new tag and refresh `docs/vikunja-openapi.json`
+   from it (`VIKUNJA_VERSION=X.Y.Z npm run e2e:up && npm run
+   fetch:api-spec:container && npm run generate:api-types`), if you also
+   want to re-check spec/tool alignment.
 4. `npm run e2e:down && npm run e2e:up && npm run test:mcp` and re-triage
    any new failures using the same (a)/(b)/(c) categories as any other
    real-server run (script staleness / real server drift / environment
@@ -326,19 +342,23 @@ Every mismatch the harness finds is reported as one of:
   — reproduced with a raw, tool-independent request to confirm it isn't
   this codebase's fault before filing it here).
 
-A **known, currently-tolerated** instance of the last category:
-`GET /tasks/{id}/assignees` returns HTTP 500 unconditionally on Vikunja
-2.3.0 (fixed upstream on `go-vikunja/vikunja`'s `main` via PR #2791, not in
-a tagged release yet as of this writing). The harness still *runs* this
-check on every version — it is never globally skipped — but when it hits
-exactly this signature, it's reported as `⚠ list task assignees
-(server-drift, tolerated: ...)` instead of `✗ ...`: recorded as a
-`server-drift` finding and excluded from the pass/fail counts and exit
-code, rather than as a hard failure. See `driftTolerated()` in
-`scripts/mcp-e2e.ts` for the implementation. **Remove this tolerance** once
-a Vikunja release ships that fix and re-test — if it still 500s on a
-newer tagged release, that's a new, real regression, not the same known
-gap.
+A **known, version-gated tolerance** of the last category: `GET
+/tasks/{id}/assignees` returns HTTP 500 unconditionally on Vikunja versions
+below 2.4.0 (fixed upstream on `go-vikunja/vikunja`'s `main` via PR #2791,
+confirmed shipped in the 2.4.0 tagged release during the 2.4.0-alignment
+work, tracking issue #28 item A1). The harness detects the server version
+via `GET /info` at startup and only tolerates this exact signature when the
+detected version is `< 2.4.0`; on 2.4.0+ it's a hard failure like any other
+regression. It still *runs* this check on every version — never globally
+skipped — reported as `⚠ list task assignees (server-drift, tolerated:
+...)` instead of `✗ ...` only below 2.4.0: recorded as a `server-drift`
+finding and excluded from the pass/fail counts and exit code there, but a
+genuine `✓ list task assignees` pass on 2.4.0+ (confirmed in
+`e2e-verdicts/vikunja-2.4.0-{postgres,sqlite}.md`). See
+`detectServerVersion()`/`versionLessThan()`/`driftTolerated()` in
+`scripts/mcp-e2e.ts` for the implementation. If this ever 500s on a 2.4.0+
+server, that's a new, real regression, not the same known gap — the
+tolerance won't mask it.
 
 ## Version-matrix testing (`npm run test:matrix`)
 
@@ -352,13 +372,13 @@ stack-recreation and harness-invocation steps. The matrix is version × db
 variant" above).
 
 ```bash
-npm run test:matrix                                          # 2.3.0 / postgres (defaults)
-VIKUNJA_VERSION=2.4.0 npm run test:matrix                     # a different tag, still postgres
+npm run test:matrix                                          # 2.4.0 / postgres (defaults, aligned/tested)
+VIKUNJA_VERSION=2.3.0 npm run test:matrix                     # the v1-floor regression check
 VIKUNJA_DB=sqlite npm run test:matrix                         # default version, sqlite backend
-VIKUNJA_VERSION=2.4.0 VIKUNJA_DB=sqlite npm run test:matrix   # both dimensions
+VIKUNJA_VERSION=2.3.0 VIKUNJA_DB=sqlite npm run test:matrix   # both dimensions
 ```
 
-For the chosen `VIKUNJA_VERSION` (default `2.3.0`, matching the compose
+For the chosen `VIKUNJA_VERSION` (default `2.4.0`, matching the compose
 file's own default — see "Version pinning and refresh" above) and
 `VIKUNJA_DB` (default `postgres` — see "DB backend variant" above), it:
 
@@ -390,12 +410,17 @@ file's own default — see "Version pinning and refresh" above) and
    own `✓`/`✗`/`⊘`/`⚠` stdout lines — see "Findings categorization" above
    for what those mean), and a closing verdict paragraph. The overall
    verdict is `PASS` only if *both* harnesses exit 0 with zero non-tolerated
-   (`✗`) failures; `⚠ server-drift` entries don't block a `PASS`. Note that
-   until the `bulk-create` write-concurrency fix for #116 lands, a
-   `sqlite`-backend run is *expected* to `FAIL` on that one check — see "DB
-   backend variant" above — so a `FAIL` verdict on `vikunja-2.3.0-sqlite.md`
-   alone is not, by itself, a regression signal the way a `postgres` `FAIL`
-   would be; check *which* check failed.
+   (`✗`) failures; `⚠ server-drift` entries don't block a `PASS`. Historical
+   note: prior to the 2.4.0 alignment, a `sqlite`-backend run against 2.3.0
+   was *expected* to occasionally `FAIL` (or under-create, 11/12) on the
+   `bulk-create` stress check per #116's SQLite lock-storm-under-circuit-
+   breaker issue. As of the 2.4.0 alignment (tracking issue #28 item A1),
+   this check passed 12/12 across 5 repeated runs against `2.4.0`/sqlite —
+   see "Vikunja 2.4.0 and `concurrent_writes`" below. This project's
+   client-side write-serialization is retained regardless, as
+   defense-in-depth for the documented v1-floor (2.3.0, where the fix isn't
+   present) — see the comment on the `create` `BatchProcessor` in
+   `src/tools/tasks/bulk-operations-simplified.ts`.
 5. **Exits 0 on `PASS`, 1 on `FAIL`** — usable as a plain shell gate even
    without CI (GitHub Actions are disabled repo-wide by explicit owner
    decision; this is why this entire workflow is a local script rather
@@ -426,6 +451,28 @@ the tree. Regenerate with `npm run test:matrix` rather than trusting a
 stale committed one; paste or attach the freshly-generated file's contents
 in a PR description when a run needs to be shown to a reviewer.
 
+### Vikunja 2.4.0 and `concurrent_writes`
+
+As part of the 2.4.0 alignment (tracking issue #28, item A1), `GET
+/api/v1/info` on a 2.4.0 server was observed to advertise a new field not
+present in the documented 2.3.0 response: `"concurrent_writes": true`. The
+`bulk-create` stress check (`npm run test:e2e:mcp`, labeled
+`sqlite-sensitive, see #116`) was re-run **5 times** against a fresh
+`VIKUNJA_VERSION=2.4.0 VIKUNJA_DB=sqlite` stack to rule out a lucky single
+run: **12/12 concurrent creates succeeded on all 5 runs**, zero
+under-creates, zero circuit-breaker trips. This is consistent with upstream
+having genuinely fixed (or now at least reliably supporting) the SQLite
+write-concurrency issue tracked in #116.
+
+**This does not change this project's own behavior.** The client-side
+serialization in `src/tools/tasks/bulk-operations-simplified.ts` (the
+`create` `BatchProcessor`'s `maxConcurrency: 1`) is retained regardless, as
+defense-in-depth — this project's documented minimum supported Vikunja
+version is still 2.3.0 (which does not advertise `concurrent_writes` and
+does exhibit the lock-storm), a deployer's server may not be running
+2.4.0+ at all, and serializing creates is cheap in the common case. See
+that file's comment for the exact revisit condition.
+
 ### When a new Vikunja release ships
 
 1. `curl -s https://hub.docker.com/v2/repositories/vikunja/vikunja/tags?page_size=100`
@@ -436,11 +483,15 @@ in a PR description when a run needs to be shown to a reviewer.
    to document and tolerate the same way the assignees case above is
    tolerated) before going further.
 3. If it passes (or once triaged failures are addressed), refresh the
-   vendored spec if you also want to re-check spec/tool alignment:
-   `npm run fetch:api-spec && npm run generate:api-types`.
+   vendored spec from the newly-pinned container if you also want to
+   re-check spec/tool alignment: `VIKUNJA_VERSION=X.Y.Z npm run e2e:up && npm
+   run fetch:api-spec:container && npm run generate:api-types` (see
+   `docs/API-SPEC.md` for why the container, not `try.vikunja.io`, is the
+   source of truth).
 4. Bump the *default* pin in `docker/e2e/docker-compose.yml` (the
-   `${VIKUNJA_VERSION:-2.3.0}` fallback) and re-run `npm run test:matrix`
-   with no override to confirm the new default is green.
+   `${VIKUNJA_VERSION:-2.4.0}` fallback, and its matching comment block) —
+   and `docker/e2e/bootstrap.sh`'s matching default — then re-run `npm run
+   test:matrix` with no override to confirm the new default is green.
 5. Cut a **minor** release aligned to the new Vikunja version, per
    `docs/RELEASING.md` §7's Docker compatibility-tag scheme (`X.Y.Z`,
    `X.Y.Z-vikunja<A.B.C>`, `latest`) — changing the base Vikunja version
@@ -501,13 +552,17 @@ script can't produce faithfully:
   stay-informed.md's "subscribe bell icon in the project header" — this
   version only exposes subscribe state via the project's "..." menu) — the
   script captures the nearest honest equivalent and notes the substitution.
-- **The admin panel** (all three placeholders in admin-ops.md) — the pinned
-  stack (`vikunja/vikunja:2.3.0`) doesn't implement the `/admin/*` API or
-  its frontend at all (`GET /admin/overview` 404s; no `admin` group appears
-  in `GET /routes`). This is the same documented spec/pinned-version gap
-  described in "Version pinning and refresh" above — the vendored OpenAPI
-  spec is captured from an `unstable` build ~1000 commits ahead of the
-  pinned stable tag. Rather than fabricate a screenshot of a UI that isn't
+- **The admin panel** (all three placeholders in admin-ops.md) — still not
+  implemented as of the pinned `vikunja/vikunja:2.4.0` (re-verified during
+  the 2.4.0 alignment, tracking issue #28 item A1): `GET /admin/overview`
+  still 404s under a JWT (confirmed genuinely "not found", not an auth
+  rejection — an API-token-authenticated request 401s earlier instead,
+  since admin routes are JWT-only, but a JWT-authenticated request reaches
+  routing and gets a plain 404), and no `admin` group appears in `GET
+  /routes`. The vendored OpenAPI spec still documents `/admin/*` paths
+  (unchanged from the previous vendored spec — see "Version pinning and
+  refresh" above), so this remains a documented spec/served-API gap, not
+  test drift. Rather than fabricate a screenshot of a UI that isn't
   actually running, the script replaces those three placeholders with an
   explanatory note instead of an image. Re-run the script once the pin
   moves to a release that ships the admin panel.

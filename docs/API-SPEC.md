@@ -23,16 +23,46 @@ from there is equivalent to reading the spec, with compiler-checked accuracy.
 
 ## Where the spec comes from
 
-The spec is fetched live from a running Vikunja instance's Swagger endpoint:
+**Primary source (recommended): the pinned local e2e container.** The
+version-matrix report that motivated the Vikunja 2.4.0 alignment confirmed
+that a running container's own `/api/v1/docs.json` reports an `info.version`
+that matches its image tag *exactly* (e.g. `v2.4.0`, byte-for-byte, no
+ahead-of-tag drift) — unlike `try.vikunja.io` (see below). Bring up the
+pinned stack (`npm run e2e:up`, see `docs/LOCAL-TESTING.md`) and fetch
+straight from it:
 
 ```bash
-curl -sS https://try.vikunja.io/api/v1/docs.json -o docs/vikunja-openapi.json
+npm run fetch:api-spec:container
 ```
 
-It is **Swagger 2.0** (`"swagger": "2.0"`), not OpenAPI 3.x. As of this
-writing it declares:
+(equivalent to `curl -sS http://localhost:33456/api/v1/docs.json -o
+docs/vikunja-openapi.json && jq -e . docs/vikunja-openapi.json`)
 
-- `info.version`: `v2.3.0-1019-g95b7e673`
+This gives an exactly-reproducible spec/behavior pairing tied to the pinned
+tag in `docker/e2e/docker-compose.yml` — the spec documents precisely what
+that tag serves, nothing ahead of it.
+
+**Legacy/alternate source: `try.vikunja.io`.**
+
+```bash
+npm run fetch:api-spec
+```
+
+(equivalent to `curl -sS https://try.vikunja.io/api/v1/docs.json -o
+docs/vikunja-openapi.json && jq -e . docs/vikunja-openapi.json`)
+
+`try.vikunja.io` always runs `unstable` (upstream `main`), which is ahead of
+any tagged release — confirmed as recently as the 2.4.0 alignment work,
+where it reported a version string like `v2.4.0-N-g<hash>`, i.e. commits past
+the tag. Use this only if you deliberately want to preview upstream changes
+not yet in a tagged release; it is **not** the source used to align this
+project's default e2e pin, and endpoints/fields it documents may not exist
+yet in the pinned container.
+
+It is **Swagger 2.0** (`"swagger": "2.0"`), not OpenAPI 3.x. As of the 2.4.0
+alignment it declares:
+
+- `info.version`: `v2.4.0` (fetched from the pinned container)
 - `paths`: 126 endpoints
 - `definitions`: 98 schemas
 
@@ -45,14 +75,17 @@ The file is committed to the repo (not gitignored) so that:
 
 ## How to refresh it
 
-1. Fetch the latest spec and sanity-check it parses:
+1. Bring up the pinned e2e stack and fetch its spec (sanity-checking it
+   parses):
 
    ```bash
-   npm run fetch:api-spec
+   npm run e2e:up
+   npm run fetch:api-spec:container
    ```
 
-   (equivalent to `curl -sS https://try.vikunja.io/api/v1/docs.json -o
-   docs/vikunja-openapi.json && jq -e . docs/vikunja-openapi.json`)
+   (use `npm run fetch:api-spec` instead only if you deliberately want the
+   ahead-of-tag `try.vikunja.io` spec — see "Where the spec comes from"
+   above)
 
 2. Regenerate the TypeScript types from the vendored spec:
 

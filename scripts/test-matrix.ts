@@ -10,7 +10,9 @@
  *      version via GET /api/v1/info or a different DB backend (detected via
  *      `docker compose ps`, see `getRunningBackend`), or bringing it up
  *      fresh if it isn't running at all. The stack's own version pin
- *      defaults to 2.3.0 but is env-driven (see docker/e2e/docker-compose.yml's
+ *      defaults to 2.4.0 (the aligned/tested default -- 2.3.0 is the
+ *      documented v1-floor minimum, see docker/e2e/docker-compose.yml's pin
+ *      comment) but is env-driven (see docker/e2e/docker-compose.yml's
  *      `VIKUNJA_VERSION` interpolation) — this script drives that the same
  *      way a human would: `VIKUNJA_VERSION=X.Y.Z npm run e2e:up`. The DB
  *      backend (item F2, tracking issue #28 — added so SQLite-only failure
@@ -31,10 +33,10 @@
  *      full per-check list.
  *
  * Usage:
- *   npm run test:matrix                                          # 2.3.0 / postgres (defaults)
- *   VIKUNJA_VERSION=2.4.0 npm run test:matrix                     # a different tag, still postgres
+ *   npm run test:matrix                                          # 2.4.0 / postgres (defaults)
+ *   VIKUNJA_VERSION=2.3.0 npm run test:matrix                     # the v1-floor regression check
  *   VIKUNJA_DB=sqlite npm run test:matrix                         # default version, sqlite backend
- *   VIKUNJA_VERSION=2.4.0 VIKUNJA_DB=sqlite npm run test:matrix   # both dimensions
+ *   VIKUNJA_VERSION=2.3.0 VIKUNJA_DB=sqlite npm run test:matrix   # both dimensions
  *
  * See docs/LOCAL-TESTING.md's "Version-matrix testing" section for the full
  * writeup, including what to do when a new Vikunja release ships.
@@ -258,8 +260,11 @@ async function ensureStack(desiredVersion: string, desiredDb: DbBackend): Promis
 // Both scripts/test-mcp.ts and scripts/mcp-e2e.ts print one line per check
 // in a stable format (`  ✓ name`, `  ✗ name (error)`, `  ⊘ name (skipped:
 // reason)`) plus, in mcp-e2e.ts's case, `  ⚠ name (server-drift, tolerated:
-// summary)` for the one known, tracked Vikunja 2.3.0 regression (see
-// driftTolerated() there). Parsing that stdout — rather than modifying
+// summary)` for known, tracked server-side regressions (see driftTolerated()
+// there) -- e.g. the assignees-500 case, version-gated to only tolerate on
+// servers below 2.4.0 (fixed and confirmed shipped there) -- and the
+// JWT-only user-webhook-scope-under-API-token-auth case (expected on every
+// version, not version-gated). Parsing that stdout — rather than modifying
 // either harness's return shape — keeps this runner decoupled from their
 // internals; only the four line prefixes below are load-bearing.
 // ============================================================================
@@ -414,7 +419,7 @@ function renderVerdict(params: {
 // ============================================================================
 
 async function main(): Promise<void> {
-  const requestedVersion = (process.env.VIKUNJA_VERSION || '2.3.0').trim();
+  const requestedVersion = (process.env.VIKUNJA_VERSION || '2.4.0').trim();
   const requestedDb = (process.env.VIKUNJA_DB || 'postgres').trim();
   if (requestedDb !== 'postgres' && requestedDb !== 'sqlite') {
     throw new Error(`VIKUNJA_DB must be 'postgres' or 'sqlite', got '${requestedDb}'.`);

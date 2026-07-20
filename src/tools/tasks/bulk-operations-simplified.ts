@@ -54,6 +54,23 @@ const processors = {
   // closed (36/36 in the same scenario). Same reasoning as the #97 sweep's
   // "bounded/sequential writes" rule — this call site was previously ruled
   // safe-as-is on the assumption that bounded-at-8 plus retry was enough.
+  //
+  // Current status (2.4.0 alignment, tracking issue #28 item A1): Vikunja
+  // 2.4.0's `GET /api/v1/info` advertises a new `concurrent_writes: true`
+  // field, and the same 12-task bulk-create stress check run repeatedly
+  // against a 2.4.0/sqlite stack came back clean (12/12) every time — see
+  // docs/LOCAL-TESTING.md's SQLite section / docs/API-COVERAGE.md for the
+  // pass-rate numbers. This strongly suggests upstream shipped (or now at
+  // least advertises) a real SQLite write-concurrency fix. This
+  // client-side serialization is **retained regardless, as defense-in-depth**
+  // — our documented v1-floor minimum is still 2.3.0 (which does not
+  // advertise `concurrent_writes` and does exhibit the lock-storm), a
+  // deployer's server may not be SQLite-backed 2.4.0+ at all, and
+  // serializing creates costs little in the common (small-N) case. Revisit
+  // condition: only reconsider dropping this once the minimum supported
+  // Vikunja version is raised to ≥ 2.4.0 AND further multi-run evidence
+  // (beyond this wave's handful of runs) confirms the fix is durable across
+  // upstream point releases, not a one-off.
   create: new BatchProcessor({ maxConcurrency: 1, batchSize: 15, enableMetrics: true, batchDelay: 0 }),
 };
 
@@ -125,6 +142,21 @@ function resolveBulkUpdateValue(field: string | undefined, value: unknown): unkn
  *   `POST /tasks/bulk` and single-task `POST /tasks/{id}`. So labels always
  *   use the dedicated per-task label endpoint, not because the bulk
  *   endpoint clears them, but because it never touches them at all.
+ *
+ * Current status (2.4.0 alignment, tracking issue #28 item A1): the
+ * assignee-wipe defect is **not version-gated and has no removal
+ * condition** — a dedicated v2-API research report (2026-07-20) confirmed
+ * the exact same unconditional `ot.updateTaskAssignees(s, t.Assignees, a)`
+ * call exists, byte-for-byte unchanged, in the shared model code on
+ * `origin/main` (i.e. also present in whatever ships in v2.4.0+ and in
+ * Vikunja's newer v2 API, which calls into the identical
+ * `models.BulkTask.Update()` chain — there is no PATCH alternative for bulk
+ * update in v2 either, since `bulk_task.go` registers only `PUT`, no `GET`,
+ * so Huma's AutoPatch can't synthesize one). This is a standing defect in
+ * shared server-side model code, orthogonal to which REST API version or
+ * Vikunja release is in use — the snapshot/restore workaround below stays
+ * indefinitely until upstream actually fixes `updateSingleTask`/
+ * `updateTaskAssignees`, not merely until this project bumps a version pin.
  */
 export async function bulkUpdateTasks(args: BulkUpdateArgs, authManager: AuthManager): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   try {

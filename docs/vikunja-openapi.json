@@ -13,7 +13,7 @@
             "name": "AGPL-3.0-or-later",
             "url": "https://code.vikunja.io/api/src/branch/main/LICENSE"
         },
-        "version": "v2.3.0-1019-g95b7e673"
+        "version": "v2.4.0"
     },
     "host": "",
     "basePath": "/api/v1",
@@ -3068,7 +3068,7 @@
                     }
                 ],
                 "responses": {
-                    "200": {
+                    "201": {
                         "description": "The created bucket object.",
                         "schema": {
                             "$ref": "#/definitions/models.Bucket"
@@ -3295,7 +3295,7 @@
                     }
                 ],
                 "responses": {
-                    "200": {
+                    "201": {
                         "description": "The created webhook target.",
                         "schema": {
                             "$ref": "#/definitions/models.Webhook"
@@ -4294,7 +4294,7 @@
                     }
                 ],
                 "responses": {
-                    "200": {
+                    "201": {
                         "description": "The created project view",
                         "schema": {
                             "$ref": "#/definitions/models.ProjectView"
@@ -7025,7 +7025,7 @@
                     }
                 ],
                 "responses": {
-                    "200": {
+                    "201": {
                         "description": "The created token.",
                         "schema": {
                             "$ref": "#/definitions/models.APIToken"
@@ -8744,7 +8744,7 @@
                     }
                 ],
                 "responses": {
-                    "200": {
+                    "201": {
                         "description": "The created reaction",
                         "schema": {
                             "$ref": "#/definitions/models.Reaction"
@@ -11280,6 +11280,13 @@
             "properties": {
                 "code": {
                     "type": "integer"
+                },
+                "i18n_params": {
+                    "description": "I18nParams carries Message's dynamic values, keyed by the client's translation placeholder names, so clients can localise the error.",
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
                 },
                 "message": {
                     "type": "string"

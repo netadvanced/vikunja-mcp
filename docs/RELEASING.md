@@ -206,8 +206,12 @@ Before cutting that release, actually validate against the new server version ra
 bumping the pin: `VIKUNJA_VERSION=X.Y.Z npm run test:matrix` (see
 [docs/LOCAL-TESTING.md](LOCAL-TESTING.md#version-matrix-testing-npm-run-testmatrix)) runs both
 local e2e harnesses against it in one command and writes a pass/fail verdict, refresh the vendored
-spec if needed (`npm run fetch:api-spec && npm run generate:api-types`), *then* bump the default
-`e2e` pin and proceed with the release scope/checklist above.
+spec from the pinned container if needed (`VIKUNJA_VERSION=X.Y.Z npm run e2e:up && npm run
+fetch:api-spec:container && npm run generate:api-types` — see
+[docs/API-SPEC.md](API-SPEC.md#where-the-spec-comes-from) for why the container, not
+`try.vikunja.io`/`npm run fetch:api-spec`, is the source of truth here: the container's own spec
+matches its tag exactly, `try.vikunja.io` always runs `unstable`, ahead of any tag), *then* bump
+the default `e2e` pin and proceed with the release scope/checklist above.
 
 ## 8. The one rule that matters most
 

@@ -3481,7 +3481,7 @@ export interface paths {
             requestBody: components["requestBodies"]["models.Bucket"];
             responses: {
                 /** @description The created bucket object. */
-                200: {
+                201: {
                     headers: {
                         [name: string]: unknown;
                     };
@@ -3667,7 +3667,7 @@ export interface paths {
             };
             responses: {
                 /** @description The created webhook target. */
-                200: {
+                201: {
                     headers: {
                         [name: string]: unknown;
                     };
@@ -4666,7 +4666,7 @@ export interface paths {
             };
             responses: {
                 /** @description The created project view */
-                200: {
+                201: {
                     headers: {
                         [name: string]: unknown;
                     };
@@ -7495,7 +7495,7 @@ export interface paths {
             };
             responses: {
                 /** @description The created token. */
-                200: {
+                201: {
                     headers: {
                         [name: string]: unknown;
                     };
@@ -9655,7 +9655,7 @@ export interface paths {
             requestBody: components["requestBodies"]["models.Reaction"];
             responses: {
                 /** @description The created reaction */
-                200: {
+                201: {
                     headers: {
                         [name: string]: unknown;
                     };
@@ -10776,6 +10776,10 @@ export interface components {
         };
         "web.HTTPError": {
             code?: number;
+            /** @description I18nParams carries Message's dynamic values, keyed by the client's translation placeholder names, so clients can localise the error. */
+            i18n_params?: {
+                [key: string]: string;
+            };
             message?: string;
         };
     };

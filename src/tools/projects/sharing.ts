@@ -21,10 +21,13 @@
  *
  * `getProjectShare`/`deleteProjectShare` do NOT call the by-id GET route
  * above to resolve a share — they route through the LIST route instead, as a
- * workaround for a confirmed upstream server bug (fixed upstream but not yet
- * in our pinned Vikunja version) that makes the by-id GET 404 for every
- * share, even immediately after creation. See `findShareByIdViaList`'s doc
- * comment for the full root-cause chain and the exact upstream commit.
+ * workaround for a confirmed upstream server bug that makes the by-id GET
+ * 404 for every share, even immediately after creation. **Status: fixed
+ * upstream and confirmed shipped in the Vikunja 2.4.0 tagged release, but
+ * this project's documented v1-floor minimum is still 2.3.0 (which lacks the
+ * fix), so this workaround stays.** See `findShareByIdViaList`'s doc comment
+ * for the full root-cause chain, the exact upstream commit, and the exact
+ * condition for removing it.
  */
 
 import type { AuthManager } from '../../auth/AuthManager';
@@ -146,14 +149,24 @@ function truncateForMessage(value: string, maxLength = 40): string {
  * after creation. Already fixed upstream
  * (go-vikunja/vikunja@bcade97fa46c0f1e06b53e81277d3169b3f5f1eb, 2026-06-05,
  * "fix(link-sharing): resolve share read permission via project id so by-id
- * reads work" — "This affected both v1 and v2.") but NOT present in our
- * pinned v2.3.0 tag (confirmed via `git merge-base --is-ancestor` against the
- * v2.3.0 tag: not an ancestor). `GET /projects/{project}/shares` (list) is
- * unaffected — it authorizes via `project.IsAdmin(s, a)`, never touching
- * `Hash` at all.
+ * reads work" — "This affected both v1 and v2.") and confirmed present in
+ * the **Vikunja 2.4.0 tagged release** (`git merge-base --is-ancestor
+ * bcade97fa v2.4.0` succeeds — it *is* an ancestor there, unlike v2.3.0).
+ * `GET /projects/{project}/shares` (list) is unaffected either way — it
+ * authorizes via `project.IsAdmin(s, a)`, never touching `Hash` at all.
  *
- * Safe to revert to the by-id route once our pinned Vikunja server version
- * includes a release built from a commit at/after `bcade97fa`.
+ * **Current status (as of the 2.4.0 alignment, tracking issue #28 item A1):
+ * still needed.** This project's documented minimum supported Vikunja
+ * version is 2.3.0 (the v1-floor, which predates the fix) even though the
+ * aligned/tested default is now 2.4.0 (which has it) — see
+ * `docker/e2e/docker-compose.yml`'s pin comment and `docs/API-COVERAGE.md`.
+ * A caller could be pointed at any server from 2.3.0 up, so this workaround
+ * cannot be removed just because the *default* moved past the fix.
+ *
+ * **Revisit condition: remove this workaround (revert to the by-id route)
+ * only when the minimum supported Vikunja version is raised to ≥ 2.4.0** —
+ * i.e. when 2.3.0 support is dropped, not merely when the default pin is
+ * bumped.
  */
 async function findShareByIdViaList(
   authManager: AuthManager,

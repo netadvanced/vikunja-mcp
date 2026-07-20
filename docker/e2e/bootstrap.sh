@@ -17,7 +17,7 @@
 # (invoked by `npm run e2e:up`, which runs `docker compose up` first)
 #
 # The Vikunja image tag is controlled by the `VIKUNJA_VERSION` env var
-# (default `2.3.0`, see docker/e2e/docker-compose.yml) -- docker compose
+# (default `2.4.0`, see docker/e2e/docker-compose.yml) -- docker compose
 # picks it up automatically via `${VIKUNJA_VERSION:-2.3.0}` interpolation
 # in that file, since this script's `compose()` helper just inherits
 # whatever is in this process's environment. Exporting it explicitly here
@@ -47,7 +47,7 @@ ENV_FILE="$SCRIPT_DIR/.env"
 
 # Default + export so it's visible in the log line below and so `docker
 # compose` sees it regardless of how this script was invoked.
-export VIKUNJA_VERSION="${VIKUNJA_VERSION:-2.3.0}"
+export VIKUNJA_VERSION="${VIKUNJA_VERSION:-2.4.0}"
 
 # Default + validate. Only "postgres" and "sqlite" select a real profile;
 # anything else is a caller mistake, not a case to fall through silently.
