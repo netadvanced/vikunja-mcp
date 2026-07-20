@@ -29,6 +29,7 @@ import { loadJose } from '../auth/oidc/joseLoader';
 import type { JoseDeps, OidcJwtValidatorConfig } from '../auth/oidc/types';
 import { AuthManager } from '../auth/AuthManager';
 import { OidcStubCredentialSource, type VikunjaCredentialSource } from '../auth/CredentialSource';
+import { getVaultCredentialSource } from '../auth/oidc/vaultCredentialSource';
 import {
   attachRequestContext,
   type Identity,
@@ -186,10 +187,20 @@ export async function setupOidcHttpAuth(
 ): Promise<void> {
   const deps = await loadDeps();
   const validator = createOidcJwtValidator(toValidatorConfig(oidc), deps);
-  const credentialSource = new OidcStubCredentialSource();
+  // Prefer the real, file-backed vault (H2b interim implementation, see
+  // src/auth/oidc/vaultCredentialSource.ts) when an operator has configured
+  // VIKUNJA_MCP_VAULT_PATH + VIKUNJA_MCP_VAULT_KEY[_FILE]; otherwise fall
+  // back to the H1 stub (every identity unprovisioned), unchanged from
+  // before this wiring existed.
+  const vault = getVaultCredentialSource();
+  const credentialSource: VikunjaCredentialSource = vault ?? new OidcStubCredentialSource();
   setOidcAuthMiddleware(createOidcHttpAuthMiddleware({ validator, credentialSource }));
   logger.info(
-    'OIDC HTTP authentication middleware registered (resource-server mode; ' +
-      'credentials unprovisioned until the H2 vault lands)'
+    vault
+      ? 'OIDC HTTP authentication middleware registered (resource-server mode; ' +
+          'credential vault active)'
+      : 'OIDC HTTP authentication middleware registered (resource-server mode; ' +
+          'credential vault not configured — every identity unprovisioned until ' +
+          'VIKUNJA_MCP_VAULT_PATH/VIKUNJA_MCP_VAULT_KEY are set)'
   );
 }

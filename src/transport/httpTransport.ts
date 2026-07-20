@@ -28,6 +28,25 @@
  * "Selection rule": "Any missing → hard startup error"), `startHttpTransport`
  * refuses to start whenever no OIDC middleware has been registered — never
  * serve unauthenticated HTTP.
+ *
+ * **Per-request cost (item H2b, profiled 2026-07-21):** re-running
+ * `registerTools()` against a fresh `McpServer` on every request — the thing
+ * that looks like the obvious "runs every request now" regression this
+ * per-request construction introduced — measures at mean ≈0.4–0.6ms / p95
+ * <1ms for this server's full ~24-tool surface (`tests/transport/httpTransport-perf.test.ts`,
+ * which doubles as a regression guard going forward). That is two to three
+ * orders of magnitude below any latency budget worth optimizing for, and the
+ * SDK's own stateless example (`@modelcontextprotocol/sdk`'s
+ * `examples/server/simpleStatelessStreamableHttp.ts`) does the same
+ * rebuild-everything-per-request thing with no caching layer of its own —
+ * this is the sanctioned pattern, not a shortcut. Conclusion: **no caching
+ * was added.** The only thing that could safely be cached (pre-built Zod
+ * schema objects) is exactly the part Zod itself already makes cheap to
+ * construct, so caching it would trade a few hundred microseconds for a new
+ * way to leak state across "stateless" requests — a bad trade. The
+ * genuinely expensive, safely-shared piece (`VikunjaClientFactory`) is
+ * already built once at startup and reused across requests (see
+ * `src/index.ts`'s `main()` — only `registerTools` itself runs per request).
  */
 
 import * as http from 'node:http';

@@ -5,21 +5,23 @@
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import type { AuthManager } from '../auth/AuthManager';
+import { AuthManager } from '../auth/AuthManager';
 import type { VikunjaClientFactory } from '../client/VikunjaClientFactory';
 import { MCPError, ErrorCode } from '../types/errors';
 import { clearGlobalClientFactory } from '../client';
 import { logger } from '../utils/logger';
 import { applyRateLimiting } from '../middleware/direct-middleware';
-import { createSecureConnectionMessage } from '../utils/security';
+import { createSecureConnectionMessage, maskCredential } from '../utils/security';
 import { wrapAuthError } from '../utils/error-handler';
 import { createStandardResponse } from '../utils/response-factory';
 import { formatMcpResponse } from '../utils/simple-response';
 import { vikunjaRestRequest } from '../utils/vikunja-rest';
 import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../utils/read-only';
+import { getCurrentIdentity } from '../context/requestContext';
+import { getVaultCredentialSource } from '../auth/oidc/vaultCredentialSource';
 
 interface AuthArgs {
-  subcommand: 'connect' | 'status' | 'refresh' | 'disconnect' | 'info';
+  subcommand: 'connect' | 'status' | 'refresh' | 'disconnect' | 'info' | 'provision' | 'deprovision';
   apiUrl?: string | undefined;
   apiToken?: string | undefined;
 }
@@ -105,7 +107,15 @@ export function registerAuthTool(server: McpServer, authManager: AuthManager, _c
       'Manage authentication with Vikunja API (connect, status, refresh, disconnect, info)',
     ),
     {
-      subcommand: z.enum(['connect', 'status', 'refresh', 'disconnect', 'info']),
+      subcommand: z.enum([
+        'connect',
+        'status',
+        'refresh',
+        'disconnect',
+        'info',
+        'provision',
+        'deprovision',
+      ]),
       apiUrl: z.string().url().optional(),
       apiToken: z.string().optional(),
     },
@@ -168,12 +178,116 @@ export function registerAuthTool(server: McpServer, authManager: AuthManager, _c
           }
 
           case 'status': {
+            // oidc-http mode: report the calling identity's OWN vault-link
+            // status (never another identity's — docs/OIDC-RESOURCE-SERVER.md
+            // §3c). `getCurrentIdentity()` is only ever populated inside an
+            // ALS scope opened by the OIDC HTTP auth middleware; it is always
+            // `undefined` in stdio mode, which falls through to the
+            // pre-existing global-session behavior below, unchanged.
+            const identity = getCurrentIdentity();
+            if (identity) {
+              const vault = getVaultCredentialSource();
+              const vaultStatus = vault ? vault.status(identity) : { linked: false };
+              const response = createStandardResponse(
+                'auth-status',
+                vaultStatus.linked
+                  ? 'Authentication status retrieved'
+                  : 'Not linked - run vikunja_auth provision with a Vikunja API token',
+                { authenticated: vaultStatus.linked, ...vaultStatus },
+                vaultStatus.linked ? { maskedToken: vaultStatus.maskedToken } : undefined,
+              );
+              return {
+                content: formatMcpResponse(response),
+              };
+            }
+
             const status = authManager.getStatus();
             const response = createStandardResponse(
               'auth-status',
               status.authenticated ? 'Authentication status retrieved' : 'Not authenticated',
               status,
               status.authenticated ? { apiUrl: status.apiUrl } : undefined,
+            );
+            return {
+              content: formatMcpResponse(response),
+            };
+          }
+
+          case 'provision': {
+            // Identity comes ONLY from the validated request context, never
+            // from a tool argument — closes the "claim to be someone else"
+            // spoofing vector (docs/OIDC-RESOURCE-SERVER.md §3c/§4, D7).
+            const identity = getCurrentIdentity();
+            if (!identity) {
+              throw new MCPError(
+                ErrorCode.VALIDATION_ERROR,
+                'provision is only available in oidc-http mode (this request carries no ' +
+                  'authenticated OIDC identity). Use connect in stdio mode instead.',
+              );
+            }
+            if (!args.apiToken) {
+              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'apiToken is required for provision');
+            }
+            const vault = getVaultCredentialSource();
+            if (!vault) {
+              throw new MCPError(
+                ErrorCode.AUTH_REQUIRED,
+                'The OIDC credential vault is not configured on this server ' +
+                  '(VIKUNJA_MCP_VAULT_PATH / VIKUNJA_MCP_VAULT_KEY[_FILE]). Contact your operator.',
+              );
+            }
+            const vikunjaUrl = vault.getVikunjaUrl();
+            if (!vikunjaUrl) {
+              throw new MCPError(
+                ErrorCode.VALIDATION_ERROR,
+                'This server has no VIKUNJA_URL configured; cannot provision a Vikunja credential.',
+              );
+            }
+
+            // Prove the supplied token actually works before storing it —
+            // reuses the same verifyConnection() round trip 'connect' uses.
+            const throwaway = new AuthManager();
+            throwaway.connect(vikunjaUrl, args.apiToken);
+            const detectedAuthType = throwaway.getAuthType();
+            await verifyConnection(throwaway, vikunjaUrl, detectedAuthType);
+
+            vault.provision(identity, args.apiToken, vikunjaUrl);
+            const masked = maskCredential(args.apiToken);
+            const response = createStandardResponse(
+              'auth-provision',
+              `Vikunja API token linked for this identity (${masked}).`,
+              { linked: true },
+              { apiUrl: vikunjaUrl, authType: detectedAuthType },
+            );
+            return {
+              content: formatMcpResponse(response),
+            };
+          }
+
+          case 'deprovision': {
+            const identity = getCurrentIdentity();
+            if (!identity) {
+              throw new MCPError(
+                ErrorCode.VALIDATION_ERROR,
+                'deprovision is only available in oidc-http mode (this request carries no ' +
+                  'authenticated OIDC identity). Use disconnect in stdio mode instead.',
+              );
+            }
+            const vault = getVaultCredentialSource();
+            if (!vault) {
+              throw new MCPError(
+                ErrorCode.AUTH_REQUIRED,
+                'The OIDC credential vault is not configured on this server.',
+              );
+            }
+            const removed = vault.deprovision(identity);
+            const response = createStandardResponse(
+              'auth-deprovision',
+              removed
+                ? 'Vikunja API token unlinked for this identity.'
+                : 'No linked Vikunja API token was found for this identity.',
+              { linked: false },
+              { previouslyLinked: removed },
             );
             return {
               content: formatMcpResponse(response),

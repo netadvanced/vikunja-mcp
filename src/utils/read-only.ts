@@ -41,10 +41,11 @@
  *    `IDEMPOTENT_TOOLS` allowlist below, and only when every write
  *    subcommand on that tool is genuinely idempotent — see its comment.
  *
- * `vikunja_auth` special case: connect/status/refresh/disconnect/info only
- * manage the MCP server's local in-memory session — none of them mutate a
- * Vikunja resource — so every subcommand is classified 'read' and
- * read-only mode never blocks it (and `readOnlyHint` is honestly true).
+ * `vikunja_auth` special case: connect/status/refresh/disconnect/info/
+ * provision/deprovision only manage the MCP server's local session or
+ * credential-vault record — none of them mutate a Vikunja resource — so
+ * every subcommand is classified 'read' and read-only mode never blocks it
+ * (and `readOnlyHint` is honestly true).
  */
 
 import type { ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
@@ -66,6 +67,12 @@ const AUTH: ClassificationTable = {
   refresh: 'read',
   disconnect: 'read',
   info: 'read',
+  // provision/deprovision (oidc-http mode, docs/OIDC-RESOURCE-SERVER.md §3c)
+  // manage this server's local credential vault record for the calling
+  // identity — like connect/disconnect, they never mutate a Vikunja
+  // resource, so read-only mode never blocks them.
+  provision: 'read',
+  deprovision: 'read',
 };
 
 const TASKS: ClassificationTable = {

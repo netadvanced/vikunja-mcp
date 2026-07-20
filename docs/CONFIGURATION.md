@@ -514,6 +514,7 @@ Currently sensitive variables (audited against every `process.env.*` read under 
 | Variable | `_FILE` variant |
 |---|---|
 | `VIKUNJA_API_TOKEN` | `VIKUNJA_API_TOKEN_FILE` |
+| `VIKUNJA_MCP_VAULT_KEY` (OIDC credential vault master key, `http` transport mode only) | `VIKUNJA_MCP_VAULT_KEY_FILE` |
 
 Behavior:
 
@@ -619,6 +620,30 @@ VIKUNJA_MCP_HTTP_HOST=127.0.0.1              # http mode only; default 127.0.0.1
 VIKUNJA_MCP_HTTP_PORT=8765                   # http mode only; default 8765
 VIKUNJA_MCP_HTTP_PATH=/mcp                   # http mode only; default /mcp
 VIKUNJA_MCP_HTTP_ALLOWED_HOSTS=host:port,other:port   # http mode only; comma list, default <host>:<port>
+```
+
+### OIDC Resource-Server Variables (`http` transport mode only)
+
+Only consulted when `transport=http`; see `docs/OIDC-RESOURCE-SERVER.md` for
+the full design and [`docs/CONTEXT-FORGE.md`](CONTEXT-FORGE.md) for a
+worked deployment walkthrough behind IBM MCP Context Forge + Keycloak (or
+any OIDC provider).
+
+```env
+VIKUNJA_MCP_OIDC_ISSUER=https://idp.example.com/realms/your-realm
+VIKUNJA_MCP_OIDC_AUDIENCE=your-client-id                # comma list for multiple valid audiences
+VIKUNJA_MCP_OIDC_JWKS_URI=https://idp.example.com/realms/your-realm/protocol/openid-connect/certs
+VIKUNJA_MCP_OIDC_ALLOWED_ALGS=RS256                      # optional; default RS256, "none" never accepted
+VIKUNJA_MCP_OIDC_CLOCK_SKEW_SEC=60                       # optional; default 60
+VIKUNJA_MCP_OIDC_REQUIRED_SCOPE=your-scope               # optional coarse scope gate
+
+# Credential vault (per-identity Vikunja tk_ token storage, encrypted at rest).
+# Interim implementation (item H2b) — see src/storage/vaultFileStore.ts's
+# top-of-file note. Both must be set for provisioning (`vikunja_auth
+# provision`/`status`/`deprovision`) to work; unset means every identity is
+# always unprovisioned (the pre-vault H1 behavior).
+VIKUNJA_MCP_VAULT_PATH=/data/vikunja-mcp/vault.json
+VIKUNJA_MCP_VAULT_KEY=<64 hex chars, e.g. `openssl rand -hex 32`>   # or VIKUNJA_MCP_VAULT_KEY_FILE
 ```
 
 ### Logging Variables

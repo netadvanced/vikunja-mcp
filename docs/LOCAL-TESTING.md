@@ -447,6 +447,57 @@ in a PR description when a run needs to be shown to a reviewer.
    this project targets is always at least a minor bump (see
    `docs/RELEASING.md` §1).
 
+## OIDC `oidc-http` transport e2e lane (`npm run test:e2e:oidc`)
+
+`scripts/oidc-e2e.ts` is the e2e lane for the opt-in `oidc-http` transport
+mode (`docs/OIDC-RESOURCE-SERVER.md`, tracking issue #28 item H2b) — sibling
+to `test:e2e:mcp` above, but for the multi-user HTTP+OIDC deployment shape
+instead of the default `stdio` transport. It:
+
+1. Runs `npm run build`.
+2. Starts an in-process, loopback-only **mock OIDC issuer**: a real RSA
+   keypair plus a tiny HTTP server serving its JWKS document, reusing the
+   exact same signing/JWKS helpers the unit test suites use
+   (`tests/auth/oidc/helpers.ts`) — per the design's decision D9 ("e2e
+   identity provider = mock OIDC issuer as the CI default").
+3. Spawns `dist/index.js` as a real child process in `oidc-http` mode
+   (`VIKUNJA_MCP_TRANSPORT=http`), pointed at that mock issuer, with a fresh
+   temporary credential vault file, and — for real Vikunja credentials —
+   pointed at the local e2e stack the same way `docker/e2e/bootstrap.sh`
+   does (log in as `e2e-test`, mint a real `tk_*` token via `PUT /tokens`).
+4. Drives the spawned server with real HTTP requests exercising the full
+   provisioning lifecycle: unauthenticated request (401) → authenticated but
+   unprovisioned identity (provision prompt) → `vikunja_auth provision` with
+   the stack's real token → a real tool call as the provisioned identity →
+   `vikunja_auth deprovision`.
+
+Run it against the local stack:
+
+```bash
+VIKUNJA_VERSION=2.4.0 npm run e2e:up   # if not already running
+npm run test:e2e:oidc
+```
+
+Like `test:e2e:mcp`, it never reads the ambient `VIKUNJA_URL` /
+`VIKUNJA_API_TOKEN` — only the harness-specific `MCP_E2E_VIKUNJA_URL` /
+`MCP_E2E_VIKUNJA_API_TOKEN` overrides, and only after verifying the target
+resolves to localhost.
+
+**Known current failure (step "(d) real end-to-end tool call"):** this lane
+currently fails at the "list projects as the provisioned identity" step, and
+this is a genuine finding, not a harness bug — see the inline comment above
+that step in `scripts/oidc-e2e.ts` for the full root-cause writeup. Short
+version: most tool handlers (`vikunja_projects` among them) gate on, and
+make their real REST calls through, the process-global `AuthManager`
+captured at `registerTools()` time — never the ALS-resolved, per-identity
+`AuthManager` that `getAuthManagerFromContext()` (`src/client.ts`) correctly
+returns per docs/OIDC-RESOURCE-SERVER.md §3d (D6). `tests/oidc/isolation.test.ts`
+doesn't catch this because it tests `getAuthManagerFromContext()` directly,
+not through a real tool handler. This needs a dedicated fix across the tool
+surface before `oidc-http` mode is safe for real multi-user traffic beyond
+the authentication boundary itself (which the threat-model suite,
+`tests/oidc/threat-model.test.ts`, does verify holds).
+
 ## Sample-page screenshot capture (`npm run capture:samples`)
 
 `scripts/capture-sample-screenshots.ts` drives the real Vikunja *web UI*
