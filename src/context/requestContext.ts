@@ -77,6 +77,37 @@ export function getCurrentIdentity(): Identity | undefined {
 }
 
 /**
+ * Symbol used to stash a request-scoped `RequestContext` on an arbitrary
+ * carrier object (the Node `IncomingMessage` in `oidc-http` mode) between the
+ * two halves of the HTTP auth flow.
+ *
+ * The transport's auth seam is a boolean-returning middleware
+ * (`OidcAuthMiddleware`, src/transport/oidcMiddlewareSeam.ts) that runs and
+ * returns *before* `transport.handleRequest` executes — so it cannot itself
+ * hold open the ALS scope that must wrap the actual request handling. Instead
+ * the middleware {@link attachRequestContext}es the built context onto the
+ * request, and `src/transport/httpTransport.ts` reads it back with
+ * {@link takeAttachedRequestContext} and opens the ALS scope
+ * ({@link runWithRequestContext}) around `handleRequest`. Keeping this handoff
+ * here (rather than in the transport or the OIDC wiring) keeps every ALS
+ * concern in one module.
+ */
+const ATTACHED_CONTEXT = Symbol('vikunjaRequestContext');
+
+/** Stash a `RequestContext` on a carrier (the HTTP request) for later ALS scoping. */
+export function attachRequestContext(carrier: object, context: RequestContext): void {
+  (carrier as Record<symbol, unknown>)[ATTACHED_CONTEXT] = context;
+}
+
+/** Read back a `RequestContext` stashed by {@link attachRequestContext}, if any. */
+export function takeAttachedRequestContext(carrier: object | undefined): RequestContext | undefined {
+  if (!carrier) {
+    return undefined;
+  }
+  return (carrier as Record<symbol, unknown>)[ATTACHED_CONTEXT] as RequestContext | undefined;
+}
+
+/**
  * Effective session id for keying `SimpleFilterStorage`-backed state (the
  * tasks tool's own session-scoped storage, and `vikunja_templates` —
  * isolation-table rows #3/#4 in docs/OIDC-RESOURCE-SERVER.md §3d).

@@ -219,13 +219,27 @@ Today essentially all session state is **process-global**, built on the assumpti
 |---|---|---|---|
 | 1 | Single `AuthManager` / `ClientContext.clientFactory` (one `AuthSession`) | `src/client.ts`, `src/index.ts` | **Per-`(issuer,sub)`** `AuthManager` via ALS `RequestContext`; global singleton retained only for `stdio` mode. **Primary leak risk.** |
 | 2 | Rate-limiter bucket keyed `session_${process.pid}` | `src/middleware/simplified-rate-limit.ts` `getSessionId()` | **Per-`(issuer,sub)`** bucket, plus an optional global ceiling (D8). `getSessionId()` reads the ALS context; process-pid fallback only in `stdio`. (§4 fairness.) |
-| 3 | Filter storage session id | `src/tools/filters.ts` → `storageManager.getStorage(sessionId,...)` | Session id = `(issuer,sub)` (via ALS), not the current credential-derived string. |
+| 3 | Tasks-tool session storage id | `src/tools/tasks/index.ts` `getSessionStorage()` → `storageManager.getStorage(sessionId,...)` | Session id = `(issuer,sub)` (via ALS, `getEffectiveSessionId`), not the credential-derived `${apiUrl}:${apiToken.substring(0,8)}` string. |
 | 4 | Templates storage session id (`${apiUrl}:${apiToken.substring(0,8)}` or `anonymous`) | `src/tools/templates.ts` | Session id = `(issuer,sub)`. Persistence key becomes `${persistPath}:${issuer}:${sub}` (already `${persistPath}:${sessionId}` shaped). |
 | 5 | `FilterStorageManager` instance map + 1h cleanup | `src/storage/SimpleFilterStorage.ts` | Unchanged mechanism; correctness follows automatically once the **key** is `(issuer,sub)` (#3/#4). Cleanup TTL now also bounds idle-user memory. |
 | 6 | Circuit-breaker registry (per-endpoint-path, process-global) | `src/utils/retry.ts` `circuitBreakerRegistry`, `deriveRestBreakerName` | **Kept shared (D3)** — breakers track the *shared upstream Vikunja's* health, not a user. This is a deliberate, accepted cross-user coupling: one user's pathological requests can trip a breaker for all (§4). Per-sub rate limits (#2) are the mitigation for noisy neighbors; breaker isolation is out of scope unless D3's revisit condition (multi-Vikunja-instance support) fires. |
 | 7 | `ConfigurationManager` singleton | `src/config/*` | Shared and correct — it is server config, identical for all users. No change. |
 | 8 | `normalizedKeyCache` (masking) | `src/utils/security.ts` | Shared and safe — caches normalized *key names*, not secret values. No change. |
 | 9 | The vault itself | new | Shared JSON file, **record-scoped by `"<issuer>|<sub>"` key** (§3c); every lookup MUST use the ALS `sub`, never an argument. |
+
+> **Amendment (2026-07-21, wave H1 integration).** Row #3 originally named
+> `src/tools/filters.ts` as the session-keyed filter storage. That was correct
+> at design-grounding time but is now stale: `vikunja_filters` migrated to
+> real server-side Vikunja *saved filters* and no longer touches
+> `SimpleFilterStorage` at all (see that file's own top-of-file comment). The
+> session-scoped `SimpleFilterStorage` state row #3 actually protects today
+> lives in the **tasks tool's** own session storage
+> (`src/tools/tasks/index.ts` `getSessionStorage()`); row #4
+> (`src/tools/templates.ts`) is the other consumer. Both were re-keyed via the
+> shared `getEffectiveSessionId` helper (`src/context/requestContext.ts`) and
+> are exercised by `tests/oidc/isolation.test.ts`. The row above has been
+> corrected accordingly; the keying decision (`(issuer,sub)` via ALS) is
+> unchanged.
 
 **Cross-user-leak test matrix** (new test suite, `tests/oidc/isolation.test.ts` + battle scenarios):
 

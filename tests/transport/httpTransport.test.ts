@@ -121,13 +121,13 @@ describe('httpTransport', () => {
     it('refuses to start when no OIDC middleware is registered', async () => {
       const mcpServer = newServer();
 
-      await expect(startHttpTransport(mcpServer, baseHttpConfig())).rejects.toThrow(ConfigurationError);
+      await expect(startHttpTransport(() => mcpServer, baseHttpConfig())).rejects.toThrow(ConfigurationError);
     });
 
     it('the refusal error references the OIDC middleware requirement and H1b', async () => {
       const mcpServer = newServer();
 
-      await expect(startHttpTransport(mcpServer, baseHttpConfig())).rejects.toThrow(
+      await expect(startHttpTransport(() => mcpServer, baseHttpConfig())).rejects.toThrow(
         /OIDC authentication middleware/i
       );
     });
@@ -136,7 +136,7 @@ describe('httpTransport', () => {
       const mcpServer = newServer();
       const listenSpy = jest.spyOn(http.Server.prototype, 'listen');
 
-      await expect(startHttpTransport(mcpServer, baseHttpConfig())).rejects.toThrow();
+      await expect(startHttpTransport(() => mcpServer, baseHttpConfig())).rejects.toThrow();
       expect(listenSpy).not.toHaveBeenCalled();
 
       listenSpy.mockRestore();
@@ -154,7 +154,7 @@ describe('httpTransport', () => {
 
     it('starts and serves /healthz unauthenticated even when the middleware would reject', async () => {
       setOidcAuthMiddleware(async () => false);
-      handle = await startHttpTransport(newServer(), baseHttpConfig());
+      handle = await startHttpTransport(newServer, baseHttpConfig());
       const port = getPort(handle);
 
       const res = await request(port, { path: '/healthz' });
@@ -165,7 +165,7 @@ describe('httpTransport', () => {
 
     it('starts and serves /readyz unauthenticated even when the middleware would reject', async () => {
       setOidcAuthMiddleware(async () => false);
-      handle = await startHttpTransport(newServer(), baseHttpConfig());
+      handle = await startHttpTransport(newServer, baseHttpConfig());
       const port = getPort(handle);
 
       const res = await request(port, { path: '/readyz' });
@@ -176,7 +176,7 @@ describe('httpTransport', () => {
 
     it('404s on a path other than the configured MCP path', async () => {
       setOidcAuthMiddleware(async () => true);
-      handle = await startHttpTransport(newServer(), baseHttpConfig());
+      handle = await startHttpTransport(newServer, baseHttpConfig());
       const port = getPort(handle);
 
       const res = await request(port, { path: '/not-mcp' });
@@ -192,7 +192,7 @@ describe('httpTransport', () => {
         sawAuth = req.auth;
         return true;
       });
-      handle = await startHttpTransport(newServer(), baseHttpConfig());
+      handle = await startHttpTransport(newServer, baseHttpConfig());
       const port = getPort(handle);
 
       // Deliberately malformed JSON: proves the request reached the real
@@ -217,7 +217,7 @@ describe('httpTransport', () => {
         res.end(JSON.stringify({ error: 'custom_forbidden' }));
         return false;
       });
-      handle = await startHttpTransport(newServer(), baseHttpConfig());
+      handle = await startHttpTransport(newServer, baseHttpConfig());
       const port = getPort(handle);
 
       const res = await request(port, { method: 'POST' });
@@ -230,7 +230,7 @@ describe('httpTransport', () => {
       setOidcAuthMiddleware(async () => {
         throw new Error('boom');
       });
-      handle = await startHttpTransport(newServer(), baseHttpConfig());
+      handle = await startHttpTransport(newServer, baseHttpConfig());
       const port = getPort(handle);
 
       const res = await request(port, { method: 'POST' });
@@ -242,7 +242,7 @@ describe('httpTransport', () => {
     it('rejects a request with a Host header outside allowedHosts (DNS-rebinding protection)', async () => {
       setOidcAuthMiddleware(async () => true);
       handle = await startHttpTransport(
-        newServer(),
+        newServer,
         baseHttpConfig({ allowedHosts: ['127.0.0.1:1'] }) // intentionally wrong port
       );
       const port = getPort(handle);
@@ -257,7 +257,7 @@ describe('httpTransport', () => {
 
     it('close() shuts the listener down', async () => {
       setOidcAuthMiddleware(async () => true);
-      handle = await startHttpTransport(newServer(), baseHttpConfig());
+      handle = await startHttpTransport(newServer, baseHttpConfig());
 
       expect(handle.httpServer.listening).toBe(true);
       await handle.close();

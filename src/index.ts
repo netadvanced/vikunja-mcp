@@ -17,6 +17,7 @@ import { createVikunjaClientFactory, setGlobalClientFactory, type VikunjaClientF
 import { readSecretEnv } from './config/secrets';
 import { ConfigurationManager } from './config/ConfigurationManager';
 import { startHttpTransport } from './transport/httpTransport';
+import { setupOidcHttpAuth } from './transport/oidcHttpAuth';
 
 dotenv.config({ quiet: true });
 
@@ -110,7 +111,24 @@ async function main(): Promise<void> {
   const appConfig = ConfigurationManager.getInstance().loadConfiguration();
 
   if (appConfig.transport === 'http') {
-    await startHttpTransport(server, appConfig.http);
+    // Build and register the OIDC JWT-validation middleware on the transport
+    // auth seam BEFORE starting the listener (docs/OIDC-RESOURCE-SERVER.md
+    // §3b). When no `oidc` config is present we deliberately skip this — and
+    // `startHttpTransport` then refuses to start rather than serve
+    // unauthenticated HTTP (deny-mixed-mode, §2 "Selection rule").
+    if (appConfig.oidc) {
+      await setupOidcHttpAuth(appConfig.oidc);
+    }
+    // Stateless HTTP mode builds a fresh, fully-registered `McpServer` per
+    // request (the SDK's stateless transport cannot be reused across
+    // requests; a shared server cannot back concurrent per-request
+    // transports — see src/transport/httpTransport.ts). The module-level
+    // `server` above stays the stdio-mode server and is left unconnected here.
+    await startHttpTransport(() => {
+      const requestServer = new McpServer({ name: 'vikunja-mcp-ng', version: '0.3.0' });
+      registerTools(requestServer, authManager, clientFactory ?? undefined);
+      return requestServer;
+    }, appConfig.http);
     logger.info('Vikunja MCP server started (http transport)');
     return;
   }

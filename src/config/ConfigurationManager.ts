@@ -495,6 +495,35 @@ export class ConfigurationManager {
       result.http = http;
     }
 
+    // OIDC resource-server settings — only consulted when `transport=http`
+    // (docs/OIDC-RESOURCE-SERVER.md §3b). A comma-separated `AUDIENCE`/
+    // `ALLOWED_ALGS` becomes an array; a single value stays a string. When
+    // no OIDC env vars are set at all this stays absent, so `http` mode with
+    // no OIDC config refuses to start (deny-mixed-mode, §2).
+    const oidc: Record<string, unknown> = {};
+    this.assignEnvValue(oidc, 'issuer', process.env.VIKUNJA_MCP_OIDC_ISSUER, false);
+    const audienceRaw = process.env.VIKUNJA_MCP_OIDC_AUDIENCE;
+    if (audienceRaw !== undefined) {
+      const audiences = audienceRaw
+        .split(',')
+        .map(value => value.trim())
+        .filter(value => value.length > 0);
+      oidc.audience = audiences.length === 1 ? audiences[0] : audiences;
+    }
+    this.assignEnvValue(oidc, 'jwksUri', process.env.VIKUNJA_MCP_OIDC_JWKS_URI, false);
+    const allowedAlgsRaw = process.env.VIKUNJA_MCP_OIDC_ALLOWED_ALGS;
+    if (allowedAlgsRaw !== undefined) {
+      oidc.allowedAlgs = allowedAlgsRaw
+        .split(',')
+        .map(value => value.trim())
+        .filter(value => value.length > 0);
+    }
+    this.assignEnvValue(oidc, 'clockSkewSec', process.env.VIKUNJA_MCP_OIDC_CLOCK_SKEW_SEC, true);
+    this.assignEnvValue(oidc, 'requiredScope', process.env.VIKUNJA_MCP_OIDC_REQUIRED_SCOPE, false);
+    if (Object.keys(oidc).length > 0) {
+      result.oidc = oidc;
+    }
+
     return result as Partial<ApplicationConfig>;
   }
 
@@ -630,6 +659,10 @@ export class ConfigurationManager {
               port: this.config.http.port,
               path: this.config.http.path,
               allowedHostsConfigured: !!this.config.http.allowedHosts,
+              // Presence only — never the issuer/audience/JWKS values
+              // themselves, which are non-secret but noisy; the boolean is
+              // enough to confirm the deny-mixed-mode gate is satisfied.
+              oidcConfigured: !!this.config.oidc,
             }
           : undefined,
     };

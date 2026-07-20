@@ -47,6 +47,12 @@ describe('ConfigurationManager', () => {
     delete process.env.VIKUNJA_MCP_HTTP_PORT;
     delete process.env.VIKUNJA_MCP_HTTP_PATH;
     delete process.env.VIKUNJA_MCP_HTTP_ALLOWED_HOSTS;
+    delete process.env.VIKUNJA_MCP_OIDC_ISSUER;
+    delete process.env.VIKUNJA_MCP_OIDC_AUDIENCE;
+    delete process.env.VIKUNJA_MCP_OIDC_JWKS_URI;
+    delete process.env.VIKUNJA_MCP_OIDC_ALLOWED_ALGS;
+    delete process.env.VIKUNJA_MCP_OIDC_CLOCK_SKEW_SEC;
+    delete process.env.VIKUNJA_MCP_OIDC_REQUIRED_SCOPE;
 
     // Reset singleton
     ConfigurationManager.reset();
@@ -752,6 +758,60 @@ describe('ConfigurationManager', () => {
       process.env.VIKUNJA_MCP_TRANSPORT = 'http';
 
       expect(ConfigurationManager.getInstance().getTransportMode()).toBe('http');
+    });
+  });
+
+  describe('OIDC Configuration (resource-server, http mode)', () => {
+    it('leaves oidc undefined when no OIDC env vars are set', async () => {
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.oidc).toBeUndefined();
+    });
+
+    it('reads issuer/audience/jwksUri from env vars (single audience stays a string)', async () => {
+      process.env.VIKUNJA_MCP_OIDC_ISSUER = 'https://idp.example.test/realms/h1';
+      process.env.VIKUNJA_MCP_OIDC_AUDIENCE = 'vikunja-mcp-ng';
+      process.env.VIKUNJA_MCP_OIDC_JWKS_URI =
+        'https://idp.example.test/realms/h1/protocol/openid-connect/certs';
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.oidc).toEqual({
+        issuer: 'https://idp.example.test/realms/h1',
+        audience: 'vikunja-mcp-ng',
+        jwksUri: 'https://idp.example.test/realms/h1/protocol/openid-connect/certs',
+      });
+    });
+
+    it('splits a comma-separated audience into an array and parses optional tuning', async () => {
+      process.env.VIKUNJA_MCP_OIDC_ISSUER = 'https://idp.example.test/realms/h1';
+      process.env.VIKUNJA_MCP_OIDC_AUDIENCE = 'aud-1, aud-2';
+      process.env.VIKUNJA_MCP_OIDC_JWKS_URI = 'https://idp.example.test/certs';
+      process.env.VIKUNJA_MCP_OIDC_ALLOWED_ALGS = 'RS256, ES256';
+      process.env.VIKUNJA_MCP_OIDC_CLOCK_SKEW_SEC = '30';
+      process.env.VIKUNJA_MCP_OIDC_REQUIRED_SCOPE = 'vikunja';
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.oidc).toEqual({
+        issuer: 'https://idp.example.test/realms/h1',
+        audience: ['aud-1', 'aud-2'],
+        jwksUri: 'https://idp.example.test/certs',
+        allowedAlgs: ['RS256', 'ES256'],
+        clockSkewSec: 30,
+        requiredScope: 'vikunja',
+      });
+    });
+
+    it('fails loud on an incomplete OIDC block (issuer without audience/jwksUri)', () => {
+      process.env.VIKUNJA_MCP_OIDC_ISSUER = 'https://idp.example.test/realms/h1';
+
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(ConfigurationError);
+    });
+
+    it('rejects a non-URL jwksUri', () => {
+      process.env.VIKUNJA_MCP_OIDC_ISSUER = 'https://idp.example.test/realms/h1';
+      process.env.VIKUNJA_MCP_OIDC_AUDIENCE = 'vikunja-mcp-ng';
+      process.env.VIKUNJA_MCP_OIDC_JWKS_URI = 'not-a-url';
+
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(ConfigurationError);
     });
   });
 

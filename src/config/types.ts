@@ -213,6 +213,37 @@ export const HttpConfigSchema = z.object({
 
 export type HttpConfig = z.infer<typeof HttpConfigSchema>;
 
+// OIDC resource-server configuration (docs/OIDC-RESOURCE-SERVER.md §2.1, §3b).
+//
+// Consumed only when `transport=http` — it is the config half of the
+// deny-mixed-mode rule (§2 "Selection rule"): `http` mode with no `oidc`
+// block refuses to start (never serve unauthenticated HTTP), and an
+// incomplete block (e.g. `issuer` without `audience`/`jwksUri`) is a hard
+// config-validation error rather than a silent downgrade. Field names mirror
+// the JWT validator's `OidcJwtValidatorConfig` (src/auth/oidc/types.ts) 1:1;
+// the HTTP-auth wiring (src/transport/oidcHttpAuth.ts) maps straight across.
+export const OidcConfigSchema = z.object({
+  // Exact-match trusted issuer (`oidc.issuer`), compared with plain string
+  // equality — no prefix matching.
+  issuer: z.string().min(1),
+  // Required audience value(s) (`oidc.audience`). Env form is a
+  // comma-separated list; a single value stays a string.
+  audience: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]),
+  // JWKS endpoint URL to fetch signing keys from (`oidc.jwksUri`).
+  jwksUri: z.string().url(),
+  // Allowed JWS `alg` values (`oidc.allowedAlgs`). Defaults (in the validator)
+  // to `['RS256']`; `none` is never accepted.
+  allowedAlgs: z.array(z.string().min(1)).min(1).optional(),
+  // Bounded clock-skew tolerance in seconds (`oidc.clockSkewSec`), applied to
+  // `exp`/`nbf`/`iat`. Validator default: 60.
+  clockSkewSec: z.number().int().nonnegative().optional(),
+  // Optional coarse scope gate (`oidc.requiredScope`) — a validly
+  // authenticated token missing it is a 403, not a 401.
+  requiredScope: z.string().min(1).optional(),
+});
+
+export type OidcConfig = z.infer<typeof OidcConfigSchema>;
+
 // Complete Application Configuration Schema
 export const ApplicationConfigSchema = z.object({
   environment: z.nativeEnum(Environment).default(Environment.DEVELOPMENT),
@@ -234,6 +265,12 @@ export const ApplicationConfigSchema = z.object({
   // registered, refuses to start (never serve unauthenticated HTTP).
   transport: TransportModeSchema.default('stdio'),
   http: HttpConfigSchema.default({}),
+  // OIDC resource-server config (docs/OIDC-RESOURCE-SERVER.md §3b). Optional
+  // and only meaningful in `http` mode — its presence is what lets `http`
+  // mode actually start (the JWT-validation middleware is built from it and
+  // registered on the transport's auth seam before the listener opens).
+  // Absent in `stdio` mode, which never reads it.
+  oidc: OidcConfigSchema.optional(),
 });
 
 export type ApplicationConfig = z.infer<typeof ApplicationConfigSchema>;

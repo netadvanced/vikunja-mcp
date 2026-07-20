@@ -51,6 +51,14 @@ const mockGetAuthManagerFromContext = jest.fn();
 // tests/transport/httpTransport.test.ts.
 const mockStartHttpTransport = jest.fn();
 
+// H1 integration: OIDC HTTP-auth wiring. Mocked so these tests exercise only
+// src/index.ts's orchestration (is setupOidcHttpAuth called with the loaded
+// oidc config when — and only when — one is present, before startHttpTransport
+// runs). The middleware-building itself is unit-tested against the real
+// implementation in tests/transport/oidcHttpAuth.test.ts and driven end-to-end
+// in tests/oidc/http-e2e.test.ts.
+const mockSetupOidcHttpAuth = jest.fn();
+
 // Set up all mocks before imports
 jest.mock('@modelcontextprotocol/sdk/server/mcp.js', () => ({
   McpServer: MockMcpServer,
@@ -93,6 +101,10 @@ jest.mock('../src/client', () => ({
 
 jest.mock('../src/transport/httpTransport', () => ({
   startHttpTransport: mockStartHttpTransport,
+}));
+
+jest.mock('../src/transport/oidcHttpAuth', () => ({
+  setupOidcHttpAuth: mockSetupOidcHttpAuth,
 }));
 
 describe('Main Server Entry Point (index.ts)', () => {
@@ -505,7 +517,6 @@ describe('Main Server Entry Point (index.ts)', () => {
       process.env.VIKUNJA_MCP_HTTP_PORT = '9999';
       mockStartHttpTransport.mockResolvedValueOnce({
         httpServer: {},
-        transport: {},
         close: jest.fn(),
       });
       const indexModule = require('../src/index');
@@ -513,14 +524,53 @@ describe('Main Server Entry Point (index.ts)', () => {
       await indexModule.main();
 
       expect(mockStartHttpTransport).toHaveBeenCalledTimes(1);
+      // First arg is now a per-request McpServer *factory* (stateless mode
+      // builds a fresh server per request), not a single server instance.
       expect(mockStartHttpTransport).toHaveBeenCalledWith(
-        mockMcpServer,
+        expect.any(Function),
         expect.objectContaining({ host: '0.0.0.0', port: 9999, path: '/mcp' })
       );
       expect(MockStdioServerTransport).not.toHaveBeenCalled();
       expect(mockMcpServer.connect).not.toHaveBeenCalledWith(mockStdioServerTransport);
       expect(mockLogger.info).toHaveBeenCalledWith('Vikunja MCP server started (http transport)');
       expect(mockLogger.info).not.toHaveBeenCalledWith('Vikunja MCP server started');
+    });
+
+    it('OIDC wiring: transport=http with no oidc config does NOT call setupOidcHttpAuth (deny-mixed-mode left to startHttpTransport)', async () => {
+      process.env.VIKUNJA_MCP_TRANSPORT = 'http';
+      mockStartHttpTransport.mockResolvedValueOnce({ httpServer: {}, close: jest.fn() });
+      const indexModule = require('../src/index');
+
+      await indexModule.main();
+
+      expect(mockSetupOidcHttpAuth).not.toHaveBeenCalled();
+      expect(mockStartHttpTransport).toHaveBeenCalledTimes(1);
+    });
+
+    it('OIDC wiring: transport=http with oidc config calls setupOidcHttpAuth with the loaded config before startHttpTransport', async () => {
+      process.env.VIKUNJA_MCP_TRANSPORT = 'http';
+      process.env.VIKUNJA_MCP_OIDC_ISSUER = 'https://idp.example.test/realms/h1';
+      process.env.VIKUNJA_MCP_OIDC_AUDIENCE = 'vikunja-mcp-ng';
+      process.env.VIKUNJA_MCP_OIDC_JWKS_URI = 'https://idp.example.test/realms/h1/protocol/openid-connect/certs';
+      mockSetupOidcHttpAuth.mockResolvedValueOnce(undefined);
+      mockStartHttpTransport.mockResolvedValueOnce({ httpServer: {}, close: jest.fn() });
+      const indexModule = require('../src/index');
+
+      await indexModule.main();
+
+      expect(mockSetupOidcHttpAuth).toHaveBeenCalledTimes(1);
+      expect(mockSetupOidcHttpAuth).toHaveBeenCalledWith(
+        expect.objectContaining({
+          issuer: 'https://idp.example.test/realms/h1',
+          audience: 'vikunja-mcp-ng',
+          jwksUri: 'https://idp.example.test/realms/h1/protocol/openid-connect/certs',
+        })
+      );
+      expect(mockStartHttpTransport).toHaveBeenCalledTimes(1);
+      // Ordering: middleware registered before the listener starts.
+      expect(mockSetupOidcHttpAuth.mock.invocationCallOrder[0]).toBeLessThan(
+        mockStartHttpTransport.mock.invocationCallOrder[0]
+      );
     });
 
     it('refuse-to-start: transport=http propagates a startHttpTransport rejection and never starts stdio', async () => {

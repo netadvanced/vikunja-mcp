@@ -13,6 +13,7 @@ import { VikunjaClientFactory } from './client/VikunjaClientFactory';
 import { Mutex } from 'async-mutex';
 import { createAuthRequiredError } from './utils/error-handler';
 import { getRequestContext } from './context/requestContext';
+import { createOidcAuthRequiredError } from './auth/CredentialSource';
 
 export { VikunjaClientFactory } from './client/VikunjaClientFactory';
 
@@ -111,10 +112,24 @@ class ClientContext {
  * per-user isolation for free. `stdio` mode never opens an ALS scope, so
  * `getRequestContext()` is always `undefined` there and this falls through
  * to the original global-singleton path, unchanged.
+ *
+ * Integration wiring (H1 §3c "Missing-credential behaviour"): when an ALS
+ * context is bound but its per-identity `AuthManager` carries no session,
+ * the caller is a validly-authenticated OIDC identity that has no linked
+ * Vikunja credential (the H1 `OidcStubCredentialSource` returns `null` for
+ * everyone until H2's vault lands). Every REST-migrated tool funnels through
+ * this accessor, so converting that state into the structured
+ * `AUTH_REQUIRED` "provision" error here — once — gives the whole tool
+ * surface the correct, `sub`-masked provisioning prompt instead of a generic
+ * "not connected" message, and never leaks whether any other identity is
+ * provisioned. `stdio` mode is unaffected (it never binds an ALS context).
  */
 export async function getAuthManagerFromContext(): Promise<AuthManager> {
   const requestContext = getRequestContext();
   if (requestContext) {
+    if (!requestContext.authManager.isAuthenticated()) {
+      throw createOidcAuthRequiredError(requestContext.identity);
+    }
     return requestContext.authManager;
   }
   const context = await ClientContext.getInstanceAsync();
