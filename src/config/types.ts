@@ -187,6 +187,32 @@ export const TemplatesConfigSchema = z.object({
 
 export type TemplatesConfig = z.infer<typeof TemplatesConfigSchema>;
 
+// Transport mode. `stdio` (default) is the existing single-tenant behavior
+// and MUST stay byte-for-byte unchanged. `http` is the new opt-in
+// Streamable HTTP transport (see docs/OIDC-RESOURCE-SERVER.md §2/§3a) — it
+// requires the OIDC middleware seam (item H1b) to be registered before it
+// will actually serve traffic; see src/transport/oidcMiddlewareSeam.ts.
+export const TransportModeSchema = z.enum(['stdio', 'http']);
+
+export type TransportMode = z.infer<typeof TransportModeSchema>;
+
+// HTTP transport configuration (docs/OIDC-RESOURCE-SERVER.md §2.1, §3a).
+//
+// Host binding defaults to loopback (`127.0.0.1`) — a misconfigured
+// deployment fails closed (unreachable) rather than exposing an
+// unauthenticated-looking port to the LAN. `allowedHosts` feeds the SDK
+// transport's DNS-rebinding protection (`enableDnsRebindingProtection`,
+// always on for `http` mode); when unset, it defaults to `host:port` so the
+// default loopback binding gets working protection out of the box.
+export const HttpConfigSchema = z.object({
+  host: z.string().min(1).default('127.0.0.1'),
+  port: z.number().int().positive().max(65535).default(8765),
+  path: z.string().min(1).default('/mcp'),
+  allowedHosts: z.array(z.string()).optional(),
+});
+
+export type HttpConfig = z.infer<typeof HttpConfigSchema>;
+
 // Complete Application Configuration Schema
 export const ApplicationConfigSchema = z.object({
   environment: z.nativeEnum(Environment).default(Environment.DEVELOPMENT),
@@ -202,6 +228,12 @@ export const ApplicationConfigSchema = z.object({
   // (env always wins over the config file, per standard layering).
   readOnly: z.boolean().default(false),
   templates: TemplatesConfigSchema.default({}),
+  // Transport mode switch (docs/OIDC-RESOURCE-SERVER.md §2). Defaults to
+  // `stdio` — today's single-tenant behavior, unchanged. `http` opts into
+  // the Streamable HTTP transport and, without the OIDC middleware seam
+  // registered, refuses to start (never serve unauthenticated HTTP).
+  transport: TransportModeSchema.default('stdio'),
+  http: HttpConfigSchema.default({}),
 });
 
 export type ApplicationConfig = z.infer<typeof ApplicationConfigSchema>;

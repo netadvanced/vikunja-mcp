@@ -18,4 +18,6 @@ export {
   getModulesConfig,
   isReadOnly,
   getTemplatesConfig,
+  getHttpConfig,
+  getTransportMode,
 } from './ConfigurationManager';

@@ -463,6 +463,38 @@ definitions (project/task shape, no auth data) — so, like the rest of the conf
 doesn't need Docker-secrets treatment; only the volume itself needs to persist across
 container recreations.
 
+## Transport Mode (opt-in HTTP)
+
+The server's transport defaults to **`stdio`** — the existing single-tenant behavior,
+byte-for-byte unchanged. `transport=http` opts into an experimental **Streamable HTTP**
+transport (stateless `StreamableHTTPServerTransport` from the MCP SDK) intended for a
+hosted, multi-user deployment behind an OIDC-aware gateway (see
+`docs/OIDC-RESOURCE-SERVER.md` for the full design).
+
+- **Config key**: `transport` in `vikunja-mcp.config.json` (`"stdio"` or `"http"`).
+- **Env var**: `VIKUNJA_MCP_TRANSPORT` — wins over the config file, as usual.
+- **Unset (default)**: `stdio`, identical to every prior release.
+
+When `transport=http`, additional settings apply under the `http` config section /
+`VIKUNJA_MCP_HTTP_*` env vars:
+
+| Setting | Config key | Env var | Default |
+|---|---|---|---|
+| Bind host | `http.host` | `VIKUNJA_MCP_HTTP_HOST` | `127.0.0.1` (loopback — fails closed rather than exposing an unauthenticated-looking port to the LAN) |
+| Port | `http.port` | `VIKUNJA_MCP_HTTP_PORT` | `8765` |
+| Request path | `http.path` | `VIKUNJA_MCP_HTTP_PATH` | `/mcp` |
+| Allowed `Host` headers | `http.allowedHosts` | `VIKUNJA_MCP_HTTP_ALLOWED_HOSTS` (comma list) | `<host>:<port>` — used for the SDK transport's built-in DNS-rebinding protection, which is always on in `http` mode |
+
+Two endpoints are always served unauthenticated, outside the MCP path and any
+authentication middleware: `GET /healthz` (liveness) and `GET /readyz` (readiness).
+
+**`transport=http` currently refuses to start.** This item (opt-in HTTP transport
+plumbing) lands ahead of the OIDC JWT-validation middleware (a parallel, separate work
+item) that HTTP mode requires — the server must never serve unauthenticated HTTP, so
+until that middleware is registered, starting in `http` mode fails fast with a clear
+error rather than opening an unauthenticated listener. Only `transport=stdio` is
+supported for real deployments today.
+
 ## Secrets Management
 
 **The config file is for non-sensitive settings only.** It's designed to be safe to
@@ -578,6 +610,15 @@ VIKUNJA_MCP_READ_ONLY=true                  # optional, default false; see Globa
 ### Templates Persistence Variable
 ```env
 VIKUNJA_MCP_TEMPLATES_FILE=/path/to/templates.json   # optional; see Templates Persistence
+```
+
+### Transport Variables
+```env
+VIKUNJA_MCP_TRANSPORT=stdio                  # stdio (default) | http; see Transport Mode (opt-in HTTP)
+VIKUNJA_MCP_HTTP_HOST=127.0.0.1              # http mode only; default 127.0.0.1
+VIKUNJA_MCP_HTTP_PORT=8765                   # http mode only; default 8765
+VIKUNJA_MCP_HTTP_PATH=/mcp                   # http mode only; default /mcp
+VIKUNJA_MCP_HTTP_ALLOWED_HOSTS=host:port,other:port   # http mode only; comma list, default <host>:<port>
 ```
 
 ### Logging Variables

@@ -15,6 +15,8 @@ import { logger } from './utils/logger';
 import { createSecureConnectionMessage, createSecureLogConfig } from './utils/security';
 import { createVikunjaClientFactory, setGlobalClientFactory, type VikunjaClientFactory } from './client';
 import { readSecretEnv } from './config/secrets';
+import { ConfigurationManager } from './config/ConfigurationManager';
+import { startHttpTransport } from './transport/httpTransport';
 
 dotenv.config({ quiet: true });
 
@@ -82,14 +84,42 @@ if (process.env.VIKUNJA_URL && vikunjaApiToken) {
   logger.info(`Using detected auth type: ${detectedAuthType}`);
 }
 
+/**
+ * Transport mode selection (docs/OIDC-RESOURCE-SERVER.md §2 "Modes").
+ *
+ * `stdio` is the default and MUST remain byte-for-byte behaviorally
+ * unchanged — this is the epic's hard invariant (see
+ * tests/index.test.ts's "stdio transport invariant" suite). By the time
+ * `main()` runs, `factoryInitializationPromise` has already resolved, and
+ * `registerTools()` (called from within it) has already loaded and cached
+ * the application config via `ConfigurationManager.loadConfiguration()`
+ * (see `resolveModulesConfig()` in `src/tools/index.ts`) — so calling
+ * `loadConfiguration()` again here is a cache hit with no additional side
+ * effects (no repeated "Configuration loaded successfully" log) in the
+ * default, happy-path case.
+ *
+ * `http` mode is new and opt-in (`transport=http` / `VIKUNJA_MCP_TRANSPORT`)
+ * and starts the Streamable HTTP transport instead of stdio — see
+ * `src/transport/httpTransport.ts`. Without the OIDC middleware seam
+ * registered (item H1b, parallel), it refuses to start rather than serve
+ * unauthenticated HTTP.
+ */
 async function main(): Promise<void> {
   await factoryInitializationPromise;
+
+  const appConfig = ConfigurationManager.getInstance().loadConfiguration();
+
+  if (appConfig.transport === 'http') {
+    await startHttpTransport(server, appConfig.http);
+    logger.info('Vikunja MCP server started (http transport)');
+    return;
+  }
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
 
   logger.info('Vikunja MCP server started');
-  
+
   const config = createSecureLogConfig({
     mode: process.env.MCP_MODE,
     debug: process.env.DEBUG,
@@ -97,9 +127,14 @@ async function main(): Promise<void> {
     url: process.env.VIKUNJA_URL,
     token: vikunjaApiToken,
   });
-  
+
   logger.debug('Configuration loaded', config);
 }
+
+// Exported for direct invocation in tests (mode selection, refuse-to-start,
+// and the stdio invariant regression tests — see tests/index.test.ts). Not
+// otherwise part of this module's public API.
+export { main };
 
 // Only start the server if not in test environment
 if (process.env.NODE_ENV !== 'test' && !process.env.JEST_WORKER_ID) {

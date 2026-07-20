@@ -15,6 +15,8 @@ import type {
   FeatureFlagsConfig,
   ModulesConfig,
   TemplatesConfig,
+  HttpConfig,
+  TransportMode,
 } from './types';
 import {
   Environment,
@@ -216,6 +218,21 @@ export class ConfigurationManager {
   public async getTemplatesConfig(): Promise<TemplatesConfig> {
     const config = await this.getConfiguration();
     return config.templates;
+  }
+
+  public async getHttpConfig(): Promise<HttpConfig> {
+    const config = await this.getConfiguration();
+    return config.http;
+  }
+
+  /**
+   * The transport mode (`stdio` | `http`). Synchronous, like `isReadOnly()`,
+   * because `src/index.ts`'s startup branch needs a cheap, non-async check
+   * before it has awaited anything else; `loadConfiguration()` itself is
+   * synchronous and cached after the first call.
+   */
+  public getTransportMode(): TransportMode {
+    return this.loadConfiguration().transport;
   }
 
   /**
@@ -458,6 +475,26 @@ export class ConfigurationManager {
       result.templates = templates;
     }
 
+    // Transport mode (docs/OIDC-RESOURCE-SERVER.md §2.1). `stdio` (default,
+    // unchanged) or `http` (opt-in Streamable HTTP transport).
+    this.assignEnvValue(result, 'transport', process.env.VIKUNJA_MCP_TRANSPORT, false);
+
+    // HTTP transport settings — only consulted when `transport=http`.
+    const http: Record<string, unknown> = {};
+    this.assignEnvValue(http, 'host', process.env.VIKUNJA_MCP_HTTP_HOST, false);
+    this.assignEnvValue(http, 'port', process.env.VIKUNJA_MCP_HTTP_PORT, true);
+    this.assignEnvValue(http, 'path', process.env.VIKUNJA_MCP_HTTP_PATH, false);
+    const allowedHostsRaw = process.env.VIKUNJA_MCP_HTTP_ALLOWED_HOSTS;
+    if (allowedHostsRaw !== undefined) {
+      http.allowedHosts = allowedHostsRaw
+        .split(',')
+        .map(host => host.trim())
+        .filter(host => host.length > 0);
+    }
+    if (Object.keys(http).length > 0) {
+      result.http = http;
+    }
+
     return result as Partial<ApplicationConfig>;
   }
 
@@ -585,6 +622,16 @@ export class ConfigurationManager {
       templates: {
         persistenceEnabled: !!this.config.templates.persistPath,
       },
+      transport: this.config.transport,
+      http:
+        this.config.transport === 'http'
+          ? {
+              host: this.config.http.host,
+              port: this.config.http.port,
+              path: this.config.http.path,
+              allowedHostsConfigured: !!this.config.http.allowedHosts,
+            }
+          : undefined,
     };
 
     logger.info('Configuration loaded successfully', summary);
@@ -601,3 +648,5 @@ export const isFeatureEnabled = (featureName: string): Promise<boolean> => Confi
 export const getModulesConfig = (): Promise<ModulesConfig> => ConfigurationManager.getInstance().getModulesConfig();
 export const isReadOnly = (): boolean => ConfigurationManager.getInstance().isReadOnly();
 export const getTemplatesConfig = (): Promise<TemplatesConfig> => ConfigurationManager.getInstance().getTemplatesConfig();
+export const getHttpConfig = (): Promise<HttpConfig> => ConfigurationManager.getInstance().getHttpConfig();
+export const getTransportMode = (): TransportMode => ConfigurationManager.getInstance().getTransportMode();

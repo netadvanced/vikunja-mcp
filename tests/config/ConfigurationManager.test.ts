@@ -42,6 +42,11 @@ describe('ConfigurationManager', () => {
     delete process.env.VIKUNJA_MCP_MODULE_CALDAV_TOKENS;
     delete process.env.VIKUNJA_MCP_READ_ONLY;
     delete process.env.VIKUNJA_MCP_TEMPLATES_FILE;
+    delete process.env.VIKUNJA_MCP_TRANSPORT;
+    delete process.env.VIKUNJA_MCP_HTTP_HOST;
+    delete process.env.VIKUNJA_MCP_HTTP_PORT;
+    delete process.env.VIKUNJA_MCP_HTTP_PATH;
+    delete process.env.VIKUNJA_MCP_HTTP_ALLOWED_HOSTS;
 
     // Reset singleton
     ConfigurationManager.reset();
@@ -652,6 +657,101 @@ describe('ConfigurationManager', () => {
 
       const templatesConfig = await ConfigurationManager.getInstance().getTemplatesConfig();
       expect(templatesConfig.persistPath).toBe('/env/templates.json');
+    });
+  });
+
+  describe('Transport Configuration', () => {
+    it('defaults to stdio transport with default http settings', async () => {
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.transport).toBe('stdio');
+      expect(config.http).toEqual({ host: '127.0.0.1', port: 8765, path: '/mcp' });
+    });
+
+    it('is settable to http via VIKUNJA_MCP_TRANSPORT', async () => {
+      process.env.VIKUNJA_MCP_TRANSPORT = 'http';
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.transport).toBe('http');
+    });
+
+    it('is settable to http via the config file', async () => {
+      const configPath = path.join(tempDir, 'vikunja-mcp.config.json');
+      fs.writeFileSync(configPath, JSON.stringify({ transport: 'http' }));
+      process.env.VIKUNJA_MCP_CONFIG = configPath;
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.transport).toBe('http');
+    });
+
+    it('lets VIKUNJA_MCP_TRANSPORT win over the config file value (env always wins)', async () => {
+      const configPath = path.join(tempDir, 'vikunja-mcp.config.json');
+      fs.writeFileSync(configPath, JSON.stringify({ transport: 'http' }));
+      process.env.VIKUNJA_MCP_CONFIG = configPath;
+      process.env.VIKUNJA_MCP_TRANSPORT = 'stdio';
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.transport).toBe('stdio');
+    });
+
+    it('rejects an invalid transport value (fail loud, never silently downgrade)', async () => {
+      process.env.VIKUNJA_MCP_TRANSPORT = 'websocket';
+
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(ConfigurationError);
+    });
+
+    it('reads host/port/path/allowedHosts from env vars', async () => {
+      process.env.VIKUNJA_MCP_TRANSPORT = 'http';
+      process.env.VIKUNJA_MCP_HTTP_HOST = '0.0.0.0';
+      process.env.VIKUNJA_MCP_HTTP_PORT = '9000';
+      process.env.VIKUNJA_MCP_HTTP_PATH = '/api/mcp';
+      process.env.VIKUNJA_MCP_HTTP_ALLOWED_HOSTS = 'example.com:9000, other.example.com:9000';
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.http).toEqual({
+        host: '0.0.0.0',
+        port: 9000,
+        path: '/api/mcp',
+        allowedHosts: ['example.com:9000', 'other.example.com:9000'],
+      });
+    });
+
+    it('reads http settings from the config file', async () => {
+      const configPath = path.join(tempDir, 'vikunja-mcp.config.json');
+      fs.writeFileSync(
+        configPath,
+        JSON.stringify({ transport: 'http', http: { host: '0.0.0.0', port: 9001 } })
+      );
+      process.env.VIKUNJA_MCP_CONFIG = configPath;
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.http.host).toBe('0.0.0.0');
+      expect(config.http.port).toBe(9001);
+    });
+
+    it('rejects a non-numeric port', async () => {
+      process.env.VIKUNJA_MCP_HTTP_PORT = 'not-a-number';
+
+      // A non-numeric string fails the env-value numeric parse regex, so it
+      // is passed through as a string and fails HttpConfigSchema's z.number().
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(ConfigurationError);
+    });
+
+    it('rejects an out-of-range port', async () => {
+      process.env.VIKUNJA_MCP_HTTP_PORT = '99999';
+
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(ConfigurationError);
+    });
+
+    it('exposes the http config section via getHttpConfig', async () => {
+      process.env.VIKUNJA_MCP_HTTP_HOST = '0.0.0.0';
+
+      const httpConfig = await ConfigurationManager.getInstance().getHttpConfig();
+      expect(httpConfig.host).toBe('0.0.0.0');
+    });
+
+    it('exposes the transport mode synchronously via getTransportMode', () => {
+      process.env.VIKUNJA_MCP_TRANSPORT = 'http';
+
+      expect(ConfigurationManager.getInstance().getTransportMode()).toBe('http');
     });
   });
 
