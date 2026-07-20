@@ -1,6 +1,6 @@
 # Design: OIDC resource-server mode (behind IBM MCP Context Forge + Keycloak)
 
-**Status:** DECIDED — design locked 2026-07-20 (owner review complete). Not implemented yet; this document is the spec the wave workers build against. Target release **0.6.0**.
+**Status:** IMPLEMENTED (2026-07-21) — waves H1 + H2 landed on `feat/oidc-mode` and are feature-complete (see the Wave plan, §7, for the per-item DONE marks); pending owner testing + merge-back decision (tracking issue #28). Design was locked 2026-07-20 (owner review complete). Target release **0.6.0**.
 **Author:** coordinator (design pass, 2026-07-19); decisions locked by the owner, 2026-07-20.
 **Companion docs:** [docs/ROADMAP.md](../ROADMAP.md) (decision-log tone this doc follows; see its §3 for the append-only entry recording this epic's approval), [docs/CONFIGURATION.md](../CONFIGURATION.md), [docs/ARCHITECTURE.md](../ARCHITECTURE.md).
 
@@ -241,6 +241,24 @@ Today essentially all session state is **process-global**, built on the assumpti
 > corrected accordingly; the keying decision (`(issuer,sub)` via ALS) is
 > unchanged.
 
+> **Amendment (2026-07-21, wave H2 integration) — row #1 "Primary leak risk" CLOSED.**
+> Row #1's per-`(issuer,sub)` `AuthManager` was re-keyed in H1, but the H2b
+> e2e lane surfaced that the resolved per-identity manager never reached the
+> wire: tool handlers captured the process-global closure `AuthManager` at
+> `registerTools()` time and passed *that* into `vikunjaRestRequest()`, so a
+> provisioned identity's real REST calls went out under the process global,
+> not their own vaulted token (the "Primary leak risk" made concrete — a
+> reproducible cross-user credential leak, not a hypothetical). Fixed
+> centrally: `resolveEffectiveAuthManager` (`src/utils/vikunja-rest.ts`)
+> substitutes the ALS `RequestContext`'s per-identity manager for the passed
+> closure manager at request time (opt-out `ignoreRequestContext` for
+> `provision`'s throwaway-token probe only; `stdio`, which never opens an ALS
+> scope, is byte-for-byte unchanged). Guarded end-to-end by the
+> **"Credential threading: a real tool sends each identity its OWN vaulted
+> token"** test class in `tests/oidc/isolation.test.ts` (drives a real
+> registered tool under two ALS identities and asserts the `Authorization`
+> header on the wire), and proven live by `scripts/oidc-e2e.ts` step (d).
+
 **Cross-user-leak test matrix** (new test suite, `tests/oidc/isolation.test.ts` + battle scenarios):
 
 | Test | Setup | Must observe |
@@ -308,6 +326,12 @@ Sizes: **S** ≈ ≤0.5 day, **M** ≈ 1–2 days, **L** ≈ 3–5 days, each la
 
 ### Wave H1 — transport + identity plumbing
 
+**Status: DONE (2026-07-21).** All H1 items landed and merged into
+`feat/oidc-mode` (PRs up to and including the H1 integration commit `ac5d8b4`).
+The transport, JWT resource-server middleware, ALS request context, re-keyed
+global state, and oidc-mode registration are all in place with the isolation
+matrix (§3d) green.
+
 | Item | Size | Scope | Acceptance criteria |
 |---|---|---|---|
 | H1-1 Config surface | M | Add `transport`, `http.*`, `oidc.*`, `vault.*` to `types.ts`/`ConfigurationManager`; add `VIKUNJA_MCP_VAULT_KEY` to `SENSITIVE_ENV_VARS`; mode-selection + fail-loud validation | `transport=http` w/o required oidc/vault keys → startup error; `stdio` path unchanged; config tests green |
@@ -320,6 +344,16 @@ Sizes: **S** ≈ ≤0.5 day, **M** ≈ 1–2 days, **L** ≈ 3–5 days, each la
 **H1 exit:** a multi-user HTTP server that validates Keycloak tokens, isolates all per-user state, and drives Vikunja — using a dev-only stub credential source (single shared `tk_` for all subs). Not production-secure yet; the vault is H2.
 
 ### Wave H2 — vault + provisioning + hardening
+
+**Status: DONE (2026-07-21).** H2a (canonical vault + provisioning, PR #136)
+and H2b (e2e lane + threat model + perf + Context Forge doc, PR #135) landed and
+were reconciled to ONE canonical vault (`src/storage/vaultFileStore.ts`) during
+integration. The blocking credential-threading bug H2b's e2e lane surfaced (§3d
+row #1, "Primary leak risk") is fixed centrally and guarded — see the row #1
+amendment in §3d and the "Credential threading" test class in
+`tests/oidc/isolation.test.ts`. Full loop proven live against Vikunja 2.4.0 via
+`npm run test:e2e:oidc` (steps a–e all pass, including a real tool call as the
+provisioned identity and deprovision).
 
 | Item | Size | Scope | Acceptance criteria |
 |---|---|---|---|
