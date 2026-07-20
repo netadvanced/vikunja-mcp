@@ -320,7 +320,7 @@ async function main(): Promise<void> {
       if (result.statusCode !== 200) {
         throw new Error(`expected 200 (auth ok, tool reports unlinked), got ${result.statusCode}`);
       }
-      if (!result.text.includes('Not linked')) {
+      if (!result.text.includes('No Vikunja API token linked yet')) {
         throw new Error(`expected an unlinked status, got: ${result.text}`);
       }
     });
@@ -344,30 +344,19 @@ async function main(): Promise<void> {
       }
     });
 
-    // KNOWN FAILING as of item H2b (2026-07-21) — this is the real, valuable
-    // finding this e2e lane exists to surface, not a harness bug: most tool
-    // handlers (src/tools/projects/index.ts among them) gate on
-    // `authManager.isAuthenticated()` against the CLOSURE `AuthManager`
-    // captured at `registerTools()` time, and pass that SAME closure
-    // reference straight through to `vikunjaRestRequest()` — never
-    // consulting the ALS-resolved, per-identity `AuthManager` that
-    // `getAuthManagerFromContext()` (src/client.ts) correctly returns. Even
-    // the handful of tools that DO call `getAuthManagerFromContext()`
-    // (notifications, tasks, reactions, ...) only use it as a
-    // throw-if-unprovisioned gate and then discard its return value,
-    // continuing to use the closure `authManager` for the actual REST call.
-    // Net effect: in oidc-http mode, a successfully provisioned identity's
-    // real tool calls do not use their own vaulted credential at all — they
-    // use whatever the process-global/stdio `AuthManager` happens to be
-    // (typically unauthenticated, as here, so this step fails; if an
-    // operator's process-global env ever DID carry a credential, this would
-    // be a cross-user credential leak, docs/OIDC-RESOURCE-SERVER.md §3d row
-    // #1's "Primary leak risk" — not a hypothetical, a reproducible one).
-    // tests/oidc/isolation.test.ts's "Credential isolation" test does not
-    // catch this because it exercises `getAuthManagerFromContext()` directly
-    // rather than through a real tool handler. This is a pre-existing gap
-    // (not introduced by this PR) that needs a dedicated, cross-tool-surface
-    // fix — see this item's PR description.
+    // FIXED (integration, 2026-07-21) — this step is the payoff of the
+    // credential-threading fix (docs/OIDC-RESOURCE-SERVER.md §3d row #1). The
+    // bug this lane originally surfaced: tool handlers captured the CLOSURE
+    // `AuthManager` at `registerTools()` time and passed it straight into
+    // `vikunjaRestRequest()`, so a provisioned identity's real tool calls used
+    // the process-global manager, not their own vaulted credential. The fix
+    // resolves the EFFECTIVE auth manager centrally in
+    // `src/utils/vikunja-rest.ts` (`resolveEffectiveAuthManager`): when an ALS
+    // RequestContext is bound, its per-identity manager wins. So this call now
+    // hits the real local Vikunja under Alice's OWN vaulted token and
+    // succeeds. Guarded end-to-end by tests/oidc/isolation.test.ts's
+    // "Credential threading" class (which drives a real registered tool and
+    // asserts the Authorization header on the wire).
     await step('(d) real end-to-end tool call as the provisioned identity (list projects)', async () => {
       const result = await callTool(port, 4, 'vikunja_projects', { subcommand: 'list' }, aliceToken);
       if (result.statusCode !== 200 || result.isError) {
@@ -381,7 +370,7 @@ async function main(): Promise<void> {
         throw new Error(`deprovision failed: HTTP ${result.statusCode}: ${result.text}`);
       }
       const statusResult = await callTool(port, 6, 'vikunja_auth', { subcommand: 'status' }, aliceToken);
-      if (!statusResult.text.includes('Not linked')) {
+      if (!statusResult.text.includes('No Vikunja API token linked yet')) {
         throw new Error(`expected unlinked status after deprovision, got: ${statusResult.text}`);
       }
     });
