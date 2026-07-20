@@ -247,7 +247,9 @@ export function registerProjectsTool(
       + 'CRUD/hierarchy/Kanban-bucket/view/duplicate/backgrounds subcommands (get, update, delete, archive, unarchive, get-children, get-tree, '
       + 'get-breadcrumb, move, list-buckets, create-bucket, update-bucket, delete-bucket, list-view-tasks, list-views, get-view, create-view, '
       + 'update-view, delete-view, set-done-bucket, duplicate, and the backgrounds subcommands) identify the target project via `id` — `projectId` '
-      + 'is accepted there too as an alias for `id`. Sharing subcommands (create-share, share-with-user, list-project-users, etc.) use `projectId` only.'
+      + 'is accepted there too as an alias for `id`. Sharing subcommands (create-share, share-with-user, list-project-users, etc.) use `projectId` only. '
+      + '`create-share`\'s share label is the `name` field, NOT `title` (`title` is the project\'s own title field, used by `create`/`update`) — '
+      + 'passing `title` to `create-share` is rejected with a validation error naming the correct field.'
       + (backgroundsEnabled
         ? ' The opt-in backgrounds module adds remove-background/set-unsplash-background/search-unsplash'
         : ''),
@@ -296,6 +298,10 @@ export function registerProjectsTool(
       shareId: z.string().optional(),
       shareHash: z.string().optional(),
       right: z.union([z.enum(['read', 'write', 'admin']), z.literal(0), z.literal(1), z.literal(2)]).optional(),
+      // `name` is `create-share`'s share label — distinct from `title` above
+      // (the project's own title field). Passing `title` instead of `name`
+      // to `create-share` is rejected (not remapped) by `createProjectShare`
+      // with a validation error naming both fields explicitly.
       name: z.string().optional(),
       password: z.string().optional(),
       // Direct user/team sharing arguments

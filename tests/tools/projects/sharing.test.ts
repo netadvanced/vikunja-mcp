@@ -123,6 +123,51 @@ describe('project link sharing (REST-migrated)', () => {
 
       await expect(createProjectShare({ projectId: 1, right: 'read' }, authManager)).rejects.toThrow(MCPError);
     });
+
+    it('rejects (does not remap) `title` reused as the share label when `name` is absent', async () => {
+      await expect(
+        createProjectShare(
+          { projectId: 1, right: 'read', title: 'my-renamed-project-client-view' },
+          authManager,
+        ),
+      ).rejects.toThrow(/share label goes in 'name'.*my-renamed-project-client-view/);
+
+      // Must fail fast, before any network call (including the
+      // project-exists check).
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('truncates a long `title` in the name/title mix-up error message', async () => {
+      const longTitle = 'x'.repeat(80);
+      await expect(
+        createProjectShare({ projectId: 1, right: 'read', title: longTitle }, authManager),
+      ).rejects.toThrow(/x{40}\.\.\./);
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('does not reject when neither `name` nor `title` is supplied (unnamed share is legitimate)', async () => {
+      mockFetch
+        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ id: 1 }) }))
+        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ id: 5, permission: 0 }) }));
+
+      await expect(createProjectShare({ projectId: 1, right: 'read' }, authManager)).resolves.toBeDefined();
+    });
+
+    it('does not reject when `name` is supplied alongside `title` (title simply ignored)', async () => {
+      mockFetch
+        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ id: 1 }) }))
+        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ id: 5, permission: 0 }) }));
+
+      await expect(
+        createProjectShare(
+          { projectId: 1, right: 'read', name: 'Client view', title: 'Unrelated project title' },
+          authManager,
+        ),
+      ).resolves.toBeDefined();
+
+      const putCall = mockFetch.mock.calls[1] as [string, RequestInit];
+      expect(JSON.parse(putCall[1].body as string)).toEqual({ permission: 0, name: 'Client view' });
+    });
   });
 
   describe('list-shares', () => {
@@ -206,20 +251,45 @@ describe('project link sharing (REST-migrated)', () => {
   });
 
   describe('get-share', () => {
-    it('fetches a share by id', async () => {
+    it('fetches a share by id via the LIST route (by-id GET is broken upstream, see sharing.ts)', async () => {
       mockFetch.mockResolvedValueOnce(
-        mockResponse({ text: JSON.stringify({ id: 1, hash: 'abc123', permission: 2, name: 'Admin share' }) }),
+        mockResponse({
+          text: JSON.stringify([
+            { id: 1, hash: 'abc123', permission: 2, name: 'Admin share' },
+            { id: 2, hash: 'def456', permission: 0, name: 'Other share' },
+          ]),
+        }),
       );
 
       const result = await getProjectShare({ projectId: 1, shareId: '1' }, authManager);
 
+      // Regression test: must hit the LIST url, not the old by-id url —
+      // fails against the pre-fix code, which called
+      // `/projects/1/shares/1` and would 404 against this mock.
       const url = mockFetch.mock.calls[0][0] as string;
-      expect(url).toBe('https://vikunja.test/api/v1/projects/1/shares/1');
+      expect(url).toBe('https://vikunja.test/api/v1/projects/1/shares');
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(result.content[0].text).toContain('Retrieved link share: Admin share');
+    });
+
+    it('succeeds even when the by-id route would 404 (proves the workaround: it is never called)', async () => {
+      // No mock is registered for the by-id URL at all — only the LIST
+      // route responds. If `getProjectShare` ever called the by-id route
+      // again, `mockFetch` would fall through with `undefined` and the test
+      // would throw, not pass.
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ text: JSON.stringify([{ id: 1, hash: 'abc123', permission: 2, name: 'Admin share' }]) }),
+      );
+
+      const result = await getProjectShare({ projectId: 1, shareId: '1' }, authManager);
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(mockFetch.mock.calls[0][0]).toBe('https://vikunja.test/api/v1/projects/1/shares');
       expect(result.content[0].text).toContain('Retrieved link share: Admin share');
     });
 
     it('falls back to a generic label when the share has no name', async () => {
-      mockFetch.mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ id: 1, hash: 'abc' }) }));
+      mockFetch.mockResolvedValueOnce(mockResponse({ text: JSON.stringify([{ id: 1, hash: 'abc' }]) }));
 
       const result = await getProjectShare({ projectId: 1, shareId: '1' }, authManager);
       expect(result.content[0].text).toContain('Retrieved link share: Share #1');
@@ -237,7 +307,17 @@ describe('project link sharing (REST-migrated)', () => {
       );
     });
 
-    it('surfaces a friendly NOT_FOUND for a missing share', async () => {
+    it('surfaces a friendly NOT_FOUND when the id is absent from a (200 OK) list response', async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ text: JSON.stringify([{ id: 1, hash: 'abc123', permission: 0 }]) }),
+      );
+
+      await expect(getProjectShare({ projectId: 1, shareId: '999' }, authManager)).rejects.toThrow(
+        'Share with ID 999 not found for project 1',
+      );
+    });
+
+    it('surfaces a friendly NOT_FOUND when the list route itself 404s (e.g. missing project)', async () => {
       mockFetch.mockResolvedValueOnce(
         mockResponse({ ok: false, status: 404, statusText: 'Not Found', text: '' }),
       );
@@ -249,18 +329,41 @@ describe('project link sharing (REST-migrated)', () => {
   });
 
   describe('delete-share', () => {
-    it('fetches the share, then deletes it', async () => {
+    it('looks up the share via the LIST route (by-id GET is broken upstream, see sharing.ts), then deletes it', async () => {
       mockFetch
-        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ id: 1, hash: 'abc', name: 'Test Share' }) }))
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify([{ id: 1, hash: 'abc', name: 'Test Share' }]) }),
+        )
         .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ message: 'deleted' }) }));
 
       const result = await deleteProjectShare({ projectId: 1, shareId: '1' }, authManager);
 
       expect(mockFetch).toHaveBeenCalledTimes(2);
       const [getCall, deleteCall] = mockFetch.mock.calls as [string, RequestInit][][];
-      expect(getCall[0]).toBe('https://vikunja.test/api/v1/projects/1/shares/1');
+      // Regression test: must hit the LIST url, not the old by-id url —
+      // fails against the pre-fix code, which called
+      // `/projects/1/shares/1` and would 404 against this mock.
+      expect(getCall[0]).toBe('https://vikunja.test/api/v1/projects/1/shares');
+      // The actual DELETE call is unaffected by the upstream bug and is
+      // left exactly as-is: still the by-id URL.
       expect(deleteCall[0]).toBe('https://vikunja.test/api/v1/projects/1/shares/1');
       expect(deleteCall[1]?.method).toBe('DELETE');
+      expect(result.content[0].text).toContain('Share with ID 1 deleted successfully');
+    });
+
+    it('succeeds even when the by-id GET route would 404 (proves the workaround: it is never called)', async () => {
+      // No mock is registered for the by-id GET URL at all — only the LIST
+      // route and the DELETE call respond.
+      mockFetch
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify([{ id: 1, hash: 'abc', name: 'Test Share' }]) }),
+        )
+        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ message: 'deleted' }) }));
+
+      const result = await deleteProjectShare({ projectId: 1, shareId: '1' }, authManager);
+
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(mockFetch.mock.calls[0][0]).toBe('https://vikunja.test/api/v1/projects/1/shares');
       expect(result.content[0].text).toContain('Share with ID 1 deleted successfully');
     });
 
@@ -273,7 +376,17 @@ describe('project link sharing (REST-migrated)', () => {
       );
     });
 
-    it('surfaces a friendly NOT_FOUND for a missing share', async () => {
+    it('surfaces a friendly NOT_FOUND when the id is absent from a (200 OK) list response', async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ text: JSON.stringify([{ id: 1, hash: 'abc', name: 'Other share' }]) }),
+      );
+
+      await expect(deleteProjectShare({ projectId: 1, shareId: '999' }, authManager)).rejects.toThrow(
+        'Share with ID 999 not found for project 1',
+      );
+    });
+
+    it('surfaces a friendly NOT_FOUND when the list route itself 404s (e.g. missing project)', async () => {
       mockFetch.mockResolvedValueOnce(
         mockResponse({ ok: false, status: 404, statusText: 'Not Found', text: '' }),
       );
