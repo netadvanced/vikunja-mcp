@@ -125,7 +125,7 @@ This script (`scripts/release-publish.sh`) re-runs the full gates, then:
   `:X.Y.Z-vikunja<A.B.C>` compatibility tag (push only with `--push`) — see §7 below
 - `gh release create vX.Y.Z` using the changelog section as the release notes
 
-Once the owner installs `docs/github-workflow-release.yml.example` as
+The tag-triggered workflow is installed as
 `.github/workflows/release.yml` (see §6), pushing the tag in step 5 does this automatically and
 step 6 becomes a manual fallback rather than the normal path.
 
@@ -151,7 +151,7 @@ a release PR. Until then, every `0.x` release may contain breaking changes in a 
 
 - **Today**: three local scripts (`scripts/release-*.sh`) that a human or agent runs by hand, in
   order. No CI dependency.
-- **Available, not installed**: `docs/github-workflow-release.yml.example` — a tag-triggered
+- **Installed and active**: `.github/workflows/release.yml` — a tag-triggered
   (`on: push: tags: ['v*']`) GitHub Actions workflow that does steps 5–6's publish work
   automatically once a tag is pushed. It is deliberately kept as an example file rather than a
   live workflow — installing it under `.github/workflows/` is the owner's explicit act, done when
@@ -189,7 +189,7 @@ spec our generated TypeScript types are built from — normalized from its `git 
 (`v2.3.0-1019-g95b7e673`) down to the base release (`2.3.0`). It cross-checks that against the
 Vikunja image pin in `docker/e2e/docker-compose.yml` and prints a loud warning (not a hard
 failure) if they've drifted apart. Nothing else hand-types this version: `scripts/release-publish.sh`
-and `docs/github-workflow-release.yml.example` both call this script rather than embedding the
+and `.github/workflows/release.yml` both call this script rather than embedding the
 number.
 
 The image also carries this as OCI labels so the alignment survives a retag even without the tag

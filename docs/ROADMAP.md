@@ -53,7 +53,7 @@ An **AI-first MCP server for Vikunja**: not a 1:1 REST proxy, but a set of task-
 - `vikunja_templates` is session-only (in-memory) by default; opt-in JSON file persistence shipped in Wave F (PR #78) via the `templates.persistPath` config key / `VIKUNJA_MCP_TEMPLATES_FILE` env var (see §3a(b) — this is *why* SQLite was parked, not a competing effort).
 - User-data export can only trigger/report the server-side export — MCP cannot deliver binary files.
 - GitHub Actions is disabled repo-wide for now (owner's call); all gates run locally per PR — see §3b's acknowledged gap.
-- Release engineering landed (`docs/RELEASING.md`, `CHANGELOG.md`, `scripts/release-{prepare,tag,publish}.sh`): SemVer policy, changelog discipline, and local release scripts are usable today; the tag-triggered publish workflow ships as `docs/github-workflow-release.yml.example` only, pending the owner's call to enable GitHub Actions (previous bullet).
+- Release engineering landed (`docs/RELEASING.md`, `CHANGELOG.md`, `scripts/release-{prepare,tag,publish}.sh`): SemVer policy, changelog discipline, and local release scripts are usable today; the tag-triggered publish workflow is INSTALLED as `.github/workflows/release.yml` (2026-07-20, owner decision): GitHub Actions re-enabled with a restricted policy (github-owned + docker/* actions only), npm publishes via OIDC Trusted Publishing (no tokens/secrets), the inherited ci.yml/security.yml were removed — 'only releases run CI' now enforced by having exactly one tag-triggered workflow.
 
 ## 3. Locked architecture decisions
 
