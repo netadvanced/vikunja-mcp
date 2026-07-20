@@ -108,20 +108,30 @@ describe('read-only.ts', () => {
       }
     });
 
-    it('classifies every vikunja_auth subcommand as read (local session only)', () => {
+    it('classifies the local-session-only vikunja_auth subcommands as read', () => {
       const table = TOOL_CLASSIFICATIONS.vikunja_auth;
       expect(table).toBeDefined();
-      for (const classification of Object.values(table!)) {
-        expect(classification).toBe('read');
+      for (const subcommand of ['connect', 'status', 'refresh', 'disconnect', 'info']) {
+        expect(table![subcommand]).toBe('read');
       }
+    });
+
+    it('classifies the oidc-http-mode vault-mutating vikunja_auth subcommands as write/destructive', () => {
+      const table = TOOL_CLASSIFICATIONS.vikunja_auth;
+      expect(table).toBeDefined();
+      expect(table!.provision).toBe('write');
+      expect(table!.deprovision).toBe('destructive');
     });
   });
 
   describe('isToolReadOnly', () => {
     it('is true for a tool whose entire surface is read', () => {
-      expect(isToolReadOnly('vikunja_auth')).toBe(true);
       expect(isToolReadOnly('vikunja_export_project')).toBe(true);
       expect(isToolReadOnly('vikunja_user_export_status')).toBe(true);
+    });
+
+    it('is false for vikunja_auth (provision/deprovision mutate the credential vault)', () => {
+      expect(isToolReadOnly('vikunja_auth')).toBe(false);
     });
 
     it('is false for a tool with any write/destructive subcommand', () => {
@@ -146,8 +156,11 @@ describe('read-only.ts', () => {
     });
 
     it('is false when no subcommand is destructive', () => {
-      expect(isToolDestructive('vikunja_auth')).toBe(false);
       expect(isToolDestructive('vikunja_notifications')).toBe(false);
+    });
+
+    it('is true for vikunja_auth (deprovision deletes a credential-vault record)', () => {
+      expect(isToolDestructive('vikunja_auth')).toBe(true);
     });
 
     it('conservatively assumes true for an unrecognized tool', () => {
@@ -157,9 +170,16 @@ describe('read-only.ts', () => {
 
   describe('getToolAnnotations', () => {
     it('sets readOnlyHint true and destructiveHint false for a fully-read tool', () => {
-      expect(getToolAnnotations('vikunja_auth')).toEqual({
+      expect(getToolAnnotations('vikunja_export_project')).toEqual({
         readOnlyHint: true,
         destructiveHint: false,
+      });
+    });
+
+    it('sets readOnlyHint false and destructiveHint true for vikunja_auth (provision/deprovision mutate the credential vault)', () => {
+      expect(getToolAnnotations('vikunja_auth')).toEqual({
+        readOnlyHint: false,
+        destructiveHint: true,
       });
     });
 
@@ -279,10 +299,17 @@ describe('read-only.ts', () => {
       expect(result.length).toBeGreaterThan('Manage tasks.'.length);
     });
 
-    it('leaves a fully-read tool (e.g. vikunja_auth) unchanged even when active — the note would be noise', () => {
+    it('leaves a fully-read tool (e.g. vikunja_export_project) unchanged even when active — the note would be noise', () => {
       setReadOnly(true);
-      expect(withReadOnlyNote('vikunja_auth', 'Manage authentication.')).toBe(
-        'Manage authentication.',
+      expect(withReadOnlyNote('vikunja_export_project', 'Export a project.')).toBe(
+        'Export a project.',
+      );
+    });
+
+    it('appends the note to vikunja_auth when active (provision/deprovision are write/destructive now)', () => {
+      setReadOnly(true);
+      expect(withReadOnlyNote('vikunja_auth', 'Manage authentication.')).toContain(
+        'read-only mode',
       );
     });
   });

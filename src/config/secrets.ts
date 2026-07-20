@@ -20,7 +20,7 @@ import { ConfigurationError } from './types';
  * therefore support the `_FILE` secrets convention. Audited against all
  * `process.env.*` reads under `src/` — see docs/CONFIGURATION.md.
  */
-export const SENSITIVE_ENV_VARS = ['VIKUNJA_API_TOKEN'] as const;
+export const SENSITIVE_ENV_VARS = ['VIKUNJA_API_TOKEN', 'VIKUNJA_MCP_VAULT_KEY'] as const;
 
 export type SensitiveEnvVar = (typeof SENSITIVE_ENV_VARS)[number];
 

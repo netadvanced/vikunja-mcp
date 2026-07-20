@@ -21,6 +21,8 @@ jest.mock('../../src/utils/vikunja-rest', () => ({
 // labels/assignees sub-resource — sibling item M-B — when requested)
 jest.mock('../../src/client', () => ({
   getClientFromContext: jest.fn(),
+  getAuthManagerFromContext: jest.fn(),
+  hasRequestContext: jest.fn(() => false),
 }));
 
 // Mock logger to suppress output during tests

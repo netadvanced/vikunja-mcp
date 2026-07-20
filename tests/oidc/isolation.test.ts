@@ -30,6 +30,10 @@
  * `storageManager.getStorage`) the real call sites use.
  */
 
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import * as crypto from 'crypto';
 import { AuthManager } from '../../src/auth/AuthManager';
 import { getAuthManagerFromContext, ClientContext } from '../../src/client';
 import {
@@ -41,9 +45,11 @@ import {
 } from '../../src/context/requestContext';
 import {
   createOidcAuthRequiredError,
+  VaultCredentialSource,
   type VikunjaCredential,
   type VikunjaCredentialSource,
 } from '../../src/auth/CredentialSource';
+import { VaultFileStore } from '../../src/storage/vaultFileStore';
 import { storageManager } from '../../src/storage';
 import { SecureRateLimitMiddleware } from '../../src/middleware/simplified-rate-limit';
 import { ErrorCode, MCPError } from '../../src/types/errors';
@@ -387,6 +393,98 @@ describe('Cross-user leak test matrix (§3d)', () => {
       await expect(getAuthManagerFromContext()).rejects.toEqual(
         expect.objectContaining({ code: ErrorCode.AUTH_REQUIRED }),
       );
+    });
+  });
+
+  /**
+   * H2a: the isolation contract above was proven against
+   * `FakeVaultCredentialSource` — a conformance fake — because the real
+   * vault (`src/storage/vaultFileStore.ts`) didn't exist yet when H1c
+   * landed this suite. Now that it does, re-run the load-bearing rows
+   * (credential isolation, missing-credential no-leak, deprovision
+   * isolation, token swap) against the REAL `VaultFileStore` +
+   * `VaultCredentialSource`, proving the concrete H2 implementation
+   * satisfies the exact same contract the fake modeled, not just that the
+   * fake does.
+   */
+  describe('Real vault implementation conforms to the same isolation contract', () => {
+    let tmpDir: string;
+    let vaultPath: string;
+    let vault: VaultFileStore;
+    let credentialSource: VaultCredentialSource;
+
+    beforeEach(() => {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'isolation-real-vault-'));
+      vaultPath = path.join(tmpDir, 'vault.json');
+      vault = new VaultFileStore(vaultPath, crypto.randomBytes(32));
+      credentialSource = new VaultCredentialSource(vault);
+    });
+
+    afterEach(() => {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it("A's calls resolve A's real vaulted token only; B's is never used for A", async () => {
+      await vault.provision(identityA, 'https://vikunja.example/api/v1', 'tk_a-real-1234567890');
+      await vault.provision(identityB, 'https://vikunja.example/api/v1', 'tk_b-real-1234567890');
+
+      const credentialA = credentialSource.getCredential(identityA);
+      const credentialB = credentialSource.getCredential(identityB);
+
+      expect(credentialA?.apiToken).toBe('tk_a-real-1234567890');
+      expect(credentialB?.apiToken).toBe('tk_b-real-1234567890');
+      expect(credentialA?.apiToken).not.toBe(credentialB?.apiToken);
+    });
+
+    it('B (unprovisioned in the real vault) resolves null -> the same AUTH_REQUIRED provision prompt; nothing about A leaks', async () => {
+      await vault.provision(identityA, 'https://vikunja.example/api/v1', 'tk_a-real');
+      // B is deliberately never provisioned.
+
+      expect(credentialSource.getCredential(identityB)).toBeNull();
+
+      const error = createOidcAuthRequiredError(identityB);
+      expect(error).toBeInstanceOf(MCPError);
+      expect(error.code).toBe(ErrorCode.AUTH_REQUIRED);
+      expect(error.message).not.toContain('user-a');
+      expect(error.message).not.toContain('tk_a-real');
+      expect(error.message).toContain('vikunja_auth provision');
+    });
+
+    it('deprovisioning A in the real vault does not affect B; A subsequently resolves null', async () => {
+      await vault.provision(identityA, 'https://vikunja.example/api/v1', 'tk_a-real');
+      await vault.provision(identityB, 'https://vikunja.example/api/v1', 'tk_b-real');
+
+      await vault.deprovision(identityA);
+
+      expect(credentialSource.getCredential(identityA)).toBeNull();
+      expect(credentialSource.getCredential(identityB)?.apiToken).toBe('tk_b-real');
+    });
+
+    it('token swap: subsequent real-vault calls resolve the newly-provisioned token, never the stale one', async () => {
+      await vault.provision(identityA, 'https://vikunja.example/api/v1', 'tk_a-old');
+      await vault.deprovision(identityA);
+      await vault.provision(identityA, 'https://vikunja.example/api/v1', 'tk_a-new');
+
+      const credential = credentialSource.getCredential(identityA);
+      expect(credential?.apiToken).toBe('tk_a-new');
+      expect(credential?.apiToken).not.toBe('tk_a-old');
+    });
+
+    it('drives the real vault through an ALS-bound getAuthManagerFromContext resolution, exactly as the oidc-http request path does', async () => {
+      await vault.provision(identityA, 'https://vikunja.example/api/v1', 'tk_a-real-1234567890');
+
+      const credential = credentialSource.getCredential(identityA);
+      const authManagerA = new AuthManager();
+      if (credential) {
+        authManagerA.connect(credential.apiUrl, credential.apiToken, credential.authType);
+      }
+
+      const resolved = await runWithRequestContext(
+        { identity: identityA, authManager: authManagerA },
+        () => getAuthManagerFromContext(),
+      );
+
+      expect(resolved.getSession().apiToken).toBe('tk_a-real-1234567890');
     });
   });
 });

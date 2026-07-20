@@ -7,6 +7,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { AuthManager } from '../../auth/AuthManager';
 import type { VikunjaClientFactory } from '../../client/VikunjaClientFactory';
+import { getAuthManagerFromContext, hasRequestContext } from '../../client';
 import { MCPError, ErrorCode } from '../../types';
 import type { McpResponse } from './crud';
 import { createAuthRequiredError, wrapToolError } from '../../utils/error-handler';
@@ -328,7 +329,11 @@ export function registerProjectsTool(
           : rawArgs;
       try {
         // Check authentication with enhanced error message
-        if (!authManager.isAuthenticated()) {
+        // (closure-gate precedence fix: defer to the per-request context
+        // when bound — see hasRequestContext's doc comment, src/client.ts)
+        if (hasRequestContext()) {
+          await getAuthManagerFromContext();
+        } else if (!authManager.isAuthenticated()) {
           throw createAuthRequiredError('access project management features');
         }
 

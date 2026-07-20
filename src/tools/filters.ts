@@ -45,6 +45,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { AuthManager } from '../auth/AuthManager';
 import type { VikunjaClientFactory } from '../client/VikunjaClientFactory';
+import { getAuthManagerFromContext, hasRequestContext } from '../client';
 import {
   FilterBuilder,
   validateFilterExpression,
@@ -416,11 +417,17 @@ export function registerFiltersTool(server: McpServer, authManager: AuthManager,
       logger.info(`Executing vikunja_filters action: ${action}`);
 
       // build/validate are pure local utilities and need no server access.
-      if (action !== 'build' && action !== 'validate' && !authManager.isAuthenticated()) {
-        throw new MCPError(
-          ErrorCode.AUTH_REQUIRED,
-          'Authentication required. Please use vikunja_auth.connect first.',
-        );
+      // Closure-gate precedence fix: defer to the per-request context when
+      // bound (see hasRequestContext's doc comment, src/client.ts).
+      if (action !== 'build' && action !== 'validate') {
+        if (hasRequestContext()) {
+          await getAuthManagerFromContext();
+        } else if (!authManager.isAuthenticated()) {
+          throw new MCPError(
+            ErrorCode.AUTH_REQUIRED,
+            'Authentication required. Please use vikunja_auth.connect first.',
+          );
+        }
       }
 
       assertWriteAllowed('vikunja_filters', action);

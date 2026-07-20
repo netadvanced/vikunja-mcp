@@ -40,6 +40,8 @@ jest.mock('../../src/client', () => ({
       getLabel: jest.fn(),
     },
   }),
+  getAuthManagerFromContext: jest.fn(),
+  hasRequestContext: jest.fn(() => false),
 }));
 
 // Mock fetch for the direct-REST project/task calls and the user export endpoints

@@ -35,7 +35,7 @@
  * Annotation mapping rationale: annotations are per-TOOL, but our tools
  * mix read/write/destructive subcommands behind one MCP tool name, so:
  *  - `readOnlyHint` is true only for a tool whose *entire* subcommand
- *    surface is 'read' (e.g. `vikunja_auth` — see below).
+ *    surface is 'read'.
  *  - `destructiveHint` is true if *any* subcommand is 'destructive'.
  *  - `idempotentHint` is only ever set true via the explicit
  *    `IDEMPOTENT_TOOLS` allowlist below, and only when every write
@@ -43,8 +43,13 @@
  *
  * `vikunja_auth` special case: connect/status/refresh/disconnect/info only
  * manage the MCP server's local in-memory session — none of them mutate a
- * Vikunja resource — so every subcommand is classified 'read' and
- * read-only mode never blocks it (and `readOnlyHint` is honestly true).
+ * Vikunja resource — so those five are classified 'read' and read-only mode
+ * never blocks them. `provision`/`deprovision` (oidc-http mode only,
+ * docs/OIDC-RESOURCE-SERVER.md §3c) are the exception: they create/delete a
+ * persisted credential-vault record, a real account-level mutation, so they
+ * are classified 'write'/'destructive' respectively and DO get rejected by
+ * global read-only mode — `vikunja_auth` as a whole is therefore no longer
+ * `readOnlyHint: true` (see tests/utils/read-only.test.ts).
  */
 
 import type { ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
@@ -66,6 +71,13 @@ const AUTH: ClassificationTable = {
   refresh: 'read',
   disconnect: 'read',
   info: 'read',
+  // oidc-http mode only (docs/OIDC-RESOURCE-SERVER.md §3c, D7): these two
+  // mutate the server's persisted credential vault — a real account-level
+  // write/delete, analogous to vikunja_tokens/vikunja_caldav_tokens's own
+  // create='write'/delete='destructive' pairing — so, unlike every other
+  // vikunja_auth subcommand, they ARE rejected by global read-only mode.
+  provision: 'write',
+  deprovision: 'destructive',
 };
 
 const TASKS: ClassificationTable = {
@@ -543,8 +555,8 @@ export function assertWriteAllowed(
 /**
  * Appends a short read-only note to a tool's description, but only when
  * read-only mode is active AND the tool actually has write/destructive
- * subcommands to warn about (a fully-exempt tool like `vikunja_auth` never
- * gets the note — it would be noise, not information). Called once at
+ * subcommands to warn about (a fully-exempt tool like `vikunja_export_project`
+ * never gets the note — it would be noise, not information). Called once at
  * registration time — cheap, since `isReadOnlyModeActive()` just reads the
  * already-loaded, cached configuration.
  */

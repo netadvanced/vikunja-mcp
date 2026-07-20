@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { AuthManager } from '../auth/AuthManager';
 import type { VikunjaClientFactory } from '../client/VikunjaClientFactory';
+import { getAuthManagerFromContext, hasRequestContext } from '../client';
 import { logger } from '../utils/logger';
 import { MCPError, ErrorCode } from '../types';
 import { parseInputData } from '../parsers/InputParserFactory';
@@ -41,8 +42,12 @@ export function registerBatchImportTool(server: McpServer, authManager: AuthMana
           dryRun: args.dryRun,
         });
 
-        // Authentication check
-        if (!authManager.isAuthenticated()) {
+        // Authentication check (closure-gate precedence fix: defer to the
+        // per-request context when bound — see hasRequestContext's doc
+        // comment, src/client.ts)
+        if (hasRequestContext()) {
+          await getAuthManagerFromContext();
+        } else if (!authManager.isAuthenticated()) {
           throw new MCPError(
             ErrorCode.AUTH_REQUIRED,
             'Authentication required. Please use vikunja_auth.connect first.',

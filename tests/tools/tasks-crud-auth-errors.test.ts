@@ -29,6 +29,7 @@ jest.mock('../../src/utils/vikunja-rest', () => ({
 jest.mock('../../src/client', () => ({
   getClientFromContext: jest.fn(),
   getAuthManagerFromContext: jest.fn(),
+  hasRequestContext: jest.fn(() => false),
 }));
 
 // Mock logger to suppress output during tests

@@ -117,7 +117,7 @@ async function main(): Promise<void> {
     // `startHttpTransport` then refuses to start rather than serve
     // unauthenticated HTTP (deny-mixed-mode, §2 "Selection rule").
     if (appConfig.oidc) {
-      await setupOidcHttpAuth(appConfig.oidc);
+      await setupOidcHttpAuth(appConfig.oidc, appConfig.vault);
     }
     // Stateless HTTP mode builds a fresh, fully-registered `McpServer` per
     // request (the SDK's stateless transport cannot be reused across

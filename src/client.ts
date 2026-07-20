@@ -137,6 +137,36 @@ export async function getAuthManagerFromContext(): Promise<AuthManager> {
 }
 
 /**
+ * Whether an ALS `RequestContext` is currently bound — i.e. this call is
+ * running inside `oidc-http` mode's per-request scope
+ * (`src/context/requestContext.ts`). `stdio` mode never opens one, so this
+ * is always `false` there.
+ *
+ * Closure-gate precedence fix (docs/OIDC-RESOURCE-SERVER.md §3c, H1
+ * integration owner-attention #2): dozens of tools gate on the
+ * process-global closure `AuthManager`'s `isAuthenticated()` *before* ever
+ * calling {@link getAuthManagerFromContext}. In `oidc-http` mode that
+ * closure manager is never authenticated (there is no static per-process
+ * credential — every identity's credential lives behind the vault, keyed by
+ * the per-request ALS context), so that up-front check always fired first
+ * and threw the tool's own generic "please connect" message — masking the
+ * correct, `sub`-scoped `createOidcAuthRequiredError` "provision" prompt
+ * that {@link getAuthManagerFromContext} would otherwise produce.
+ *
+ * The fix mirrors {@link getAuthManagerFromContext}'s own ALS-first order:
+ * every up-front gate consults `hasRequestContext()` first and, when bound,
+ * defers entirely to {@link getAuthManagerFromContext} (which throws the
+ * correctly-scoped error itself) instead of evaluating the closure
+ * manager's `isAuthenticated()` at all. `stdio` mode is unaffected — this
+ * always returns `false` there, so every gate's `else` branch (the
+ * pre-existing `authManager.isAuthenticated()` check) runs byte-for-byte
+ * unchanged.
+ */
+export function hasRequestContext(): boolean {
+  return getRequestContext() !== undefined;
+}
+
+/**
  * Set the global client factory for all tools (thread-safe)
  */
 export async function setGlobalClientFactory(factory: VikunjaClientFactory): Promise<void> {

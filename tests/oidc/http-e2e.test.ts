@@ -191,14 +191,20 @@ describe('OIDC HTTP transport — wave-H1 end-to-end acceptance', () => {
     );
 
     // A fresh, fully-registered tool surface per request (stateless mode).
-    // The closure AuthManager is connected with a throwaway credential so the
-    // tools' own up-front `isAuthenticated()` gate passes — proving that even
-    // with a "connected" process-global session, the per-identity ALS
-    // credential source is what actually governs a request (isolation over
-    // the global singleton). A real client factory is supplied so
-    // clientFactory-gated tools (e.g. vikunja_notifications) register.
+    // The closure AuthManager is deliberately left UNCONNECTED here — this is
+    // the H2a acceptance proof for the closure-gate precedence fix
+    // (docs/OIDC-RESOURCE-SERVER.md §3c, H1 integration owner-attention #2):
+    // every tool's up-front `authManager.isAuthenticated()` gate now consults
+    // the per-request ALS context FIRST (`hasRequestContext()`, src/client.ts)
+    // and defers to `getAuthManagerFromContext()` whenever one is bound,
+    // rather than ever evaluating the (always-unauthenticated-in-oidc-http-
+    // mode) closure manager. Before that fix, this test needed a placeholder
+    // credential connected here purely to make the closure gate pass so
+    // execution could reach the real, per-identity check — see git history
+    // for the workaround this replaced. A real client factory is still
+    // supplied so clientFactory-gated tools (e.g. vikunja_notifications)
+    // register.
     const closureAuth = new AuthManager();
-    closureAuth.connect('http://127.0.0.1:1/api/v1', 'tk_closure-placeholder-token-123456');
     const clientFactory = await createVikunjaClientFactory(closureAuth);
 
     handle = await startHttpTransport(() => {

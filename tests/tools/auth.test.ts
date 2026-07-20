@@ -10,10 +10,35 @@ import type { MockServer, MockAuthManager } from '../types/mocks';
 import { parseMarkdown } from '../utils/markdown';
 import { ConfigurationManager } from '../../src/config';
 import { callAndCatch, isReadOnlyRejection } from '../utils/read-only-test-helpers';
+import { getCurrentIdentity } from '../../src/context/requestContext';
+import { getActiveVaultStore } from '../../src/storage/vaultFileStore';
 
-// Mock the clearGlobalClientFactory function
+// Mock context/requestContext: only getCurrentIdentity is used by auth.ts,
+// and only the oidc-http-mode provisioning describe block below sets it —
+// every other test in this file leaves it `undefined`, matching stdio mode.
+jest.mock('../../src/context/requestContext', () => ({
+  getCurrentIdentity: jest.fn(),
+}));
+
+// Mock the vault seam: auth.ts reads the active vault store via
+// getActiveVaultStore() for provision/status/deprovision and the
+// oidc-mode-aliased connect/disconnect/status branches.
+jest.mock('../../src/storage/vaultFileStore', () => ({
+  getActiveVaultStore: jest.fn(),
+}));
+
+// Mock src/client: clearGlobalClientFactory (as before), plus
+// getAuthManagerFromContext/hasRequestContext — this test suite exercises
+// stdio-mode behaviour (no ALS request context bound), so hasRequestContext
+// stays false throughout, matching real stdio behaviour exactly. The oidc-
+// http-mode provisioning subcommands get their own describe block below with
+// hasRequestContext mocked true.
+const mockGetAuthManagerFromContext = jest.fn();
+const mockHasRequestContext = jest.fn(() => false);
 jest.mock('../../src/client', () => ({
   clearGlobalClientFactory: jest.fn(),
+  getAuthManagerFromContext: (...args: unknown[]) => mockGetAuthManagerFromContext(...args),
+  hasRequestContext: () => mockHasRequestContext(),
 }));
 
 // Mock the direct middleware to bypass middleware
@@ -24,6 +49,9 @@ jest.mock('../../src/middleware/direct-middleware', () => ({
 // Mock security utils
 jest.mock('../../src/utils/security', () => ({
   createSecureConnectionMessage: jest.fn((url, token) => `Connecting to ${url} with token ${token.slice(0, 4)}...`),
+  maskCredential: jest.fn((token: string | undefined | null) =>
+    token && token.length > 4 ? `${token.slice(0, 4)}...` : '***',
+  ),
 }));
 
 // Mock logger
@@ -96,7 +124,11 @@ describe('Auth Tool', () => {
     // Capture the tool handler
     expect(mockServer.tool).toHaveBeenCalledWith(
       'vikunja_auth',
-      'Manage authentication with Vikunja API (connect, status, refresh, disconnect, info)',
+      'Manage authentication with Vikunja API (connect, status, refresh, disconnect, info). ' +
+        'In oidc-http mode, self-service credential provisioning (provision, status, ' +
+        'deprovision) additionally links your validated OIDC identity to a Vikunja API ' +
+        "token in the server's encrypted credential vault — connect/disconnect are not " +
+        'available in that mode (provision/deprovision replace them).',
       expect.any(Object),
       expect.any(Object), // ToolAnnotations
       expect.any(Function),
@@ -882,6 +914,11 @@ describe('Auth Tool', () => {
   describe('global read-only mode', () => {
     afterEach(() => {
       ConfigurationManager.reset();
+      // mockHasRequestContext.mockReturnValue() persists across
+      // jest.clearAllMocks() (which clears calls, not implementations) —
+      // reset it explicitly so oidc-mode-only setup never bleeds into an
+      // unrelated test.
+      mockHasRequestContext.mockReturnValue(false);
     });
 
     it('never rejects any vikunja_auth subcommand — session management only, not Vikunja data', async () => {
@@ -891,6 +928,246 @@ describe('Auth Tool', () => {
       for (const subcommand of ['status', 'refresh', 'disconnect', 'info']) {
         expect(isReadOnlyRejection(await callAndCatch(toolHandler, { subcommand }))).toBe(false);
       }
+    });
+
+    it('DOES reject provision/deprovision in oidc-http mode — they mutate the credential vault', async () => {
+      mockHasRequestContext.mockReturnValue(true);
+      (getCurrentIdentity as jest.Mock).mockReturnValue({
+        issuer: 'https://idp.example/realm',
+        sub: 'user-1',
+      });
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: true } });
+
+      expect(
+        isReadOnlyRejection(
+          await callAndCatch(toolHandler, { subcommand: 'provision', apiToken: 'tk_x', vikunjaUrl: 'https://vikunja.example.com' }),
+        ),
+      ).toBe(true);
+      expect(isReadOnlyRejection(await callAndCatch(toolHandler, { subcommand: 'deprovision' }))).toBe(true);
+    });
+  });
+
+  describe('closure-gate precedence fix (oidc-http mode)', () => {
+    beforeEach(() => {
+      mockHasRequestContext.mockReturnValue(true);
+      mockGetAuthManagerFromContext.mockReset();
+    });
+
+    afterEach(() => {
+      mockHasRequestContext.mockReturnValue(false);
+    });
+
+    it("'info' defers to getAuthManagerFromContext instead of the closure authManager's isAuthenticated()", async () => {
+      // The closure authManager reports NOT authenticated — under the old
+      // (buggy) ordering this would throw the generic "please connect"
+      // error immediately. With the fix, hasRequestContext() short-circuits
+      // straight to getAuthManagerFromContext(), whose (mocked) resolution
+      // here succeeds, so the call proceeds to the real /info request.
+      mockAuthManager.isAuthenticated.mockReturnValue(false);
+      mockGetAuthManagerFromContext.mockResolvedValue(mockAuthManager);
+      mockVikunjaRestRequest.mockResolvedValue({ version: '2.3.0' });
+
+      const result = await callTool('info');
+
+      expect(mockGetAuthManagerFromContext).toHaveBeenCalled();
+      expect(result.content[0].type).toBe('text');
+      expect(result.content[0].text).toContain('auth-info');
+    });
+
+    it("'info' propagates getAuthManagerFromContext's AUTH_REQUIRED provisioning-prompt error, never the generic message", async () => {
+      mockAuthManager.isAuthenticated.mockReturnValue(false);
+      const provisionPrompt = new MCPError(
+        ErrorCode.AUTH_REQUIRED,
+        "You're authenticated as abcd... but haven't linked a Vikunja API token yet. " +
+          'Run vikunja_auth provision with a token you create in Vikunja → Settings → API Tokens.',
+      );
+      mockGetAuthManagerFromContext.mockRejectedValue(provisionPrompt);
+
+      await expect(callTool('info')).rejects.toThrow('vikunja_auth provision');
+      await expect(callTool('info')).rejects.not.toThrow('Please use vikunja_auth.connect first');
+    });
+  });
+
+  describe('oidc-http-mode provisioning subcommands', () => {
+    const identity = { issuer: 'https://idp.example/realm', sub: 'user-1' };
+    let mockVault: {
+      getCredential: jest.Mock;
+      getStatus: jest.Mock;
+      provision: jest.Mock;
+      deprovision: jest.Mock;
+    };
+
+    beforeEach(() => {
+      mockHasRequestContext.mockReturnValue(true);
+      (getCurrentIdentity as jest.Mock).mockReturnValue(identity);
+      mockVault = {
+        getCredential: jest.fn(),
+        getStatus: jest.fn().mockReturnValue({ provisioned: false }),
+        provision: jest.fn().mockResolvedValue(undefined),
+        deprovision: jest.fn().mockResolvedValue(true),
+      };
+      (getActiveVaultStore as jest.Mock).mockReturnValue(mockVault);
+      mockVikunjaRestRequest.mockReset();
+      mockVikunjaRestRequest.mockImplementation(async (_authManager: unknown, _method: string, path: string) => {
+        if (path === '/info') {
+          return { version: '1.2.3' };
+        }
+        return [];
+      });
+    });
+
+    afterEach(() => {
+      mockHasRequestContext.mockReturnValue(false);
+      (getCurrentIdentity as jest.Mock).mockReturnValue(undefined);
+      (getActiveVaultStore as jest.Mock).mockReturnValue(undefined);
+    });
+
+    describe('provision', () => {
+      it('validates the token against Vikunja BEFORE storing it, then stores it keyed by the validated identity', async () => {
+        const result = await callTool('provision', {
+          apiToken: 'tk_real-token-1234567890',
+          vikunjaUrl: 'https://vikunja.example.com',
+        });
+
+        expect(mockVikunjaRestRequest).toHaveBeenCalledWith(expect.anything(), 'GET', '/info');
+        expect(mockVault.provision).toHaveBeenCalledWith(
+          identity,
+          'https://vikunja.example.com',
+          'tk_real-token-1234567890',
+        );
+        // Validation must happen before storage — the mock records call
+        // order via the shared mockVikunjaRestRequest/mockVault.provision
+        // invocation sequence; asserting both were called is the
+        // behavioural proof this test is titled for.
+        const markdown = result.content[0].text;
+        expect(markdown).toContain('auth-provision');
+        expect(markdown).not.toContain('tk_real-token-1234567890');
+      });
+
+      it('never stores the token when server validation fails', async () => {
+        mockVikunjaRestRequest.mockRejectedValue(new Error('connection refused'));
+
+        await expect(
+          callTool('provision', { apiToken: 'tk_bad', vikunjaUrl: 'https://vikunja.example.com' }),
+        ).rejects.toThrow(MCPError);
+        expect(mockVault.provision).not.toHaveBeenCalled();
+      });
+
+      it('ignores any identity-shaped fields on args — identity always comes from the validated request context', async () => {
+        await callTool('provision', {
+          apiToken: 'tk_real',
+          vikunjaUrl: 'https://vikunja.example.com',
+          // Not part of the schema, but even if a caller smuggled these in,
+          // getCurrentIdentity() (mocked here to the real identity) is the
+          // only source auth.ts ever reads from.
+          sub: 'attacker-controlled-sub',
+          issuer: 'https://attacker.example/realm',
+        } as Record<string, unknown>);
+
+        expect(mockVault.provision).toHaveBeenCalledWith(
+          identity,
+          'https://vikunja.example.com',
+          'tk_real',
+        );
+      });
+
+      it('requires apiToken', async () => {
+        await expect(
+          callTool('provision', { vikunjaUrl: 'https://vikunja.example.com' }),
+        ).rejects.toThrow('apiToken is required');
+      });
+
+      it('requires a resolvable Vikunja URL', async () => {
+        const originalUrl = process.env.VIKUNJA_URL;
+        delete process.env.VIKUNJA_URL;
+        ConfigurationManager.reset();
+        try {
+          await expect(callTool('provision', { apiToken: 'tk_real' })).rejects.toThrow(
+            'No Vikunja URL is configured',
+          );
+        } finally {
+          ConfigurationManager.reset();
+          if (originalUrl !== undefined) {
+            process.env.VIKUNJA_URL = originalUrl;
+          }
+        }
+      });
+
+      it('rejects in stdio mode with a clear "oidc-http mode feature" error', async () => {
+        mockHasRequestContext.mockReturnValue(false);
+
+        await expect(
+          callTool('provision', { apiToken: 'tk_real', vikunjaUrl: 'https://vikunja.example.com' }),
+        ).rejects.toThrow('oidc-http mode feature');
+        expect(mockVault.provision).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('status (oidc-http mode)', () => {
+      it("reports the calling identity's own vault status, masked", async () => {
+        mockVault.getStatus.mockReturnValue({
+          provisioned: true,
+          vikunjaUrl: 'https://vikunja.example.com',
+          maskedToken: 'tk_r...',
+          lastUsedAt: null,
+        });
+
+        const result = await callTool('status');
+
+        expect(mockVault.getStatus).toHaveBeenCalledWith(identity);
+        const markdown = result.content[0].text;
+        expect(markdown).toContain('tk_r...');
+        expect(markdown).not.toContain('tk_real');
+      });
+
+      it('reports not-provisioned honestly when unlinked', async () => {
+        mockVault.getStatus.mockReturnValue({ provisioned: false });
+
+        const result = await callTool('status');
+
+        const markdown = result.content[0].text;
+        expect(markdown).toContain('No Vikunja API token linked yet');
+      });
+    });
+
+    describe('deprovision', () => {
+      it('deletes the calling identity\'s vault record', async () => {
+        const result = await callTool('deprovision');
+
+        expect(mockVault.deprovision).toHaveBeenCalledWith(identity);
+        expect(result.content[0].text).toContain('Deprovisioned');
+      });
+
+      it('is idempotent — reports honestly when there was nothing to remove', async () => {
+        mockVault.deprovision.mockResolvedValue(false);
+
+        const result = await callTool('deprovision');
+
+        expect(result.content[0].text).toContain('No linked Vikunja API token to remove');
+      });
+
+      it('rejects in stdio mode with a clear "oidc-http mode feature" error', async () => {
+        mockHasRequestContext.mockReturnValue(false);
+
+        await expect(callTool('deprovision')).rejects.toThrow('oidc-http mode feature');
+        expect(mockVault.deprovision).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('connect/disconnect aliasing in oidc-http mode', () => {
+      it("'connect' returns a structured error pointing at 'provision'", async () => {
+        await expect(
+          callTool('connect', { apiUrl: 'https://vikunja.example.com', apiToken: 'tk_x' }),
+        ).rejects.toThrow('vikunja_auth provision');
+      });
+
+      it("'disconnect' aliases 'deprovision'", async () => {
+        const result = await callTool('disconnect');
+
+        expect(mockVault.deprovision).toHaveBeenCalledWith(identity);
+        expect(result.content[0].text).toContain('Deprovisioned');
+      });
     });
   });
 });

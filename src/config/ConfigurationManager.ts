@@ -524,6 +524,17 @@ export class ConfigurationManager {
       result.oidc = oidc;
     }
 
+    // Credential vault path (docs/OIDC-RESOURCE-SERVER.md §3c) — only the
+    // (non-secret) file path lives in config; the master key
+    // (`VIKUNJA_MCP_VAULT_KEY[_FILE]`) is read directly from the environment
+    // via the `_FILE` secrets convention (`src/config/secrets.ts`), never
+    // through this config layer.
+    const vault: Record<string, unknown> = {};
+    this.assignEnvValue(vault, 'path', process.env.VIKUNJA_MCP_VAULT_PATH, false);
+    if (Object.keys(vault).length > 0) {
+      result.vault = vault;
+    }
+
     return result as Partial<ApplicationConfig>;
   }
 

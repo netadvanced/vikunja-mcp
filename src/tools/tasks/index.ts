@@ -8,7 +8,7 @@ import { z } from 'zod';
 import type { AuthManager } from '../../auth/AuthManager';
 import type { VikunjaClientFactory } from '../../client/VikunjaClientFactory';
 import { MCPError, ErrorCode } from '../../types';
-import { getAuthManagerFromContext, setGlobalClientFactory } from '../../client';
+import { getAuthManagerFromContext, hasRequestContext, setGlobalClientFactory } from '../../client';
 import { logger } from '../../utils/logger';
 import { storageManager } from '../../storage';
 import { getEffectiveSessionId } from '../../context/requestContext';
@@ -315,7 +315,11 @@ export function registerTasksTool(
         logger.debug('Executing tasks tool', { subcommand: args.subcommand, args });
 
         // Check authentication with enhanced error message
-        if (!authManager.isAuthenticated()) {
+        // (closure-gate precedence fix: defer to the per-request context
+        // when bound — see hasRequestContext's doc comment, src/client.ts)
+        if (hasRequestContext()) {
+          await getAuthManagerFromContext();
+        } else if (!authManager.isAuthenticated()) {
           throw createAuthRequiredError('access task management features');
         }
 

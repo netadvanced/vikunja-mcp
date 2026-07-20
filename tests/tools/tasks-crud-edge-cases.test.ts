@@ -29,6 +29,8 @@ jest.mock('../../src/utils/vikunja-rest', () => ({
 // Mock the client module (still used for labels/assignees sub-resource calls)
 jest.mock('../../src/client', () => ({
   getClientFromContext: jest.fn(),
+  getAuthManagerFromContext: jest.fn(),
+  hasRequestContext: jest.fn(() => false),
 }));
 
 // Mock logger to suppress output during tests

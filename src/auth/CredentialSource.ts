@@ -21,12 +21,20 @@
  *  - `OidcStubCredentialSource` — the H1 stand-in for the real vault.
  *    Always returns `null`, so every `oidc-http` caller gets the
  *    provisioning prompt until H2 lands `src/storage/vaultFileStore.ts` and
- *    a vault-backed implementation of this same interface (H2-3).
+ *    a vault-backed implementation of this same interface (H2-3). Retained
+ *    (not deleted) after H2 lands — still used by tests that want a
+ *    deterministic "nobody is ever provisioned" source without touching a
+ *    real vault file.
+ *  - `VaultCredentialSource` — H2's real implementation, a thin adapter over
+ *    `VaultFileStore` (`src/storage/vaultFileStore.ts`). Replaces
+ *    `OidcStubCredentialSource` in the production `oidc-http` wiring
+ *    (`src/transport/oidcHttpAuth.ts`'s `setupOidcHttpAuth`).
  */
 
 import type { Identity } from '../context/requestContext';
 import { MCPError, ErrorCode } from '../types/errors';
 import { maskCredential } from '../utils/security';
+import type { VaultFileStore } from '../storage/vaultFileStore';
 
 /** A Vikunja credential resolved for one identity. */
 export interface VikunjaCredential {
@@ -72,6 +80,22 @@ export class StdioCredentialSource implements VikunjaCredentialSource {
 export class OidcStubCredentialSource implements VikunjaCredentialSource {
   getCredential(_identity: Identity): VikunjaCredential | null {
     return null;
+  }
+}
+
+/**
+ * `oidc-http` mode, H2 scope: the real, vault-backed credential source.
+ * Delegates directly to a `VaultFileStore` (`src/storage/
+ * vaultFileStore.ts`) — `getCredential` is already synchronous and never
+ * throws there (a missing record and an undecryptable one both resolve to
+ * `null`), so this adapter adds no behaviour of its own beyond satisfying
+ * the interface type.
+ */
+export class VaultCredentialSource implements VikunjaCredentialSource {
+  constructor(private readonly vault: Pick<VaultFileStore, 'getCredential'>) {}
+
+  getCredential(identity: Identity): VikunjaCredential | null {
+    return this.vault.getCredential(identity);
   }
 }
 

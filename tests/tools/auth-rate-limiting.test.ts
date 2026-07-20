@@ -26,7 +26,9 @@ jest.mock('../../src/utils/logger', () => ({
 jest.mock('../../src/client', () => ({
   clearGlobalClientFactory: jest.fn(),
   getClientFromContext: jest.fn(),
+  getAuthManagerFromContext: jest.fn(),
   setGlobalClientFactory: jest.fn(),
+  hasRequestContext: jest.fn(() => false),
 }));
 
 describe('Auth Tool Rate Limiting Integration', () => {

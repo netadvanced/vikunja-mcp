@@ -139,8 +139,10 @@ commit, safe to mount read-only into a container (e.g. as a Docker `config`), an
   always a hard startup error with a message naming the file path and the parse problem —
   regardless of whether the path was explicit or the default.
 - **Shape**: the file mirrors `ApplicationConfig` — any of `auth` (non-secret fields
-  only), `logging`, `rateLimiting`, `featureFlags`, `modules`, `templates` may be
-  present; anything omitted falls back to the environment profile / schema default.
+  only), `logging`, `rateLimiting`, `featureFlags`, `modules`, `templates`, `transport`,
+  `http`, `oidc`, `vault` (path only — never the master key, see
+  [Credential vault](#credential-vault-self-service-token-provisioning)) may be present;
+  anything omitted falls back to the environment profile / schema default.
 
 Example `vikunja-mcp.config.json`:
 
@@ -463,13 +465,13 @@ definitions (project/task shape, no auth data) — so, like the rest of the conf
 doesn't need Docker-secrets treatment; only the volume itself needs to persist across
 container recreations.
 
-## Transport Mode (opt-in HTTP)
+## Transport Mode (opt-in HTTP) and OIDC resource-server mode
 
 The server's transport defaults to **`stdio`** — the existing single-tenant behavior,
-byte-for-byte unchanged. `transport=http` opts into an experimental **Streamable HTTP**
-transport (stateless `StreamableHTTPServerTransport` from the MCP SDK) intended for a
-hosted, multi-user deployment behind an OIDC-aware gateway (see
-`docs/OIDC-RESOURCE-SERVER.md` for the full design).
+byte-for-byte unchanged. `transport=http` opts into a **Streamable HTTP** transport
+(stateless `StreamableHTTPServerTransport` from the MCP SDK) for a hosted, multi-user
+deployment sitting behind an OIDC-aware gateway (e.g. IBM MCP Context Forge in front of
+Keycloak) — see `docs/OIDC-RESOURCE-SERVER.md` for the full design and threat model.
 
 - **Config key**: `transport` in `vikunja-mcp.config.json` (`"stdio"` or `"http"`).
 - **Env var**: `VIKUNJA_MCP_TRANSPORT` — wins over the config file, as usual.
@@ -488,12 +490,101 @@ When `transport=http`, additional settings apply under the `http` config section
 Two endpoints are always served unauthenticated, outside the MCP path and any
 authentication middleware: `GET /healthz` (liveness) and `GET /readyz` (readiness).
 
-**`transport=http` currently refuses to start.** This item (opt-in HTTP transport
-plumbing) lands ahead of the OIDC JWT-validation middleware (a parallel, separate work
-item) that HTTP mode requires — the server must never serve unauthenticated HTTP, so
-until that middleware is registered, starting in `http` mode fails fast with a clear
-error rather than opening an unauthenticated listener. Only `transport=stdio` is
-supported for real deployments today.
+**`transport=http` refuses to start without a complete OIDC + vault configuration.** The
+server must never serve unauthenticated HTTP, so `http` mode requires ALL of: the `oidc`
+config block (below) AND a usable credential vault (a file path and a master key,
+below). Any one missing is a hard startup error — never a silent downgrade to
+no-auth. `transport=stdio` (the default) never reads any of this.
+
+### OIDC resource-server settings
+
+The server validates an incoming request's bearer token as a **pure OIDC resource
+server** — it never runs a login flow and never talks to the identity provider's token
+endpoint. It only checks the token's signature, issuer, audience, expiry, and algorithm
+against the settings below, all under the `oidc` config section / `VIKUNJA_MCP_OIDC_*`
+env vars:
+
+| Setting | Config key | Env var | Notes |
+|---|---|---|---|
+| Issuer (required) | `oidc.issuer` | `VIKUNJA_MCP_OIDC_ISSUER` | Exact-match trusted issuer, e.g. `https://iam.example.org/realms/foo` — generic, no org-specific values baked in |
+| Audience (required) | `oidc.audience` | `VIKUNJA_MCP_OIDC_AUDIENCE` | Required `aud` value(s); comma-separated list accepted, a single value stays a string |
+| JWKS URI (required) | `oidc.jwksUri` | `VIKUNJA_MCP_OIDC_JWKS_URI` | The provider's JWKS endpoint (e.g. its `/.well-known/openid-configuration`'s `jwks_uri`) |
+| Allowed algorithms | `oidc.allowedAlgs` | `VIKUNJA_MCP_OIDC_ALLOWED_ALGS` | Comma list; validator default `RS256` — `none` is never accepted regardless of this setting |
+| Clock skew (seconds) | `oidc.clockSkewSec` | `VIKUNJA_MCP_OIDC_CLOCK_SKEW_SEC` | Validator default `60`; applied to `exp`/`nbf`/`iat` |
+| Required scope | `oidc.requiredScope` | `VIKUNJA_MCP_OIDC_REQUIRED_SCOPE` | Optional coarse gate — a validly-authenticated token missing it gets `403`, not `401` |
+
+A validated token's `sub` (subject) is the per-user tenancy key the rest of this section
+depends on — see the credential vault below and `docs/OIDC-RESOURCE-SERVER.md` §3b/§3d
+for the full validation contract and per-user isolation guarantees.
+
+### Credential vault (self-service token provisioning)
+
+An OIDC access token proves *who* is calling, but Vikunja only accepts its own `tk_*` API
+tokens — there is no token exchange between the two. `oidc-http` mode therefore keeps an
+**encrypted JSON file** mapping each validated `(issuer, sub)` identity to a Vikunja
+`tk_` token, provisioned once per user through the `vikunja_auth provision` subcommand
+(see `docs/OIDC-RESOURCE-SERVER.md` §3c for the full design and threat model).
+
+| Setting | Config key | Env var | Notes |
+|---|---|---|---|
+| Vault file path (required) | `vault.path` | `VIKUNJA_MCP_VAULT_PATH` | Where the encrypted vault file lives. Not secret — just a filesystem location — but must be on a persistent volume so provisioned users survive a restart |
+| Vault master key (required, sensitive) | *(never in the config file)* | `VIKUNJA_MCP_VAULT_KEY` / `VIKUNJA_MCP_VAULT_KEY_FILE` | A base64-encoded **32-byte** AES-256-GCM key. Generate one with `openssl rand -base64 32`. Rides the `*_FILE` secrets convention below — never write it to the config file |
+
+Each vault record stores an AES-256-GCM-encrypted token (per-record random IV, verified
+authentication tag on every decrypt — a wrong key or a tampered record fails loudly
+rather than returning garbage), plus the associated Vikunja URL and
+created/updated/last-used timestamps. The raw token is never logged and the tool
+responses only ever show a masked prefix.
+
+Self-service commands (all via the `vikunja_auth` tool, oidc-http mode only):
+
+- **`provision`** — `{ apiToken, vikunjaUrl? }`. Validates the token against the live
+  Vikunja server (the same round-trip `connect` performs) *before* storing anything;
+  the identity is always read from your own validated bearer token, never from an
+  argument. `vikunjaUrl` defaults to the server's configured `VIKUNJA_URL` when omitted.
+- **`status`** — reports whether *your* identity has a linked token, its masked prefix,
+  and when it was last used. Never reveals any other user's status.
+- **`deprovision`** — removes your linked token (idempotent). Also the remedy after
+  rotating/revoking a Vikunja token: `deprovision` then `provision` the new one.
+
+In `oidc-http` mode, `connect`/`disconnect` are not available (there is no single
+server-wide token to connect) — `connect` points you at `provision`, and `disconnect`
+aliases `deprovision`.
+
+### Hosted deployment example
+
+A generic (no org-specific values) `oidc-http` deployment, config file plus environment:
+
+```json
+{
+  "transport": "http",
+  "http": {
+    "host": "127.0.0.1",
+    "port": 8765,
+    "allowedHosts": ["127.0.0.1:8765"]
+  },
+  "oidc": {
+    "issuer": "https://idp.example.org/realms/example",
+    "audience": "vikunja-mcp",
+    "jwksUri": "https://idp.example.org/realms/example/protocol/openid-connect/certs"
+  },
+  "vault": {
+    "path": "/var/lib/vikunja-mcp/vault.json"
+  }
+}
+```
+
+```env
+VIKUNJA_URL=https://vikunja.example.com/api/v1
+VIKUNJA_MCP_CONFIG=/etc/vikunja-mcp/vikunja-mcp.config.json
+VIKUNJA_MCP_VAULT_KEY_FILE=/run/secrets/vikunja_mcp_vault_key
+```
+
+The gateway (e.g. IBM MCP Context Forge) sits in front of this server, terminates the
+per-user OAuth flow against the IdP, and forwards each request with
+`Authorization: Bearer <access-token>`. This server never sees the gateway's own
+credentials and never talks to the IdP's token endpoint — see
+`docs/OIDC-RESOURCE-SERVER.md` §1 for the full topology diagram.
 
 ## Secrets Management
 
@@ -514,6 +605,7 @@ Currently sensitive variables (audited against every `process.env.*` read under 
 | Variable | `_FILE` variant |
 |---|---|
 | `VIKUNJA_API_TOKEN` | `VIKUNJA_API_TOKEN_FILE` |
+| `VIKUNJA_MCP_VAULT_KEY` (oidc-http mode's credential vault master key) | `VIKUNJA_MCP_VAULT_KEY_FILE` |
 
 Behavior:
 
@@ -614,11 +706,27 @@ VIKUNJA_MCP_TEMPLATES_FILE=/path/to/templates.json   # optional; see Templates P
 
 ### Transport Variables
 ```env
-VIKUNJA_MCP_TRANSPORT=stdio                  # stdio (default) | http; see Transport Mode (opt-in HTTP)
+VIKUNJA_MCP_TRANSPORT=stdio                  # stdio (default) | http; see Transport Mode / OIDC section
 VIKUNJA_MCP_HTTP_HOST=127.0.0.1              # http mode only; default 127.0.0.1
 VIKUNJA_MCP_HTTP_PORT=8765                   # http mode only; default 8765
 VIKUNJA_MCP_HTTP_PATH=/mcp                   # http mode only; default /mcp
 VIKUNJA_MCP_HTTP_ALLOWED_HOSTS=host:port,other:port   # http mode only; comma list, default <host>:<port>
+```
+
+### OIDC Resource-Server Variables (http mode only)
+```env
+VIKUNJA_MCP_OIDC_ISSUER=https://idp.example.org/realms/example       # required
+VIKUNJA_MCP_OIDC_AUDIENCE=vikunja-mcp                                # required; comma list accepted
+VIKUNJA_MCP_OIDC_JWKS_URI=https://idp.example.org/realms/example/protocol/openid-connect/certs  # required
+VIKUNJA_MCP_OIDC_ALLOWED_ALGS=RS256                                  # optional; comma list, default RS256
+VIKUNJA_MCP_OIDC_CLOCK_SKEW_SEC=60                                   # optional; default 60
+VIKUNJA_MCP_OIDC_REQUIRED_SCOPE=vikunja                              # optional
+```
+
+### Credential Vault Variables (http mode only)
+```env
+VIKUNJA_MCP_VAULT_PATH=/var/lib/vikunja-mcp/vault.json               # required; not secret, just a path
+VIKUNJA_MCP_VAULT_KEY=base64-32-byte-key                             # required, sensitive — or VIKUNJA_MCP_VAULT_KEY_FILE
 ```
 
 ### Logging Variables

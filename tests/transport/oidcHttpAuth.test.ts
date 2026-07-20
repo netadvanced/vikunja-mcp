@@ -7,12 +7,16 @@
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import * as crypto from 'node:crypto';
 import * as jose from 'jose';
 import {
   createOidcHttpAuthMiddleware,
   setupOidcHttpAuth,
   type OidcHttpAuthDeps,
 } from '../../src/transport/oidcHttpAuth';
+import { setActiveVaultStore } from '../../src/storage/vaultFileStore';
 import {
   getOidcAuthMiddleware,
   setOidcAuthMiddleware,
@@ -247,8 +251,25 @@ describe('createOidcHttpAuthMiddleware', () => {
 });
 
 describe('setupOidcHttpAuth', () => {
+  const originalVaultKey = process.env.VIKUNJA_MCP_VAULT_KEY;
+  let vaultPath: string;
+
+  beforeEach(() => {
+    // A valid 32-byte base64 master key (D4) — setupOidcHttpAuth fails loud
+    // without one (the vault half of the "any missing -> hard startup
+    // error" selection rule, §2), so every test in this suite needs one.
+    process.env.VIKUNJA_MCP_VAULT_KEY = crypto.randomBytes(32).toString('base64');
+    vaultPath = path.join(os.tmpdir(), `oidc-http-auth-test-vault-${Date.now()}-${Math.random()}.json`);
+  });
+
   afterEach(() => {
     setOidcAuthMiddleware(undefined);
+    setActiveVaultStore(undefined);
+    if (originalVaultKey === undefined) {
+      delete process.env.VIKUNJA_MCP_VAULT_KEY;
+    } else {
+      process.env.VIKUNJA_MCP_VAULT_KEY = originalVaultKey;
+    }
   });
 
   const joseDeps = { jwtVerify: jose.jwtVerify, createRemoteJWKSet: jose.createRemoteJWKSet };
@@ -262,6 +283,7 @@ describe('setupOidcHttpAuth', () => {
         audience: 'vikunja-mcp-ng',
         jwksUri: 'https://idp.example.test/realms/t/certs',
       },
+      { path: vaultPath },
       async () => joseDeps
     );
 
@@ -278,9 +300,40 @@ describe('setupOidcHttpAuth', () => {
         clockSkewSec: 30,
         requiredScope: 'vikunja',
       },
+      { path: vaultPath },
       async () => joseDeps
     );
 
     expect(getOidcAuthMiddleware()).toBeInstanceOf(Function);
+  });
+
+  it('throws a clear ConfigurationError when no vault master key is configured', async () => {
+    delete process.env.VIKUNJA_MCP_VAULT_KEY;
+
+    await expect(
+      setupOidcHttpAuth(
+        {
+          issuer: 'https://idp.example.test/realms/t',
+          audience: 'vikunja-mcp-ng',
+          jwksUri: 'https://idp.example.test/realms/t/certs',
+        },
+        { path: vaultPath },
+        async () => joseDeps
+      )
+    ).rejects.toThrow(/vault master key/);
+  });
+
+  it('throws a clear ConfigurationError when no vault path is configured', async () => {
+    await expect(
+      setupOidcHttpAuth(
+        {
+          issuer: 'https://idp.example.test/realms/t',
+          audience: 'vikunja-mcp-ng',
+          jwksUri: 'https://idp.example.test/realms/t/certs',
+        },
+        {},
+        async () => joseDeps
+      )
+    ).rejects.toThrow(/vault file path/);
   });
 });

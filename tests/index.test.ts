@@ -564,7 +564,12 @@ describe('Main Server Entry Point (index.ts)', () => {
           issuer: 'https://idp.example.test/realms/h1',
           audience: 'vikunja-mcp-ng',
           jwksUri: 'https://idp.example.test/realms/h1/protocol/openid-connect/certs',
-        })
+        }),
+        // Second arg: the vault config section (H2a) — passed through
+        // unconditionally regardless of whether vault env vars are set;
+        // setupOidcHttpAuth itself is responsible for failing loud if it's
+        // incomplete.
+        expect.anything()
       );
       expect(mockStartHttpTransport).toHaveBeenCalledTimes(1);
       // Ordering: middleware registered before the listener starts.

@@ -23,12 +23,19 @@
 
 import type { ServerResponse } from 'node:http';
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
-import type { OidcConfig } from '../config/types';
+import type { OidcConfig, VaultConfig } from '../config/types';
 import { createOidcJwtValidator, type OidcJwtValidator } from '../auth/oidc/jwtValidator';
 import { loadJose } from '../auth/oidc/joseLoader';
 import type { JoseDeps, OidcJwtValidatorConfig } from '../auth/oidc/types';
 import { AuthManager } from '../auth/AuthManager';
-import { OidcStubCredentialSource, type VikunjaCredentialSource } from '../auth/CredentialSource';
+import { VaultCredentialSource, type VikunjaCredentialSource } from '../auth/CredentialSource';
+import {
+  VaultFileStore,
+  resolveVaultMasterKey,
+  resolveVaultPath,
+  setActiveVaultStore,
+} from '../storage/vaultFileStore';
+import { ConfigurationError } from '../config/types';
 import {
   attachRequestContext,
   type Identity,
@@ -171,10 +178,18 @@ function toValidatorConfig(oidc: OidcConfig): OidcJwtValidatorConfig {
 
 /**
  * Production orchestration: build the JWT validator from config (loading
- * `jose`), pair it with the H1 stub credential source, and register the
+ * `jose`), construct the H2 vault-backed credential source, and register the
  * resulting middleware on the transport auth seam. Must be called before
  * `startHttpTransport` — otherwise the transport refuses to start
  * (deny-mixed-mode, §2).
+ *
+ * Fails loud (throws a `ConfigurationError`, never a silent fallback) when
+ * `oidc-http` mode has no usable vault: no `vault.path`
+ * (`VIKUNJA_MCP_VAULT_PATH`) or no master key (`VIKUNJA_MCP_VAULT_KEY[_FILE]`,
+ * `resolveVaultMasterKey`) configured. This is the vault half of the "any
+ * missing → hard startup error" selection rule (§2) — a hosted deployment
+ * must never come up serving OIDC-authenticated traffic with nowhere to
+ * store (or find) a Vikunja credential.
  *
  * `loadDeps` is injectable so this orchestration is unit-testable without a
  * real ESM `import('jose')` (which Jest's CommonJS runner cannot execute);
@@ -182,14 +197,29 @@ function toValidatorConfig(oidc: OidcConfig): OidcJwtValidatorConfig {
  */
 export async function setupOidcHttpAuth(
   oidc: OidcConfig,
+  vault: VaultConfig,
   loadDeps: () => Promise<JoseDeps> = loadJose
 ): Promise<void> {
   const deps = await loadDeps();
   const validator = createOidcJwtValidator(toValidatorConfig(oidc), deps);
-  const credentialSource = new OidcStubCredentialSource();
+
+  const vaultPath = resolveVaultPath(vault.path);
+  if (!vaultPath) {
+    throw new ConfigurationError(
+      'vault.path',
+      'oidc-http mode requires a credential vault file path. Set ' +
+        'VIKUNJA_MCP_VAULT_PATH (or the vault.path config key) to a writable ' +
+        'file location for the encrypted credential vault.',
+    );
+  }
+  const masterKey = resolveVaultMasterKey();
+  const vaultStore = new VaultFileStore(vaultPath, masterKey);
+  setActiveVaultStore(vaultStore);
+  const credentialSource = new VaultCredentialSource(vaultStore);
+
   setOidcAuthMiddleware(createOidcHttpAuthMiddleware({ validator, credentialSource }));
   logger.info(
     'OIDC HTTP authentication middleware registered (resource-server mode; ' +
-      'credentials unprovisioned until the H2 vault lands)'
+      'vault-backed credential provisioning via vikunja_auth provision)'
   );
 }

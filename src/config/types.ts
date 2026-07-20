@@ -244,6 +244,22 @@ export const OidcConfigSchema = z.object({
 
 export type OidcConfig = z.infer<typeof OidcConfigSchema>;
 
+// Credential vault configuration (docs/OIDC-RESOURCE-SERVER.md §3c, D1/D4).
+//
+// Only meaningful in `oidc-http` mode: the vault maps validated `(issuer,
+// sub)` identities to an encrypted Vikunja `tk_` token (H2's real
+// `src/storage/vaultFileStore.ts`, replacing H1's `OidcStubCredentialSource`).
+// `path` is not secret (it's just a filesystem location); the master
+// encryption key (`VIKUNJA_MCP_VAULT_KEY[_FILE]`) rides the existing `_FILE`
+// secrets convention instead (`src/config/secrets.ts`, `SENSITIVE_ENV_VARS`)
+// and is never part of this config schema — never written to the
+// config-file, only ever read from the environment.
+export const VaultConfigSchema = z.object({
+  path: z.string().min(1).optional(),
+});
+
+export type VaultConfig = z.infer<typeof VaultConfigSchema>;
+
 // Complete Application Configuration Schema
 export const ApplicationConfigSchema = z.object({
   environment: z.nativeEnum(Environment).default(Environment.DEVELOPMENT),
@@ -271,6 +287,9 @@ export const ApplicationConfigSchema = z.object({
   // registered on the transport's auth seam before the listener opens).
   // Absent in `stdio` mode, which never reads it.
   oidc: OidcConfigSchema.optional(),
+  // Credential vault path config (docs/OIDC-RESOURCE-SERVER.md §3c). Only
+  // consulted in `oidc-http` mode; `stdio` mode never reads it.
+  vault: VaultConfigSchema.default({}),
 });
 
 export type ApplicationConfig = z.infer<typeof ApplicationConfigSchema>;
