@@ -9,6 +9,19 @@ import { isAuthenticationError } from './auth-error-handler';
 
 /**
  * Simple circuit breaker registry for tracking and managing circuit breakers
+ *
+ * NOT re-keyed by identity in `oidc-http` mode (docs/OIDC-RESOURCE-SERVER.md
+ * §3d, decision D3, isolation-table row #6) — deliberately, not an
+ * oversight. Breakers are keyed per-endpoint-path and protect the *one
+ * shared upstream Vikunja instance*, not a per-user resource; per-`sub`
+ * rate-limit buckets (`src/middleware/simplified-rate-limit.ts`) already
+ * give per-user fairness independently of breaker state. One user's
+ * pathological requests can still trip a breaker for everyone — an
+ * accepted, honestly-documented cross-user coupling (§4), not a leak of
+ * per-user data (breakers hold no credentials or user-identifiable state).
+ * Revisit condition (D3): if multi-Vikunja-instance support ever lands
+ * (different users' requests routing to *different* upstream Vikunja
+ * instances), per-instance or per-sub breaker isolation becomes necessary.
  */
 class CircuitBreakerRegistry {
   private breakers = new Map<string, CircuitBreaker>();

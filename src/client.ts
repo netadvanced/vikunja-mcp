@@ -12,6 +12,7 @@ import type { AuthManager } from './auth/AuthManager';
 import { VikunjaClientFactory } from './client/VikunjaClientFactory';
 import { Mutex } from 'async-mutex';
 import { createAuthRequiredError } from './utils/error-handler';
+import { getRequestContext } from './context/requestContext';
 
 export { VikunjaClientFactory } from './client/VikunjaClientFactory';
 
@@ -101,8 +102,21 @@ class ClientContext {
 /**
  * Convenience function to get the active AuthManager from context
  * (thread-safe). See `ClientContext.getAuthManager()`.
+ *
+ * Re-pointed per docs/OIDC-RESOURCE-SERVER.md §3d (D6): when an ALS
+ * `RequestContext` is bound (`oidc-http` mode, one scope per request — see
+ * `src/context/requestContext.ts`), its per-identity `AuthManager` is
+ * returned directly, so every one of the dozens of REST-migrated call
+ * sites that already recover credentials through this accessor gets
+ * per-user isolation for free. `stdio` mode never opens an ALS scope, so
+ * `getRequestContext()` is always `undefined` there and this falls through
+ * to the original global-singleton path, unchanged.
  */
 export async function getAuthManagerFromContext(): Promise<AuthManager> {
+  const requestContext = getRequestContext();
+  if (requestContext) {
+    return requestContext.authManager;
+  }
   const context = await ClientContext.getInstanceAsync();
   return context.getAuthManager();
 }

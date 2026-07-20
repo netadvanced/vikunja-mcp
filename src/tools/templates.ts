@@ -21,6 +21,7 @@ import {
 import type { PersistedTemplateRecord } from '../storage/templateFileStore';
 import { ConfigurationManager } from '../config';
 import { logger } from '../utils/logger';
+import { getEffectiveSessionId } from '../context/requestContext';
 import { setTaskLabels } from '../utils/label-bulk';
 import { formatAorpAsMarkdown } from '../utils/response-factory';
 import { vikunjaRestRequest } from '../utils/vikunja-rest';
@@ -34,10 +35,15 @@ type VikunjaTask = components['schemas']['models.Task'];
 /**
  * Get session-scoped storage instance, hydrated from the templates
  * persistence file (if configured) on first touch for that session.
+ *
+ * The session id is `(issuer,sub)`-keyed in `oidc-http` mode and falls back
+ * to the original apiUrl+token-prefix derivation in `stdio` mode — see
+ * `getEffectiveSessionId` (docs/OIDC-RESOURCE-SERVER.md §3d, isolation-table
+ * row #4).
  */
 async function getSessionStorage(authManager: AuthManager): ReturnType<typeof storageManager.getStorage> {
   const session = authManager.getSession();
-  const sessionId = session.apiToken ? `${session.apiUrl}:${session.apiToken.substring(0, 8)}` : 'anonymous';
+  const sessionId = getEffectiveSessionId(authManager);
   const storage = await storageManager.getStorage(sessionId, session.userId, session.apiUrl);
 
   const persistPath = getTemplatesPersistPath();

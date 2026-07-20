@@ -11,6 +11,7 @@ import { MCPError, ErrorCode } from '../../types';
 import { getAuthManagerFromContext, setGlobalClientFactory } from '../../client';
 import { logger } from '../../utils/logger';
 import { storageManager } from '../../storage';
+import { getEffectiveSessionId } from '../../context/requestContext';
 import { relationSchema, handleRelationSubcommands } from '../tasks-relations';
 import { TaskFilteringOrchestrator } from './filtering';
 import type { TaskListingArgs } from './types/filters';
@@ -43,11 +44,16 @@ import { markTaskRead } from './mark-read';
 
 
 /**
- * Get session-scoped storage instance
+ * Get session-scoped storage instance.
+ *
+ * The session id is `(issuer,sub)`-keyed in `oidc-http` mode and falls back
+ * to the original apiUrl+token-prefix derivation in `stdio` mode — see
+ * `getEffectiveSessionId` (docs/OIDC-RESOURCE-SERVER.md §3d, isolation-table
+ * row #3).
  */
 async function getSessionStorage(authManager: AuthManager): ReturnType<typeof storageManager.getStorage> {
   const session = authManager.getSession();
-  const sessionId = session.apiToken ? `${session.apiUrl}:${session.apiToken.substring(0, 8)}` : 'anonymous';
+  const sessionId = getEffectiveSessionId(authManager);
   return storageManager.getStorage(sessionId, session.userId, session.apiUrl);
 }
 

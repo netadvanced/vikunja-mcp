@@ -15,6 +15,7 @@ import { Mutex } from 'async-mutex';
 import CircuitBreakerImpl from 'opossum';
 import { MCPError, ErrorCode } from '../types/errors';
 import { logger } from '../utils/logger';
+import { getCurrentIdentity, identityKey } from '../context/requestContext';
 
 /**
  * Enhanced rate limit configuration with security options
@@ -114,9 +115,22 @@ export const TOOL_CATEGORIES: Record<string, keyof ToolRateLimits> = {
 };
 
 /**
- * Get session ID for rate limiting (preserved from original implementation)
+ * Get session/bucket ID for rate limiting.
+ *
+ * Re-keyed per docs/OIDC-RESOURCE-SERVER.md §3d (D8, isolation-table row
+ * #2): in `oidc-http` mode, each validated identity gets its own bucket
+ * (`identityKey`, `"<issuer>|<sub>"`) — this is the fairness guarantee that
+ * stops one user starving others via what used to be a single
+ * per-process bucket. `stdio` mode never opens an ALS scope, so
+ * `getCurrentIdentity()` is always `undefined` there and this falls back
+ * to the original `session_${process.pid}` bucket, unchanged — a single
+ * process still gets a single bucket, exactly as today.
  */
 function getSessionId(): string {
+  const identity = getCurrentIdentity();
+  if (identity) {
+    return identityKey(identity);
+  }
   return `session_${process.pid}`;
 }
 
