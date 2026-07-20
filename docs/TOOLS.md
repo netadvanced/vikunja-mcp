@@ -188,8 +188,9 @@ narrower tool surface exposed to a client): `vikunja_task_bulk` (`operation`:
     - `set-done-bucket` - Composite: set a Kanban view's done bucket (resolves the view, updates it, and verifies the change took effect)
   - **Kanban Buckets**
     - `list-buckets` - List the Kanban buckets (columns) of a project (`id` is the project id; `projectId` is accepted as an alias for `id` — see note below)
-    - `create-bucket` - Create a new bucket (`id`, `title`, optional `limit`)
-    - `update-bucket` - Rename/reconfigure a bucket, referenced by `bucketId` or `bucketTitle`
+    - `create-bucket` - Create a new bucket (`id`, `title`, optional `limit`, optional `position`)
+    - `update-bucket` - Rename/reconfigure/reposition a bucket (`title`, `limit`, `position`), referenced by `bucketId` or `bucketTitle`
+    - `position` is Vikunja's float64 lane-order value: pick any number strictly between two buckets' positions (fractions fine) to slot a bucket between them; omit it on create and the bucket lands last
     - `delete-bucket` - Delete a bucket (dissociates its tasks, does not delete them), referenced by `bucketId` or `bucketTitle`
     - `list-view-tasks` - List a view's tasks in real server-side (Kanban card) order, with pagination
     - All Kanban operations auto-resolve `viewId` to the project's Kanban view when omitted

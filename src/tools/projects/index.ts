@@ -279,6 +279,10 @@ export function registerProjectsTool(
       bucketId: z.coerce.number().positive().optional(),
       bucketTitle: z.string().optional(),
       limit: z.coerce.number().min(0).optional(),
+      // Lane-order position for create-bucket/update-bucket. Vikunja
+      // positions are float64s — fractional values slot a bucket between
+      // two neighbors (e.g. 250 between Doing at 200 and Done at 300).
+      position: z.coerce.number().min(0).optional(),
       // Project view arguments (list-views, get-view, create-view,
       // update-view, delete-view, set-done-bucket subcommands).
       viewKind: z.enum(['list', 'gantt', 'table', 'kanban']).optional(),

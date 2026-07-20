@@ -41,6 +41,12 @@ export interface CreateBucketArgs {
   title?: string;
   /** Optional max task count for the bucket (0 = unlimited). */
   limit?: number;
+  /**
+   * Optional lane-order position. Vikunja positions are float64s — to slot a
+   * bucket between two existing ones, pick any value strictly between their
+   * positions (fractions are fine). Omitted = the server appends it last.
+   */
+  position?: number;
   /** Session id for response tracking. */
   sessionId?: string;
 }
@@ -60,6 +66,8 @@ export interface UpdateBucketArgs extends BucketRef {
   title?: string;
   /** New max task count, if changing (0 = unlimited). */
   limit?: number;
+  /** New lane-order position, if moving (see `CreateBucketArgs.position`). */
+  position?: number;
   /** Session id for response tracking. */
   sessionId?: string;
 }
@@ -97,6 +105,15 @@ type VikunjaBucket = components['schemas']['models.Bucket'];
 function validateNonNegativeInt(value: number, fieldName: string): void {
   if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
     throw new MCPError(ErrorCode.VALIDATION_ERROR, `${fieldName} must be a non-negative integer`);
+  }
+}
+
+/** Non-negative finite number check for `position` — Vikunja positions are
+ * float64s, so fractional values are valid (and are how you slot a bucket
+ * between two neighbors). */
+function validateNonNegativeNumber(value: number, fieldName: string): void {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    throw new MCPError(ErrorCode.VALIDATION_ERROR, `${fieldName} must be a non-negative number`);
   }
 }
 
@@ -251,12 +268,14 @@ export async function createBucket(
   validateId(args.id, 'id');
   if (args.viewId !== undefined) validateId(args.viewId, 'viewId');
   if (args.limit !== undefined) validateNonNegativeInt(args.limit, 'limit');
+  if (args.position !== undefined) validateNonNegativeNumber(args.position, 'position');
 
   const viewId =
     args.viewId !== undefined ? args.viewId : await resolveKanbanViewId(authManager, args.id);
 
   const body: VikunjaBucket = { title: args.title.trim() };
   if (args.limit !== undefined) body.limit = args.limit;
+  if (args.position !== undefined) body.position = args.position;
 
   const bucket = await vikunjaRestRequest<VikunjaBucket>(
     authManager,
@@ -264,6 +283,10 @@ export async function createBucket(
     `/projects/${args.id}/views/${viewId}/buckets`,
     body,
   );
+
+  const affectedFields = ['title'];
+  if (args.limit !== undefined) affectedFields.push('limit');
+  if (args.position !== undefined) affectedFields.push('position');
 
   const response = createStandardResponse(
     'create-bucket',
@@ -275,7 +298,7 @@ export async function createBucket(
     },
     {
       timestamp: new Date().toISOString(),
-      affectedFields: args.limit !== undefined ? ['title', 'limit'] : ['title'],
+      affectedFields,
     },
     args.sessionId,
   );
@@ -306,7 +329,8 @@ export async function updateBucket(
   if (args.viewId !== undefined) validateId(args.viewId, 'viewId');
   if (args.bucketId !== undefined) validateId(args.bucketId, 'bucketId');
 
-  const hasUpdateFields = args.title !== undefined || args.limit !== undefined;
+  const hasUpdateFields =
+    args.title !== undefined || args.limit !== undefined || args.position !== undefined;
   if (!hasUpdateFields) {
     throw new MCPError(
       ErrorCode.VALIDATION_ERROR,
@@ -314,6 +338,7 @@ export async function updateBucket(
     );
   }
   if (args.limit !== undefined) validateNonNegativeInt(args.limit, 'limit');
+  if (args.position !== undefined) validateNonNegativeNumber(args.position, 'position');
 
   const viewId =
     args.viewId !== undefined ? args.viewId : await resolveKanbanViewId(authManager, args.id);
@@ -329,6 +354,7 @@ export async function updateBucket(
     ...current,
     ...(args.title !== undefined && { title: args.title.trim() }),
     ...(args.limit !== undefined && { limit: args.limit }),
+    ...(args.position !== undefined && { position: args.position }),
   };
 
   const updated = await vikunjaRestRequest<VikunjaBucket>(
@@ -341,6 +367,7 @@ export async function updateBucket(
   const affectedFields: string[] = [];
   if (args.title !== undefined) affectedFields.push('title');
   if (args.limit !== undefined) affectedFields.push('limit');
+  if (args.position !== undefined) affectedFields.push('position');
 
   const response = createStandardResponse(
     'update-bucket',

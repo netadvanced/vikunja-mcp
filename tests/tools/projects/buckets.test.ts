@@ -327,6 +327,26 @@ describe('createBucket', () => {
     expect(init.body).toBe(JSON.stringify({ title: 'Doing', limit: 5 }));
   });
 
+  it('throws when position is negative', async () => {
+    await expect(
+      createBucket({ id: 5, viewId: 11, title: 'Blocked', position: -1 }, authManager),
+    ).rejects.toThrow('position must be a non-negative number');
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('includes position in the payload when provided (fractional values allowed)', async () => {
+    mockFetch.mockResolvedValueOnce(
+      mockResponse({ text: JSON.stringify({ id: 202, title: 'Blocked', position: 250.5 }) }),
+    );
+
+    await createBucket({ id: 5, viewId: 11, title: 'Blocked', position: 250.5 }, authManager);
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://vikunja.test/api/v1/projects/5/views/11/buckets');
+    expect(init.body).toBe(JSON.stringify({ title: 'Blocked', position: 250.5 }));
+  });
+
   it('propagates an HTTP error from the create request', async () => {
     mockFetch.mockResolvedValueOnce(
       mockResponse({ ok: false, status: 400, statusText: 'Bad Request', text: 'invalid bucket' }),
@@ -457,6 +477,34 @@ describe('updateBucket', () => {
     expect(urls[0]).toBe('https://vikunja.test/api/v1/projects/5/views');
     expect(urls[1]).toBe('https://vikunja.test/api/v1/projects/5/views/11/buckets');
     expect(urls[2]).toBe('https://vikunja.test/api/v1/projects/5/views/11/buckets/100');
+  });
+
+  it('throws when position is negative', async () => {
+    await expect(
+      updateBucket({ id: 5, viewId: 11, bucketId: 100, position: -0.5 }, authManager),
+    ).rejects.toThrow('position must be a non-negative number');
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('accepts position as the sole update field and overlays it on the merged model', async () => {
+    mockFetch
+      .mockResolvedValueOnce(mockResponse({ text: currentBuckets }))
+      .mockResolvedValueOnce(
+        mockResponse({ text: JSON.stringify({ id: 100, title: 'Backlog', position: 250 }) }),
+      );
+
+    await updateBucket({ id: 5, viewId: 11, bucketId: 100, position: 250 }, authManager);
+
+    const [, postInit] = mockFetch.mock.calls[1] as [string, RequestInit];
+    expect(postInit.body).toBe(
+      JSON.stringify({
+        id: 100,
+        title: 'Backlog',
+        project_view_id: 11,
+        position: 250,
+        limit: 0,
+      }),
+    );
   });
 });
 
