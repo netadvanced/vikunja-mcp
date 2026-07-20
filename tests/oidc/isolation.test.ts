@@ -35,7 +35,15 @@ import * as os from 'os';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { AuthManager } from '../../src/auth/AuthManager';
-import { getAuthManagerFromContext, ClientContext } from '../../src/client';
+import {
+  getAuthManagerFromContext,
+  setGlobalClientFactory,
+  clearGlobalClientFactory,
+  VikunjaClientFactory,
+  ClientContext,
+} from '../../src/client';
+import { registerTasksTool } from '../../src/tools/tasks';
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import {
   runWithRequestContext,
   getCurrentIdentity,
@@ -485,6 +493,145 @@ describe('Cross-user leak test matrix (§3d)', () => {
       );
 
       expect(resolved.getSession().apiToken).toBe('tk_a-real-1234567890');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Credential-threading fix (docs/OIDC-RESOURCE-SERVER.md §3d, D6 row-1 risk).
+  //
+  // The tests above prove `getAuthManagerFromContext()` RESOLVES the right
+  // per-identity manager. They do NOT prove the resolved credential actually
+  // reaches the wire: a tool handler captures the process-global closure
+  // `AuthManager` at registerTools() time and passes THAT into
+  // `vikunjaRestRequest()`, so before the central fix a provisioned identity's
+  // REST call went out under the global token, not its own vaulted one. That
+  // gap is invisible to a resolution-only assertion — it only shows up when a
+  // REAL registered tool is driven end-to-end and the `Authorization` header
+  // actually sent to `fetch` is inspected. This block is that guard.
+  // ---------------------------------------------------------------------------
+  describe('Credential threading: a real tool sends each identity its OWN vaulted token', () => {
+    const GLOBAL_TOKEN = 'tk_process-global-closure-token';
+    let globalAuthManager: AuthManager;
+    let capturedHandler: (args: unknown) => Promise<unknown>;
+    let capturedAuthHeaders: string[];
+    let fetchSpy: jest.SpiedFunction<typeof fetch>;
+    let tmpDir: string;
+    let vault: VaultFileStore;
+    let credentialSource: VaultCredentialSource;
+
+    // Build a per-identity AuthManager exactly as the oidc-http auth
+    // middleware does (src/transport/oidcHttpAuth.ts): look the identity up in
+    // the real vault, then connect a fresh manager with the vaulted token.
+    function boundManagerFor(identity: Identity): AuthManager {
+      const credential = credentialSource.getCredential(identity);
+      const am = new AuthManager();
+      if (credential) {
+        am.connect(credential.apiUrl, credential.apiToken, credential.authType);
+      }
+      return am;
+    }
+
+    beforeEach(async () => {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'isolation-cred-thread-'));
+      vault = new VaultFileStore(path.join(tmpDir, 'vault.json'), crypto.randomBytes(32));
+      credentialSource = new VaultCredentialSource(vault);
+      await vault.provision(identityA, 'https://vikunja.example/api/v1', 'tk_a-real-1234567890');
+      await vault.provision(identityB, 'https://vikunja.example/api/v1', 'tk_b-real-1234567890');
+
+      // The process-global closure manager the tool captures at registration —
+      // in oidc-http mode this must NEVER be the manager whose token goes out.
+      globalAuthManager = new AuthManager();
+      globalAuthManager.connect('https://vikunja.example/api/v1', GLOBAL_TOKEN);
+
+      // Register the REAL vikunja_tasks tool against a capturing server; grab
+      // the dispatch handler exactly as MCP would invoke it.
+      const captureServer = {
+        tool: (...toolArgs: unknown[]) => {
+          capturedHandler = toolArgs[toolArgs.length - 1] as typeof capturedHandler;
+        },
+      } as unknown as McpServer;
+      registerTasksTool(captureServer, globalAuthManager);
+
+      // Only `fetch` is mocked — client.ts, the ALS context, vikunja-rest, and
+      // the tool handler all run for real. Capture the Authorization header of
+      // every outbound request and return a minimal valid task.
+      capturedAuthHeaders = [];
+      fetchSpy = jest
+        .spyOn(global, 'fetch')
+        .mockImplementation(async (_url: unknown, init?: unknown) => {
+          const headers = ((init as { headers?: Record<string, string> } | undefined)?.headers ??
+            {}) as Record<string, string>;
+          capturedAuthHeaders.push(headers.Authorization ?? headers.authorization ?? '');
+          // A short, jittered delay so genuinely-concurrent invocations are
+          // both in-flight at once — proving ALS keeps their credentials
+          // separate across the await, not just when run sequentially.
+          await new Promise((resolve) => setTimeout(resolve, 5 + Math.random() * 10));
+          return {
+            ok: true,
+            status: 200,
+            statusText: 'OK',
+            text: async () => JSON.stringify({ id: 1, title: 'a task' }),
+          } as unknown as Response;
+        });
+    });
+
+    afterEach(async () => {
+      fetchSpy.mockRestore();
+      await clearGlobalClientFactory();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it("A's request carries A's vaulted token and B's carries B's — never the process-global token", async () => {
+      await runWithRequestContext(
+        { identity: identityA, authManager: boundManagerFor(identityA) },
+        () => capturedHandler({ subcommand: 'get', id: 1 }),
+      );
+      const headerAfterA = capturedAuthHeaders.at(-1);
+
+      await runWithRequestContext(
+        { identity: identityB, authManager: boundManagerFor(identityB) },
+        () => capturedHandler({ subcommand: 'get', id: 1 }),
+      );
+      const headerAfterB = capturedAuthHeaders.at(-1);
+
+      expect(headerAfterA).toBe('Bearer tk_a-real-1234567890');
+      expect(headerAfterB).toBe('Bearer tk_b-real-1234567890');
+      // The core leak assertion: the process-global closure token never went out.
+      expect(capturedAuthHeaders).not.toContain(`Bearer ${GLOBAL_TOKEN}`);
+      for (const header of capturedAuthHeaders) {
+        expect(header).not.toContain(GLOBAL_TOKEN);
+      }
+    });
+
+    it('interleaved concurrent A/B tool invocations never cross tokens on the wire', async () => {
+      await Promise.all([
+        runWithRequestContext(
+          { identity: identityA, authManager: boundManagerFor(identityA) },
+          () => capturedHandler({ subcommand: 'get', id: 1 }),
+        ),
+        runWithRequestContext(
+          { identity: identityB, authManager: boundManagerFor(identityB) },
+          () => capturedHandler({ subcommand: 'get', id: 1 }),
+        ),
+      ]);
+
+      // Exactly the two identities' own tokens went out (order nondeterministic
+      // under the jittered delay) — no duplication onto one identity (which is
+      // what a crossed ALS scope would produce) and never the process global.
+      expect(capturedAuthHeaders).toHaveLength(2);
+      expect(capturedAuthHeaders).toContain('Bearer tk_a-real-1234567890');
+      expect(capturedAuthHeaders).toContain('Bearer tk_b-real-1234567890');
+      expect(capturedAuthHeaders).not.toContain(`Bearer ${GLOBAL_TOKEN}`);
+    });
+
+    it('stdio regression: with NO ALS scope, the same tool sends the process-global token, byte-for-byte unchanged', async () => {
+      // stdio mode: no request context is ever bound, and the global client
+      // factory holds the one process-wide manager (src/index.ts bootstrap).
+      await setGlobalClientFactory(new VikunjaClientFactory(globalAuthManager));
+
+      await capturedHandler({ subcommand: 'get', id: 1 });
+
+      expect(capturedAuthHeaders.at(-1)).toBe(`Bearer ${GLOBAL_TOKEN}`);
     });
   });
 });

@@ -110,9 +110,23 @@ async function verifyConnection(
   apiUrl: string,
   authType: 'api-token' | 'jwt',
 ): Promise<string | undefined> {
+  // `verifyConnection` always probes with the EXPLICITLY-passed manager — the
+  // stdio `connect` session, or `provision`'s throwaway holding the candidate
+  // token being validated before it is stored. In oidc-http mode an ALS
+  // RequestContext is bound during `provision`, but the central
+  // credential-threading resolver (src/utils/vikunja-rest.ts) would otherwise
+  // substitute the calling identity's still-unprovisioned ALS manager here,
+  // defeating the whole point of the probe — so opt out via ignoreRequestContext.
+  const verifyOptions = { ignoreRequestContext: true } as const;
   let info: VikunjaInfoResponse;
   try {
-    info = await vikunjaRestRequest<VikunjaInfoResponse>(authManager, 'GET', '/info');
+    info = await vikunjaRestRequest<VikunjaInfoResponse>(
+      authManager,
+      'GET',
+      '/info',
+      undefined,
+      verifyOptions,
+    );
   } catch (error) {
     authManager.disconnect();
     throw new MCPError(
@@ -125,9 +139,9 @@ async function verifyConnection(
 
   try {
     if (authType === 'jwt') {
-      await vikunjaRestRequest(authManager, 'GET', '/user');
+      await vikunjaRestRequest(authManager, 'GET', '/user', undefined, verifyOptions);
     } else {
-      await vikunjaRestRequest(authManager, 'GET', '/projects?per_page=1');
+      await vikunjaRestRequest(authManager, 'GET', '/projects?per_page=1', undefined, verifyOptions);
     }
   } catch (error) {
     authManager.disconnect();

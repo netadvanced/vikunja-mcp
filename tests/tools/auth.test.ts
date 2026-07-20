@@ -164,11 +164,18 @@ describe('Auth Tool', () => {
       // Connect verification round trip: unauthenticated GET /info, then a
       // cheap authenticated call. API tokens can't use /user (see
       // docs/VIKUNJA_API_ISSUES.md #2), so /projects is used instead.
-      expect(mockVikunjaRestRequest).toHaveBeenCalledWith(mockAuthManager, 'GET', '/info');
+      // verifyConnection probes with ignoreRequestContext so the central
+      // credential-threading resolver (src/utils/vikunja-rest.ts) never
+      // substitutes a request-context manager for the connect/throwaway one.
+      expect(mockVikunjaRestRequest).toHaveBeenCalledWith(mockAuthManager, 'GET', '/info', undefined, {
+        ignoreRequestContext: true,
+      });
       expect(mockVikunjaRestRequest).toHaveBeenCalledWith(
         mockAuthManager,
         'GET',
         '/projects?per_page=1',
+        undefined,
+        { ignoreRequestContext: true },
       );
       expect(markdown).toContain('1.2.3');
     });
@@ -182,12 +189,18 @@ describe('Auth Tool', () => {
         apiToken: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.test.signature',
       });
 
-      expect(mockVikunjaRestRequest).toHaveBeenCalledWith(mockAuthManager, 'GET', '/info');
-      expect(mockVikunjaRestRequest).toHaveBeenCalledWith(mockAuthManager, 'GET', '/user');
+      expect(mockVikunjaRestRequest).toHaveBeenCalledWith(mockAuthManager, 'GET', '/info', undefined, {
+        ignoreRequestContext: true,
+      });
+      expect(mockVikunjaRestRequest).toHaveBeenCalledWith(mockAuthManager, 'GET', '/user', undefined, {
+        ignoreRequestContext: true,
+      });
       expect(mockVikunjaRestRequest).not.toHaveBeenCalledWith(
         mockAuthManager,
         'GET',
         '/projects?per_page=1',
+        undefined,
+        { ignoreRequestContext: true },
       );
     });
 
@@ -1030,7 +1043,9 @@ describe('Auth Tool', () => {
           vikunjaUrl: 'https://vikunja.example.com',
         });
 
-        expect(mockVikunjaRestRequest).toHaveBeenCalledWith(expect.anything(), 'GET', '/info');
+        expect(mockVikunjaRestRequest).toHaveBeenCalledWith(expect.anything(), 'GET', '/info', undefined, {
+          ignoreRequestContext: true,
+        });
         expect(mockVault.provision).toHaveBeenCalledWith(
           identity,
           'https://vikunja.example.com',
