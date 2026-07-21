@@ -25,8 +25,7 @@ import { getClientFromContext, getAuthManagerFromContext } from '../../src/clien
 // Import AORP test helpers
 import { extractTasksData, extractTaskData, expectAorpSuccess, expectAorpError, getAorpData, getAorpMetadata } from '../utils/aorp-test-helpers';
 import { parseMarkdown } from '../utils/markdown';
-import * as retryUtils from '../../src/utils/retry';
-import { circuitBreakerRegistry } from '../../src/utils/retry';
+import { withRetry, circuitBreakerRegistry } from '../../src/utils/retry';
 
 // Mock the modules. getAuthManagerFromContext is used by setTaskLabels
 // (src/utils/label-bulk.ts, migrated to direct REST) — any test that
@@ -2836,7 +2835,20 @@ describe('Tasks Tool', () => {
     // implementation here would make these tests order-dependent on unrelated global
     // breaker state. Bypass it the same way tests/tools/tasks/bulk-operations.test.ts
     // does, so each test only exercises the mocked client call it configured.
-    let withRetrySpy: ReturnType<typeof jest.spyOn>;
+    //
+    // IMPORTANT: `withRetry` here is already a jest.fn() (see the top-level
+    // `jest.mock('../../src/utils/retry', ...)` factory above), not a real
+    // implementation. `jest.spyOn` on a property that is already a mock
+    // function does not wrap it — it hands back the same mock and never
+    // records an "original" to restore to. Calling `.mockRestore()` on it
+    // later therefore silently degrades to `.mockReset()`, which wipes the
+    // module-level bypass implementation and breaks unrelated sibling
+    // describes (see removed workaround previously in the 'duplicate'/
+    // 'mark-read' describes below). Reassigning the implementation directly
+    // — the same idiom bulk-operations.test.ts uses — avoids the spy
+    // entirely, so there's nothing to (mis-)restore. `jest.clearAllMocks()`
+    // (top-level beforeEach) only clears calls/results, never the
+    // implementation, so setting this here is enough for the whole file.
     // Bulk core ops (PUT /projects/{id}/tasks create, DELETE /tasks/{id}
     // cleanup) go through vikunjaRestRequest -> fetch after the #70
     // migration, routed back to the node-vikunja `mockClient.tasks` methods.
@@ -2847,9 +2859,9 @@ describe('Tasks Tool', () => {
     let originalFetch: typeof fetch;
 
     beforeEach(() => {
-      withRetrySpy = jest
-        .spyOn(retryUtils, 'withRetry')
-        .mockImplementation((operation: () => Promise<unknown>) => operation());
+      (withRetry as jest.Mock).mockImplementation((operation: () => Promise<unknown>) =>
+        operation(),
+      );
 
       originalFetch = globalThis.fetch;
       labelWrite = jest.fn().mockResolvedValue(undefined);
@@ -2859,7 +2871,6 @@ describe('Tasks Tool', () => {
     });
 
     afterEach(() => {
-      withRetrySpy.mockRestore();
       globalThis.fetch = originalFetch;
     });
 
@@ -3215,20 +3226,6 @@ describe('Tasks Tool', () => {
   });
 
   describe('duplicate subcommand', () => {
-    // Defensive: a sibling describe block ('bulk-create subcommand') spies
-    // on retryUtils.withRetry via jest.spyOn(...).mockImplementation(...)
-    // and later calls .mockRestore(). Restoring a spy that was layered over
-    // an already-mocked module export (this file's top-level jest.mock on
-    // '../../src/utils/retry') does not reliably reinstate the file-level
-    // mock's own bypass implementation — it can leave withRetry a no-op
-    // that resolves to undefined without invoking its argument. Since
-    // duplicate/mark-read go through vikunjaRestRequest -> withRetry, that
-    // silently short-circuits fetch entirely. Reassert the intended bypass
-    // behavior here rather than relying on hook ordering across describes.
-    beforeEach(() => {
-      (retryUtils.withRetry as jest.Mock).mockImplementation((fn: () => Promise<unknown>) => fn());
-    });
-
     it('duplicates a task via PUT /tasks/{id}/duplicate (no body)', async () => {
       mockFetch.mockResolvedValueOnce(
         jsonResponse({ duplicated_task: { id: 42, title: 'Copy of Task 1' } }),
@@ -3255,11 +3252,6 @@ describe('Tasks Tool', () => {
   });
 
   describe('mark-read subcommand', () => {
-    // See the matching comment in 'duplicate subcommand' above.
-    beforeEach(() => {
-      (retryUtils.withRetry as jest.Mock).mockImplementation((fn: () => Promise<unknown>) => fn());
-    });
-
     it('marks a task as read via POST /tasks/{id}/read', async () => {
       mockFetch.mockResolvedValueOnce(jsonResponse({ taskID: 1, userID: 3 }));
 

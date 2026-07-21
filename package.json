@@ -18,9 +18,9 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "node --max-old-space-size=4096 ./node_modules/typescript/bin/tsc",
-    "test": "jest --silent",
-    "test:watch": "jest --watch --silent",
-    "test:coverage": "jest --coverage --silent",
+    "test": "NODE_OPTIONS=\"--require ./tests/setup/suppress-webstorage-warning.js\" jest --silent",
+    "test:watch": "NODE_OPTIONS=\"--require ./tests/setup/suppress-webstorage-warning.js\" jest --watch --silent",
+    "test:coverage": "NODE_OPTIONS=\"--require ./tests/setup/suppress-webstorage-warning.js\" jest --coverage --silent",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src --ext .ts --config eslint.config.mjs",
     "format:src": "prettier --write 'src/**/*.ts'",
@@ -102,31 +102,6 @@
     "ts-jest": "^29.4.1",
     "tsx": "^4.0.0",
     "typescript": "^5.0.0"
-  },
-  "jest": {
-    "preset": "ts-jest",
-    "testEnvironment": "node",
-    "roots": [
-      "<rootDir>/src",
-      "<rootDir>/tests"
-    ],
-    "testMatch": [
-      "**/__tests__/**/*.ts",
-      "**/?(*.)+(spec|test).ts"
-    ],
-    "collectCoverageFrom": [
-      "src/**/*.ts",
-      "!src/**/*.d.ts",
-      "!src/**/__tests__/**"
-    ],
-    "coverageThreshold": {
-      "global": {
-        "branches": 80,
-        "functions": 78,
-        "lines": 89,
-        "statements": 89
-      }
-    }
   },
   "overrides": {
     "zod": "^3.25.28",
