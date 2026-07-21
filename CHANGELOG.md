@@ -15,6 +15,53 @@ Nothing yet.
 
 
 
+
+## [0.5.2] - 2026-07-22
+
+A maintenance patch: sharing and filter bug fixes, a dependency security bump, and the
+under-the-hood groundwork for Vikunja 2.4.0. The announced, hardened *"optimised for Vikunja 2.4"*
+alignment — battle-tested, with v2 API fast-paths — is the upcoming **0.6.0** milestone; this
+release only lays the groundwork and does not yet claim it.
+
+### Added
+
+- **Bucket position** — `vikunja_projects` create-bucket / update-bucket now accept an optional
+  `position` argument to control kanban bucket ordering. Contributed by @angusmaul (#122).
+
+### Changed
+
+- **Vikunja 2.4.0 groundwork.** The e2e/version-matrix default pin moved `2.3.0` → `2.4.0`, the
+  vendored OpenAPI spec was refreshed directly from the pinned 2.4.0 container and types
+  regenerated (the only surface change: five creation endpoints corrected `200` → `201`), and the
+  known `GET /tasks/{id}/assignees` server-drift tolerance is now version-gated — a hard failure on
+  2.4.0+, where the upstream 500 is fixed. Minimum supported Vikunja remains **2.3.0**.
+
+### Fixed
+
+- **Sharing:** creating a link share now rejects a `name`/`title` mix-up instead of silently
+  producing an unnamed share, and a `GET`-by-id on a just-created share no longer 404s (worked
+  around an upstream link-share hash-vs-id bug by routing through the list endpoint) (#133).
+- **Filters:** raw filter strings are now always re-serialized through the server-boundary field
+  translation, so client-facing field names round-trip correctly instead of being rejected by the
+  server's parser (#129).
+
+### Removed
+
+- Dropped the unused `better-sqlite3` dependency (declared but never imported).
+
+### Security
+
+- Overrode transitive `js-yaml` to `>=4.2.1`, clearing GHSA-52cp-r559-cp3m (a dev-scope
+  quadratic-CPU advisory). `npm audit` reports zero vulnerabilities.
+
+### Internal
+
+- Docs: ground-up rewrite of `RELEASING.md` (including the mandatory pre-tag checklist) and a full
+  audit refresh of `ROADMAP.md`; 2.4.0 API-coverage re-audit (no new endpoint surface); OIDC
+  resource-server design doc added for a future OIDC mode.
+- Test/CI: fixed the `spyOn`/`mockRestore` root cause and silenced localStorage teardown noise;
+  bumped the release-workflow actions to current majors.
+
 ## [0.5.1] - 2026-07-20
 
 First release published via npm Trusted Publishing (OIDC) from the tag-triggered GitHub Actions workflow — no tokens, with provenance attestation. Docker images now also publish to ghcr.io automatically.

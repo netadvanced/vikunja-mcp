@@ -212,6 +212,16 @@ How this project tracks new upstream Vikunja releases, proven end-to-end alignin
    server baseline the tool contract is validated against, never a patch. Lead the changelog entry
    with *"now aligned to Vikunja X.Y.Z"*.
 
+> **Owner-discretion exception (pre-1.0).** The "alignment ⇒ minor" rule above governs the release
+> that *announces* alignment to users — the one whose changelog leads with *"now aligned to Vikunja
+> X.Y.Z"*. Pre-1.0, the owner may let the mechanical **groundwork** for an alignment (the pin bump,
+> spec/type refresh, drift-gating) ride along in a patch release *without* claiming the alignment
+> headline, deferring the announced-and-hardened alignment milestone to a later minor. This was
+> exercised for `0.5.2` (2026-07-22): it carried the 2.4.0 groundwork plus additive/non-breaking
+> fixes as a patch, while `0.6.0` was reserved as the deliberate *"optimised for Vikunja 2.4"*
+> milestone (battle-hardening + v2 API fast-paths). Use sparingly and only when nothing a caller
+> relies on changes; the default remains a minor.
+
 **Compat tag semantics.** Every release's Docker image carries the aligned Vikunja version as a
 suffix on its own version, never as a standalone tag: `X.Y.Z-vikunja<A.B.C>` (e.g. `0.5.1` aligned
 to `2.4.0` → `:0.5.1-vikunja2.4.0`), the same convention as `node:20-alpine`. This is deliberate:
