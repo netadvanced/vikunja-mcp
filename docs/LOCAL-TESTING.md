@@ -493,7 +493,7 @@ that file's comment for the exact revisit condition.
    and `docker/e2e/bootstrap.sh`'s matching default — then re-run `npm run
    test:matrix` with no override to confirm the new default is green.
 5. Cut a **minor** release aligned to the new Vikunja version, per
-   `docs/RELEASING.md` §7's Docker compatibility-tag scheme (`X.Y.Z`,
+   `docs/RELEASING.md` §3's Docker compatibility-tag scheme (`X.Y.Z`,
    `X.Y.Z-vikunja<A.B.C>`, `latest`) — changing the base Vikunja version
    this project targets is always at least a minor bump (see
    `docs/RELEASING.md` §1).

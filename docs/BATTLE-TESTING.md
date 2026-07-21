@@ -315,17 +315,18 @@ composite-tool improvement waves directly -- when a friction pattern
 recurs across multiple runs of the same scenario, that's the signal to act
 on, not a single run's noise.
 
-## Intended eventual home: the release checklist
+## Its place in the release checklist
 
-This harness is not yet part of `docs/RELEASING.md`'s "Release checklist"
-(§3) -- it's new, costs real money per run, and its friction heuristics
+This harness is now part of `docs/RELEASING.md`'s pre-tag checklist (§2,
+Step 4, "Battle smoke"): at minimum the cheapest scenario
+(`single-task-smoke`) runs before every release, and the full scenario
+library (`--all`) runs when a release changes tool descriptions, argument
+shapes, error messages, or subcommands. Its friction heuristics
 (validation-error pattern matching, the retry definition, etc.) are still
-young enough to want a few more real runs before treating them as
-load-bearing. The intent is for a human to run the full library once per
-release candidate, eyeball the friction report for regressions or new
-composite-tool candidates, and eventually add that as a documented step in
-`docs/RELEASING.md` -- not an automated gate (it spawns a paid agent
-session; it must never become something CI or a hook runs unattended).
+evolving with real runs, so read the friction report with that in mind
+rather than treating a single run's noise as load-bearing. It remains
+explicitly **not an automated gate** -- it spawns a paid agent session and
+must never become something CI or a hook runs unattended.
 
 ## Re-deriving the transcript shape
 
