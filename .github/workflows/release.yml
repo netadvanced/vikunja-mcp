@@ -79,6 +79,9 @@ jobs:
       - name: Publish to npm (OIDC trusted publishing, provenance automatic)
         run: npm publish --access public
 
+      - name: Set up QEMU (for cross-building linux/arm64)
+        uses: docker/setup-qemu-action@v3
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
@@ -114,6 +117,7 @@ jobs:
         with:
           context: .
           push: true
+          platforms: linux/amd64,linux/arm64
           tags: |
             ghcr.io/netadvanced/vikunja-mcp-ng:${{ steps.version.outputs.value }}
             ghcr.io/netadvanced/vikunja-mcp-ng:latest
