@@ -492,6 +492,141 @@ describe('Labels Tool', () => {
     });
   });
 
+  describe('Ensure Label', () => {
+    it('should validate title is required', async () => {
+      await expect(
+        mockHandler({
+          subcommand: 'ensure',
+        }),
+      ).rejects.toThrow('Title is required');
+    });
+
+    it('reuses an existing label on an exact title match (reuse-hit)', async () => {
+      const existingLabel = { id: 7, title: 'Bug', hex_color: '#ff0000' };
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: [existingLabel] }));
+
+      const result = await mockHandler({
+        subcommand: 'ensure',
+        title: 'Bug',
+      });
+
+      // Only the search GET should fire — no PUT create call.
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://vikunja.example.com/api/v1/labels?s=Bug',
+        expect.objectContaining({ method: 'GET' }),
+      );
+      const markdown = result.content[0].text;
+      parseMarkdown(markdown);
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('ensure-label');
+      expect(markdown).toContain('Label "Bug" already exists (reused)');
+    });
+
+    it('creates a new label when no match is found (create-miss)', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: [] }));
+      const createdLabel = { id: 42, title: 'Urgent' };
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: createdLabel }));
+
+      const result = await mockHandler({
+        subcommand: 'ensure',
+        title: 'Urgent',
+      });
+
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(mockFetch).toHaveBeenNthCalledWith(
+        1,
+        'https://vikunja.example.com/api/v1/labels?s=Urgent',
+        expect.objectContaining({ method: 'GET' }),
+      );
+      expect(mockFetch).toHaveBeenNthCalledWith(
+        2,
+        'https://vikunja.example.com/api/v1/labels',
+        expect.objectContaining({ method: 'PUT' }),
+      );
+      const [, init] = mockFetch.mock.calls[1] as [string, RequestInit];
+      expect(JSON.parse(init.body as string)).toEqual({ title: 'Urgent' });
+      const markdown = result.content[0].text;
+      parseMarkdown(markdown);
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('ensure-label');
+      expect(markdown).toContain('Label "Urgent" did not exist, created it');
+    });
+
+    it('passes description/hexColor through when creating on a miss', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: [] }));
+      const createdLabel = { id: 43, title: 'Priority', description: 'High priority', hex_color: '#00ff00' };
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: createdLabel }));
+
+      await mockHandler({
+        subcommand: 'ensure',
+        title: 'Priority',
+        description: 'High priority',
+        hexColor: '#00ff00',
+      });
+
+      const [, init] = mockFetch.mock.calls[1] as [string, RequestInit];
+      expect(JSON.parse(init.body as string)).toEqual({
+        title: 'Priority',
+        description: 'High priority',
+        hex_color: '#00ff00',
+      });
+    });
+
+    it('matches an existing title case-insensitively (case-insensitive match)', async () => {
+      const existingLabel = { id: 9, title: 'URGENT' };
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: [existingLabel] }));
+
+      const result = await mockHandler({
+        subcommand: 'ensure',
+        title: 'urgent',
+      });
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      const markdown = result.content[0].text;
+      expect(markdown).toContain('Label "URGENT" already exists (reused)');
+    });
+
+    it('does not match on a substring search result that is not an exact title (dedupe)', async () => {
+      // The search endpoint is a substring match, so searching "Bug" can
+      // return "Bugfix" too — ensure must not treat that as a hit, and must
+      // pick the first genuine exact match deterministically when more than
+      // one exists (e.g. duplicate labels differing only by case).
+      const candidates = [
+        { id: 1, title: 'Bugfix' },
+        { id: 2, title: 'Bug' },
+        { id: 3, title: 'bug' },
+      ];
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: candidates }));
+
+      const result = await mockHandler({
+        subcommand: 'ensure',
+        title: 'Bug',
+      });
+
+      // No create call: an exact (case-insensitive) match exists.
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      const markdown = result.content[0].text;
+      expect(markdown).toContain('Label "Bug" already exists (reused)');
+      expect(markdown).not.toContain('"id": 3');
+    });
+
+    it('treats a null/undefined search response as no match and creates the label', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: null }));
+      const createdLabel = { id: 44, title: 'Fresh' };
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: createdLabel }));
+
+      const result = await mockHandler({
+        subcommand: 'ensure',
+        title: 'Fresh',
+      });
+
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      const markdown = result.content[0].text;
+      expect(markdown).toContain('Label "Fresh" did not exist, created it');
+    });
+  });
+
   describe('Error Handling', () => {
     it('should handle unknown subcommand', async () => {
       await expect(
@@ -546,6 +681,9 @@ describe('Labels Tool', () => {
       ).toBe(true);
       expect(
         isReadOnlyRejection(await callAndCatch(mockHandler, { subcommand: 'delete', id: 1 })),
+      ).toBe(true);
+      expect(
+        isReadOnlyRejection(await callAndCatch(mockHandler, { subcommand: 'ensure', title: 'x' })),
       ).toBe(true);
     });
 

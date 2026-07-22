@@ -443,6 +443,7 @@ interface FlowContext {
   projectId?: number;
   taskId?: number;
   labelId?: number;
+  ensureLabelId?: number;
   filterId?: number;
   selfUserId?: number;
   bucketId?: number;
@@ -1014,6 +1015,53 @@ async function testLabels(h: McpHarness, ctx: FlowContext): Promise<void> {
       list.text.slice(0, 300),
     );
   }
+
+  // ensure-label composite (E-item, friction #4): "attach a label by name"
+  // should collapse to one get-or-create call instead of list+match+create.
+  // First call creates (no matching label exists yet under this fresh
+  // title); the second call, with the identical title, must reuse the same
+  // id instead of creating a duplicate.
+  const ensureTitle = `${NAME_PREFIX}ensure-label`;
+  const ensureFirst = await h.call('vikunja_labels', { subcommand: 'ensure', title: ensureTitle });
+  if (!assertOk('ensure-label (first call, create-miss)', ensureFirst)) return;
+  assertStep(
+    'ensure-label first call reports a create, not a reuse',
+    ensureFirst.text.includes('did not exist, created it'),
+    ensureFirst.text.slice(0, 300),
+  );
+  ctx.ensureLabelId = extractId(ensureFirst.text);
+  if (!ctx.ensureLabelId) {
+    fail('ensure-label (id extraction)', `could not extract label id from: ${ensureFirst.text.slice(0, 300)}`);
+    return;
+  }
+
+  const ensureSecond = await h.call('vikunja_labels', { subcommand: 'ensure', title: ensureTitle });
+  if (assertOk('ensure-label (second call, reuse-hit)', ensureSecond)) {
+    assertStep(
+      'ensure-label second call reports a reuse, not a create',
+      ensureSecond.text.includes('already exists (reused)'),
+      ensureSecond.text.slice(0, 300),
+    );
+    assertStep(
+      'ensure-label second call reuses the same id as the first',
+      extractId(ensureSecond.text) === ctx.ensureLabelId,
+      `first=${ctx.ensureLabelId} second=${extractId(ensureSecond.text)}`,
+    );
+  }
+
+  // Same title, different case: still expected to reuse (case-insensitive
+  // exact-title match), not create a third label.
+  const ensureThird = await h.call('vikunja_labels', {
+    subcommand: 'ensure',
+    title: ensureTitle.toUpperCase(),
+  });
+  if (assertOk('ensure-label (third call, case-insensitive reuse)', ensureThird)) {
+    assertStep(
+      'ensure-label third call (different case) still reuses the same id',
+      extractId(ensureThird.text) === ctx.ensureLabelId,
+      `first=${ctx.ensureLabelId} third=${extractId(ensureThird.text)}`,
+    );
+  }
 }
 
 async function testAssignees(h: McpHarness, ctx: FlowContext): Promise<void> {
@@ -1388,6 +1436,15 @@ async function finalCleanup(h: McpHarness, ctx: FlowContext): Promise<void> {
       log(`  deleted label ${ctx.labelId}`);
     } catch (e) {
       log(`  could not delete label ${ctx.labelId}: ${(e as Error).message}`);
+    }
+  }
+
+  if (ctx.ensureLabelId) {
+    try {
+      await h.call('vikunja_labels', { subcommand: 'delete', id: ctx.ensureLabelId });
+      log(`  deleted label ${ctx.ensureLabelId}`);
+    } catch (e) {
+      log(`  could not delete label ${ctx.ensureLabelId}: ${(e as Error).message}`);
     }
   }
 
