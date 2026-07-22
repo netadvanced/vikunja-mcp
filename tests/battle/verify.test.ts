@@ -73,6 +73,48 @@ describe('runVerification / min-buckets-in-project', () => {
   });
 });
 
+describe('runVerification / buckets-with-tasks-count', () => {
+  it('counts only buckets whose `count` field is greater than zero, distinguishing "buckets exist" from "tasks were actually moved into them"', async () => {
+    const client = new FakeRestClient();
+    client.projects = [{ id: 7, title: 'battle-x-Sprint Board' }];
+    client.buckets[7] = [
+      { id: 10, title: 'To Do', count: 3 },
+      { id: 11, title: 'Doing', count: 3 },
+      { id: 12, title: 'Done', count: 0 },
+    ];
+    const checks: VerifyCheck[] = [{ type: 'buckets-with-tasks-count', projectTitleContains: 'Sprint Board', min: 3 }];
+    const verdict = await runVerification(scenario(), checks, client);
+    expect(verdict.passed).toBe(false);
+    expect(verdict.checks[0]?.detail).toContain('2/3');
+  });
+
+  it('passes once every targeted bucket holds at least one task', async () => {
+    const client = new FakeRestClient();
+    client.projects = [{ id: 7, title: 'battle-x-Sprint Board' }];
+    client.buckets[7] = [
+      { id: 10, title: 'To Do', count: 3 },
+      { id: 11, title: 'Doing', count: 3 },
+      { id: 12, title: 'Done', count: 3 },
+    ];
+    const checks: VerifyCheck[] = [{ type: 'buckets-with-tasks-count', projectTitleContains: 'Sprint Board', min: 3 }];
+    expect((await runVerification(scenario(), checks, client)).passed).toBe(true);
+  });
+
+  it('fails cleanly when the project itself does not exist', async () => {
+    const client = new FakeRestClient();
+    const checks: VerifyCheck[] = [{ type: 'buckets-with-tasks-count', projectTitleContains: 'nope', min: 1 }];
+    expect((await runVerification(scenario(), checks, client)).passed).toBe(false);
+  });
+
+  it('treats a bucket with an undefined `count` as empty', async () => {
+    const client = new FakeRestClient();
+    client.projects = [{ id: 7, title: 'battle-x-Board' }];
+    client.buckets[7] = [{ id: 10, title: 'To Do' }];
+    const checks: VerifyCheck[] = [{ type: 'buckets-with-tasks-count', projectTitleContains: 'Board', min: 1 }];
+    expect((await runVerification(scenario(), checks, client)).passed).toBe(false);
+  });
+});
+
 describe('runVerification / tasks-field-match-count', () => {
   const client = new FakeRestClient();
   client.projects = [{ id: 1, title: 'battle-x-P' }];

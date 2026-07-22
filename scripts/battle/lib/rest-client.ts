@@ -39,6 +39,8 @@ export interface VikunjaLabel {
 export interface VikunjaBucket {
   id: number;
   title: string;
+  /** Number of tasks currently in this bucket, per `models.Bucket.count` in the Vikunja OpenAPI spec -- used to verify actual task-to-bucket distribution, not just that the buckets themselves exist. */
+  count?: number;
 }
 
 export interface VikunjaProjectView {

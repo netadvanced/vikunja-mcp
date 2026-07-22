@@ -65,9 +65,9 @@ describe('renderScenario setup actions', () => {
 describe('shipped scenario library (scripts/battle/scenarios/*.json)', () => {
   const scenarios = loadAllScenarios(SCENARIOS_DIR);
 
-  it('ships between 6 and 10 scenarios', () => {
+  it('ships between 6 and 12 scenarios', () => {
     expect(scenarios.length).toBeGreaterThanOrEqual(6);
-    expect(scenarios.length).toBeLessThanOrEqual(10);
+    expect(scenarios.length).toBeLessThanOrEqual(12);
   });
 
   it('has unique ids', () => {

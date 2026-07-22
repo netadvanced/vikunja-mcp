@@ -94,6 +94,22 @@ async function runCheck(client: VikunjaRestClient, check: VerifyCheck): Promise<
       };
     }
 
+    case 'buckets-with-tasks-count': {
+      const project = await findProject(client, check.projectTitleContains);
+      if (!project) {
+        return { check, passed: false, detail: `no project with title containing "${check.projectTitleContains}"` };
+      }
+      const buckets = await client.listBuckets(project.id);
+      const nonEmpty = buckets.filter((b) => (b.count ?? 0) > 0);
+      return {
+        check,
+        passed: nonEmpty.length >= check.min,
+        detail:
+          `${nonEmpty.length}/${buckets.length} bucket(s) in "${project.title}" hold at least one task ` +
+          `(${buckets.map((b) => `${b.title}: ${b.count ?? 0}`).join(', ') || 'none'}), need >= ${check.min}`,
+      };
+    }
+
     case 'tasks-field-match-count': {
       const project = await findProject(client, check.projectTitleContains);
       if (!project) {

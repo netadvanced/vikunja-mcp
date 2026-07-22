@@ -1,0 +1,13 @@
+{
+  "id": "bulk-set-bucket",
+  "title": "Bulk edit ergonomics: distribute tasks across Kanban buckets",
+  "description": "Probes whether the agent discovers vikunja_task_bulk's bulk-set-bucket operation (src/tools/tasks/buckets.ts's bulkSetTaskBucket, one call moves a whole group of task ids into a single bucket) rather than moving each task into its column one at a time via vikunja_tasks set-bucket.",
+  "promptTemplate": "Create a project called \"{{prefix}}Sprint Board\" with a kanban board with three columns: \"{{prefix}}To Do\", \"{{prefix}}Doing\", and \"{{prefix}}Done\". Add 9 tasks named \"{{prefix}}task-1\" through \"{{prefix}}task-9\". Then, in bulk (not one task at a time), distribute the tasks evenly across the three columns: \"{{prefix}}task-1\" through \"{{prefix}}task-3\" into \"{{prefix}}To Do\", \"{{prefix}}task-4\" through \"{{prefix}}task-6\" into \"{{prefix}}Doing\", and \"{{prefix}}task-7\" through \"{{prefix}}task-9\" into \"{{prefix}}Done\".",
+  "optimalCallCount": 9,
+  "verify": [
+    { "type": "project-exists", "titleContains": "{{prefix}}Sprint Board" },
+    { "type": "min-tasks-in-project", "projectTitleContains": "{{prefix}}Sprint Board", "min": 9 },
+    { "type": "min-buckets-in-project", "projectTitleContains": "{{prefix}}Sprint Board", "min": 3 },
+    { "type": "buckets-with-tasks-count", "projectTitleContains": "{{prefix}}Sprint Board", "min": 3 }
+  ]
+}

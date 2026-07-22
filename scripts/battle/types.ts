@@ -43,6 +43,21 @@ const MinBucketsInProjectCheck = z.object({
 });
 
 /**
+ * Counts *distinct buckets* (within the matched project) that hold at least
+ * one task, per `models.Bucket.count` in the Vikunja OpenAPI spec. Distinct
+ * from `min-buckets-in-project` (which only checks the buckets themselves
+ * exist): a project can have 3 empty columns and 10 tasks all still sitting
+ * in the default bucket -- this check is what actually proves a
+ * distribute-across-buckets composite (bulk-set-bucket) moved tasks, rather
+ * than just creating the board structure.
+ */
+const BucketsWithTasksCountCheck = z.object({
+  type: z.literal('buckets-with-tasks-count'),
+  projectTitleContains: z.string().min(1),
+  min: z.number().int().positive(),
+});
+
+/**
  * Counts tasks (within the matched project) whose `field` satisfies `op`
  * against `value` (or, for `op: "set"`, simply has a non-default/non-empty
  * value -- no `value` needed). Covers "tasks have priorities set", "tasks
@@ -98,6 +113,7 @@ function buildVerifyCheckSchema() {
     ProjectExistsCheck,
     MinTasksInProjectCheck,
     MinBucketsInProjectCheck,
+    BucketsWithTasksCountCheck,
     TasksFieldMatchCountCheck,
     TasksDueDateInRangeCheck,
     LabelExistsCheck,
