@@ -529,6 +529,37 @@ async function testAuth(h: McpHarness): Promise<void> {
       /version/i.test(info.text),
       info.text.slice(0, 300),
     );
+    // api-version-detect groundwork (netadvanced/vikunja-mcp#28): 'info'
+    // runs the session capability/version detector (GET /info already
+    // above, plus a one-time GET /api/v2/openapi.json probe) and must
+    // surface both fields. Ground truth confirmed live against this harness's
+    // 2.4.0 stack: `curl http://localhost:33456/api/v2/openapi.json` returns
+    // 200 with a real OpenAPI schema (v2 is already present, just not used by
+    // this server's request paths yet) — so hasV2Api:true is the honest
+    // detection result here, not v1-only.
+    assertStep(
+      'auth info surfaces hasV2Api',
+      /hasV2Api/.test(info.text),
+      info.text.slice(0, 300),
+    );
+    assertStep(
+      'auth info reports hasV2Api:true against the 2.4.0 stack (GET /api/v2/openapi.json is live)',
+      /hasV2Api[^a-zA-Z]*true/i.test(info.text),
+      info.text.slice(0, 300),
+    );
+  }
+
+  // 'status' is a cache-only read of whatever capability snapshot 'info'
+  // (above) just cached on the session — re-check it now reflects that,
+  // confirming the cache (not just the one-off 'info' response) carries
+  // serverVersion/hasV2Api.
+  const statusAfterInfo = await h.call('vikunja_auth', { subcommand: 'status' });
+  if (assertOk('auth status (after info)', statusAfterInfo)) {
+    assertStep(
+      'auth status reports serverVersion and hasV2Api once cached',
+      /serverVersion/.test(statusAfterInfo.text) && /hasV2Api/.test(statusAfterInfo.text),
+      statusAfterInfo.text.slice(0, 300),
+    );
   }
 
   // Round-trip: connect again with the same credentials the server

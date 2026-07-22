@@ -196,6 +196,76 @@ describe('AuthManager', () => {
       expect(status.apiUrl).toBe(apiUrl);
       expect(status.authType).toBe('jwt');
     });
+
+    it('should omit serverVersion/hasV2Api when no capabilities have been cached', () => {
+      authManager.connect('https://vikunja.example.com/api/v1', 'test-token');
+
+      const status = authManager.getStatus();
+      expect(status.serverVersion).toBeUndefined();
+      expect(status.hasV2Api).toBeUndefined();
+    });
+
+    it('should surface serverVersion and hasV2Api once capabilities are cached', () => {
+      authManager.connect('https://vikunja.example.com/api/v1', 'test-token');
+      authManager.setCapabilities({
+        serverVersion: '2.4.0',
+        features: { version: '2.4.0' },
+        hasV2Api: true,
+      });
+
+      const status = authManager.getStatus();
+      expect(status.serverVersion).toBe('2.4.0');
+      expect(status.hasV2Api).toBe(true);
+    });
+
+    it('should surface hasV2Api:false without a serverVersion field when version is unknown', () => {
+      authManager.connect('https://vikunja.example.com/api/v1', 'test-token');
+      authManager.setCapabilities({ features: {}, hasV2Api: false });
+
+      const status = authManager.getStatus();
+      expect(status.serverVersion).toBeUndefined();
+      expect(status.hasV2Api).toBe(false);
+    });
+  });
+
+  describe('getCapabilities / setCapabilities', () => {
+    it('should return undefined when there is no active session', () => {
+      expect(authManager.getCapabilities()).toBeUndefined();
+    });
+
+    it('should return undefined for a session with no cached capabilities', () => {
+      authManager.connect('https://vikunja.example.com/api/v1', 'test-token');
+      expect(authManager.getCapabilities()).toBeUndefined();
+    });
+
+    it('should cache and return capabilities for the active session', () => {
+      authManager.connect('https://vikunja.example.com/api/v1', 'test-token');
+      const capabilities = {
+        serverVersion: '2.4.0',
+        features: { version: '2.4.0', concurrent_writes: true },
+        hasV2Api: false,
+      };
+      authManager.setCapabilities(capabilities);
+      expect(authManager.getCapabilities()).toEqual(capabilities);
+    });
+
+    it('should throw AUTH_REQUIRED when setting capabilities without a session', () => {
+      expect(() =>
+        authManager.setCapabilities({ features: {}, hasV2Api: false }),
+      ).toThrow(MCPError);
+      expect(() =>
+        authManager.setCapabilities({ features: {}, hasV2Api: false }),
+      ).toThrow('Authentication required. Please use vikunja_auth.connect first.');
+    });
+
+    it('should clear cached capabilities on disconnect', () => {
+      authManager.connect('https://vikunja.example.com/api/v1', 'test-token');
+      authManager.setCapabilities({ features: {}, hasV2Api: true });
+      expect(authManager.getCapabilities()).toBeDefined();
+
+      authManager.disconnect();
+      expect(authManager.getCapabilities()).toBeUndefined();
+    });
   });
 
   describe('getAuthType', () => {

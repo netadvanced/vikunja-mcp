@@ -285,6 +285,27 @@ This creates a race condition in task creation.
 4. **Response Streaming**: Large result sets might benefit from streaming
 5. **Parallel Processing**: Bulk operations could be parallelized with rate limiting
 
+### Session Capability Detection (v2 groundwork, netadvanced/vikunja-mcp#28 "api-version-detect")
+
+`src/utils/capabilities.ts` caches a per-session `VikunjaCapabilities` snapshot
+(`{ serverVersion, features, hasV2Api }`) — the `GET /info` payload already
+fetched by `vikunja_auth.connect`'s verification step, plus a one-time
+best-effort `GET /api/v2/openapi.json` probe — surfaced read-only via
+`vikunja_auth`'s `status` and `info` subcommands. **No tool currently branches
+on `hasV2Api` or issues any `/api/v2/*` request** — this is only a seam future
+v2 fast-paths can consult without an extra round trip.
+
+Ground truth confirmed live against the e2e harness's `2.4.0` Vikunja stack
+(`npm run e2e:up`, `VIKUNJA_VERSION=2.4.0` default): `GET /api/v2/openapi.json`
+already returns `200` with a real OpenAPI schema on that version —
+`curl http://localhost:33456/api/v2/openapi.json` — so `hasV2Api: true` is the
+*correct* detection result there, not "v2 doesn't exist yet." A v2 schema
+being publishable does not mean this server's v1 request paths are ready to
+be replaced by it; do not treat `hasV2Api: true` as a green light to start
+routing calls at `/api/v2/*` without separately verifying each endpoint's
+shape against the vendored v2 OpenAPI spec, the same way `docs/API_NOTES.md`
+already requires for v1.
+
 ## Filter Implementation Notes
 
 ### SQL-like Filter Syntax

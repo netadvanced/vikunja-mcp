@@ -29,6 +29,35 @@ export interface AuthSession {
   tokenExpiry?: Date;
   userId?: string;
   authType: 'api-token' | 'jwt';
+  capabilities?: VikunjaCapabilities;
+}
+
+/**
+ * Per-session server capability/version detection, cached on the
+ * {@link AuthSession} so it is computed at most once per connect and reset
+ * automatically on disconnect (a fresh session starts with no capabilities).
+ *
+ * This is read-only groundwork for a future v2 API migration — nothing in
+ * this server currently branches on `hasV2Api` to take a v2 request path.
+ * See `src/utils/capabilities.ts`.
+ */
+export interface VikunjaCapabilities {
+  /** `GET /info`'s `version` field, when present. */
+  serverVersion?: string;
+  /**
+   * The raw `GET /info` payload (includes fields like
+   * `concurrent_writes`/`link_sharing_enabled` this server doesn't otherwise
+   * parse out) so future callers can consult additional feature flags
+   * without another round trip.
+   */
+  features: Record<string, unknown>;
+  /**
+   * Whether `GET /api/v2/openapi.json` resolved with a 2xx response.
+   * `false` on any non-200 response or network/request error — the probe
+   * must never throw, so absence of v2 support (including "couldn't tell")
+   * always reads as `false`, i.e. "assume v1-only".
+   */
+  hasV2Api: boolean;
 }
 
 // Common Types

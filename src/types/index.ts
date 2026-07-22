@@ -10,6 +10,7 @@ export {
   type LoginCredentials,
   type AuthToken,
   type AuthSession,
+  type VikunjaCapabilities,
   type StandardTaskResponse,
   type StandardProjectResponse,
   type MinimalTask,

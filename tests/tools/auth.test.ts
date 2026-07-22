@@ -47,6 +47,18 @@ jest.mock('../../src/utils/vikunja-rest', () => ({
   vikunjaRestRequest: (...args: unknown[]) => mockVikunjaRestRequest(...args),
 }));
 
+// Mock the capability-detection seam used by 'connect' (verifyConnection)
+// and 'info'. Default implementation mirrors the real
+// `getOrDetectCapabilities`/`buildCapabilities` for the "not yet cached,
+// v2 probe absent" case, deriving `serverVersion` from whatever `info`
+// object the caller passes in — so existing tests that only assert on the
+// server version string (e.g. '1.2.3') keep working unchanged. Individual
+// tests override this to exercise `hasV2Api: true` / cached-probe paths.
+const mockGetOrDetectCapabilities = jest.fn();
+jest.mock('../../src/utils/capabilities', () => ({
+  getOrDetectCapabilities: (...args: unknown[]) => mockGetOrDetectCapabilities(...args),
+}));
+
 describe('Auth Tool', () => {
   let mockServer: MockServer;
   let mockAuthManager: MockAuthManager;
@@ -72,6 +84,15 @@ describe('Auth Tool', () => {
       return [];
     });
 
+    mockGetOrDetectCapabilities.mockReset();
+    mockGetOrDetectCapabilities.mockImplementation(
+      async (_authManager: unknown, info: Record<string, unknown> | undefined) => ({
+        ...(info && typeof info.version === 'string' ? { serverVersion: info.version } : {}),
+        features: info ?? {},
+        hasV2Api: false,
+      }),
+    );
+
     // Create mock server that captures the tool registration
     mockServer = {
       tool: jest.fn() as jest.MockedFunction<(name: string, schema: any, handler: any) => void>,
@@ -88,6 +109,8 @@ describe('Auth Tool', () => {
       setSession: jest.fn(),
       clearSession: jest.fn(),
       getAuthType: jest.fn(),
+      getCapabilities: jest.fn(),
+      setCapabilities: jest.fn(),
     } as MockAuthManager;
 
     // Register the tool
@@ -385,6 +408,47 @@ describe('Auth Tool', () => {
       markdown = result.content[0].text;
       expect(markdown).toContain('jwt');
     });
+
+    it('should run capability detection (with the /info payload) and cache it on the session', async () => {
+      mockAuthManager.getStatus.mockReturnValue({ authenticated: false });
+      mockAuthManager.getAuthType.mockReturnValue('api-token');
+      mockGetOrDetectCapabilities.mockResolvedValue({
+        serverVersion: '1.2.3',
+        features: { version: '1.2.3' },
+        hasV2Api: true,
+      });
+
+      await callTool('connect', {
+        apiUrl: 'https://vikunja.example.com',
+        apiToken: 'tk_test-token-123',
+      });
+
+      expect(mockGetOrDetectCapabilities).toHaveBeenCalledWith(
+        mockAuthManager,
+        { version: '1.2.3', frontend_url: 'https://vikunja.example.com' },
+      );
+    });
+
+    it('should not surface hasV2Api in the connect response (only status/info do)', async () => {
+      // Item scope: connect performs and caches capability detection, but
+      // only 'status' and 'info' are required to surface it in their
+      // output. Pin that connect's response shape is unaffected even when
+      // detection reports v2 support.
+      mockAuthManager.getStatus.mockReturnValue({ authenticated: false });
+      mockAuthManager.getAuthType.mockReturnValue('api-token');
+      mockGetOrDetectCapabilities.mockResolvedValue({
+        serverVersion: '1.2.3',
+        features: { version: '1.2.3' },
+        hasV2Api: true,
+      });
+
+      const result = await callTool('connect', {
+        apiUrl: 'https://vikunja.example.com',
+        apiToken: 'tk_test-token-123',
+      });
+
+      expect(result.content[0].text).not.toContain('hasV2Api');
+    });
   });
 
   describe('status subcommand', () => {
@@ -424,6 +488,42 @@ describe('Auth Tool', () => {
       expect(aorpStatus.type).toBe('success');
       expect(markdown).toContain('auth-status');
       expect(markdown).toContain('Not authenticated');
+    });
+
+    it('should surface serverVersion and hasV2Api when AuthManager.getStatus() reports them', async () => {
+      // 'status' is a pure pass-through of AuthManager.getStatus() — this
+      // pins that whatever capability fields the real AuthManager attaches
+      // (see AuthManager.test.ts) flow through the tool's response
+      // unmodified, without the tool needing its own capabilities lookup.
+      const mockStatus = {
+        authenticated: true,
+        apiUrl: 'https://vikunja.example.com',
+        authType: 'api-token' as const,
+        serverVersion: '2.4.0',
+        hasV2Api: true,
+      };
+      mockAuthManager.getStatus.mockReturnValue(mockStatus);
+
+      const result = await callTool('status');
+
+      const markdown = result.content[0].text;
+      expect(markdown).toContain('2.4.0');
+      expect(markdown).toContain('hasV2Api');
+      // getOrDetectCapabilities must not be consulted directly by 'status' —
+      // it only ever reads the cached fields off getStatus()'s return value,
+      // never triggers detection/network calls of its own.
+      expect(mockGetOrDetectCapabilities).not.toHaveBeenCalled();
+    });
+
+    it('should omit serverVersion and hasV2Api when AuthManager.getStatus() has none cached', async () => {
+      const mockStatus = { authenticated: true, apiUrl: 'https://vikunja.example.com' };
+      mockAuthManager.getStatus.mockReturnValue(mockStatus);
+
+      const result = await callTool('status');
+
+      const markdown = result.content[0].text;
+      expect(markdown).not.toContain('serverVersion');
+      expect(markdown).not.toContain('hasV2Api');
     });
   });
 
@@ -544,6 +644,46 @@ describe('Auth Tool', () => {
       const result = await callTool('info');
 
       expect(result.content[0].text).not.toContain('serverVersion');
+    });
+
+    it('should surface hasV2Api:true in the response when detection reports v2 support', async () => {
+      mockAuthManager.isAuthenticated.mockReturnValue(true);
+      mockVikunjaRestRequest.mockResolvedValue({
+        version: '2.4.0',
+        frontend_url: 'https://vikunja.example.com',
+      });
+      mockGetOrDetectCapabilities.mockResolvedValue({
+        serverVersion: '2.4.0',
+        features: { version: '2.4.0' },
+        hasV2Api: true,
+      });
+
+      const result = await callTool('info');
+
+      expect(mockGetOrDetectCapabilities).toHaveBeenCalledWith(mockAuthManager, {
+        version: '2.4.0',
+        frontend_url: 'https://vikunja.example.com',
+      });
+      const markdown = result.content[0].text;
+      expect(markdown).toContain('2.4.0');
+      expect(markdown).toContain('hasV2Api');
+    });
+
+    it('should surface hasV2Api:false in the response when detection reports no v2 support', async () => {
+      mockAuthManager.isAuthenticated.mockReturnValue(true);
+      mockVikunjaRestRequest.mockResolvedValue({ version: '1.0.0' });
+      mockGetOrDetectCapabilities.mockResolvedValue({
+        serverVersion: '1.0.0',
+        features: { version: '1.0.0' },
+        hasV2Api: false,
+      });
+
+      const result = await callTool('info');
+
+      const markdown = result.content[0].text;
+      expect(markdown).toContain('hasV2Api');
+      const parsed = parseMarkdown(markdown);
+      expect(parsed).toBeDefined();
     });
   });
 

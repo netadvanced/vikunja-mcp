@@ -7,6 +7,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { AuthManager } from '../auth/AuthManager';
 import type { VikunjaClientFactory } from '../client/VikunjaClientFactory';
+import type { VikunjaCapabilities } from '../types/vikunja';
 import { MCPError, ErrorCode } from '../types/errors';
 import { clearGlobalClientFactory } from '../client';
 import { logger } from '../utils/logger';
@@ -16,6 +17,7 @@ import { wrapAuthError } from '../utils/error-handler';
 import { createStandardResponse } from '../utils/response-factory';
 import { formatMcpResponse } from '../utils/simple-response';
 import { vikunjaRestRequest } from '../utils/vikunja-rest';
+import { getOrDetectCapabilities } from '../utils/capabilities';
 import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../utils/read-only';
 
 interface AuthArgs {
@@ -57,12 +59,20 @@ interface VikunjaInfoResponse {
  * On failure of either step, the caller's freshly-created session is rolled
  * back (`authManager.disconnect()`) so a failed 'connect' does not leave a
  * broken session behind, and a clear, actionable MCPError is thrown.
+ *
+ * Once both round trips succeed, this also runs (and caches on the session)
+ * the one-time capability/version detection described in
+ * `src/utils/capabilities.ts` — the `GET /info` payload already fetched
+ * above plus a best-effort `GET /api/v2/openapi.json` probe. This is
+ * read-only groundwork for a future v2 migration: it never throws (a failed
+ * probe just caches `hasV2Api: false`) and doesn't change what `connect`
+ * requires to succeed.
  */
 async function verifyConnection(
   authManager: AuthManager,
   apiUrl: string,
   authType: 'api-token' | 'jwt',
-): Promise<string | undefined> {
+): Promise<VikunjaCapabilities> {
   let info: VikunjaInfoResponse;
   try {
     info = await vikunjaRestRequest<VikunjaInfoResponse>(authManager, 'GET', '/info');
@@ -94,7 +104,7 @@ async function verifyConnection(
     );
   }
 
-  return typeof info.version === 'string' ? info.version : undefined;
+  return getOrDetectCapabilities(authManager, info);
 }
 
 export function registerAuthTool(server: McpServer, authManager: AuthManager, _clientFactory?: VikunjaClientFactory): void {
@@ -148,9 +158,10 @@ export function registerAuthTool(server: McpServer, authManager: AuthManager, _c
             // Verify the connection actually works before reporting success —
             // see verifyConnection()'s doc comment for why this is a
             // two-step round trip (unauthenticated /info, then a cheap
-            // authenticated call). Throws (and rolls back the session) on
-            // failure.
-            const serverVersion = await verifyConnection(authManager, args.apiUrl, detectedAuthType);
+            // authenticated call), plus the one-time capability/version
+            // detection cached on the session. Throws (and rolls back the
+            // session) on failure of either round trip.
+            const capabilities = await verifyConnection(authManager, args.apiUrl, detectedAuthType);
 
             const response = createStandardResponse(
               'auth-connect',
@@ -159,7 +170,9 @@ export function registerAuthTool(server: McpServer, authManager: AuthManager, _c
               {
                 apiUrl: args.apiUrl,
                 authType: authManager.getAuthType(),
-                ...(serverVersion !== undefined ? { serverVersion } : {}),
+                ...(capabilities.serverVersion !== undefined
+                  ? { serverVersion: capabilities.serverVersion }
+                  : {}),
               },
             );
             return {
@@ -256,11 +269,23 @@ export function registerAuthTool(server: McpServer, authManager: AuthManager, _c
               '/info',
             );
 
+            // Refreshes the info-derived capability fields from this fresh
+            // /info response while reusing the cached hasV2Api probe result
+            // (or, for a session that never went through 'connect's
+            // detection, running it once now) — see
+            // `getOrDetectCapabilities` in `src/utils/capabilities.ts`.
+            const capabilities = await getOrDetectCapabilities(authManager, info);
+
             const response = createStandardResponse(
               'auth-info',
               'Vikunja server info retrieved successfully',
               { info },
-              typeof info.version === 'string' ? { serverVersion: info.version } : undefined,
+              {
+                ...(capabilities.serverVersion !== undefined
+                  ? { serverVersion: capabilities.serverVersion }
+                  : {}),
+                hasV2Api: capabilities.hasV2Api,
+              },
             );
             return {
               content: formatMcpResponse(response),
