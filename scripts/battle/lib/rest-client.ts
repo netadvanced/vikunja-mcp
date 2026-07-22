@@ -145,7 +145,14 @@ export class RestClient implements VikunjaRestClient {
     const views = await this.listViews(projectId);
     const kanban = views.find((v) => v.view_kind === 'kanban') ?? views[0];
     if (!kanban) return [];
-    return this.requestOrEmpty<VikunjaBucket>(`/projects/${projectId}/views/${kanban.id}/buckets`);
+    // Read buckets via the kanban view's *tasks* endpoint, not /buckets. The plain
+    // /views/{id}/buckets endpoint returns bucket metadata with `count` hardcoded to 0
+    // and no embedded tasks, so it cannot verify task-to-bucket placement (this caused
+    // the bulk-set-bucket scenario to false-FAIL even though the move persisted). The
+    // kanban view's task collection returns each bucket WITH its `count` and `tasks[]`
+    // populated (confirmed against Vikunja 2.4.0) — a strict superset of /buckets, so
+    // both buckets-with-tasks-count and min-buckets-in-project read correctly from it.
+    return this.requestOrEmpty<VikunjaBucket>(`/projects/${projectId}/views/${kanban.id}/tasks`);
   }
 
   listShares(projectId: number): Promise<VikunjaShare[]> {
