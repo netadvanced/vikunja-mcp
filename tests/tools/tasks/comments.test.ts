@@ -134,6 +134,19 @@ describe('Comment operations', () => {
       );
     });
 
+    it('should surface a 401 on create (PUT) once, without retrying (#154)', async () => {
+      // Create is a PUT write; a 4xx (here 401) must fail fast, attempted once.
+      fetchMock.mockResolvedValue(restError(401, 'Unauthorized', 'token expired'));
+
+      await expect(handleComment({ id: 123, comment: 'Test' }, authManager)).rejects.toThrow(
+        'HTTP 401',
+      );
+      const putCalls = fetchMock.mock.calls.filter(
+        ([, init]) => (init as RequestInit | undefined)?.method === 'PUT',
+      );
+      expect(putCalls).toHaveLength(1);
+    });
+
     it('should list comments when empty string is provided', async () => {
       // Empty string is falsy, so it lists comments instead
       fetchMock.mockResolvedValue(restOk([]));
@@ -205,6 +218,59 @@ describe('Comment operations', () => {
       await expect(removeComment({ id: 1, commentId: 2 }, authManager)).rejects.toThrow(
         'Failed to delete comment:'
       );
+    });
+
+    // #154 regression guard: deleting a sub-resource relation that isn't there
+    // (or a comment/task the caller can't reach) makes Vikunja answer 4xx. That
+    // is an honest terminal outcome, NOT an auth error to retry — the labels
+    // tool's old bug was to misclassify a 403 and hammer it 3x. removeComment
+    // routes through vikunjaRestRequest, whose defaultRestShouldRetry only
+    // retries statusCode>=500 || 429. These tests lock the fail-fast contract by
+    // asserting the DELETE is attempted EXACTLY once for each 4xx.
+    const deleteCalls = (): unknown[] =>
+      fetchMock.mock.calls.filter(
+        ([, init]) => (init as RequestInit | undefined)?.method === 'DELETE',
+      );
+
+    it('should surface a 403 on delete once, without retrying (#154)', async () => {
+      fetchMock.mockResolvedValue(restError(403, 'Forbidden', 'Forbidden'));
+
+      await expect(removeComment({ id: 123, commentId: 45 }, authManager)).rejects.toThrow(
+        'HTTP 403',
+      );
+      expect(deleteCalls()).toHaveLength(1);
+    });
+
+    it('should surface a 404 on delete once, without retrying (#154)', async () => {
+      fetchMock.mockResolvedValue(restError(404, 'Not Found', 'Not found'));
+
+      await expect(removeComment({ id: 123, commentId: 45 }, authManager)).rejects.toThrow(
+        'HTTP 404',
+      );
+      expect(deleteCalls()).toHaveLength(1);
+    });
+
+    it('should surface a 401 on delete once, without retrying (#154)', async () => {
+      // A 401 on a write is still a 4xx: fail fast rather than retrying a
+      // doomed request (the exact anti-pattern behind #154).
+      fetchMock.mockResolvedValue(restError(401, 'Unauthorized', 'token expired'));
+
+      await expect(removeComment({ id: 123, commentId: 45 }, authManager)).rejects.toThrow(
+        'HTTP 401',
+      );
+      expect(deleteCalls()).toHaveLength(1);
+    });
+
+    it('should retry a 500 on delete then surface it (5xx IS retried)', async () => {
+      // The counterpart to the 4xx guards: a genuine transient 5xx SHOULD be
+      // retried. DEFAULT_JSON_RETRY.maxRetries === 2 (src/utils/vikunja-rest.ts),
+      // so withRetry makes 1 initial + 2 retries = 3 attempts before surfacing.
+      fetchMock.mockResolvedValue(restError(500, 'Internal Server Error', 'boom'));
+
+      await expect(removeComment({ id: 123, commentId: 45 }, authManager)).rejects.toThrow(
+        'HTTP 500',
+      );
+      expect(deleteCalls()).toHaveLength(3);
     });
   });
 

@@ -493,4 +493,69 @@ describe('Tasks Tool - Reminders', () => {
       ).rejects.toThrow('String error');
     });
   });
+
+  describe('POST write error retry behavior (#154)', () => {
+    // add-reminder rides on the full task-update endpoint: GET /tasks/{id} to
+    // read the current task, then POST /tasks/{id} to write it back. The write
+    // goes through vikunjaRestRequest, whose defaultRestShouldRetry retries ONLY
+    // statusCode >= 500 || 429 — never a 4xx. These tests lock that in by
+    // counting POST attempts: every 4xx must fail FAST (exactly one POST), so a
+    // future regression re-introducing retry-on-4xx (the labels-tool bug behind
+    // #154) is caught; a 5xx/429 must be retried (1 initial + 2 retries = 3,
+    // per DEFAULT_JSON_RETRY.maxRetries === 2 in src/utils/vikunja-rest.ts).
+
+    /** GET succeeds with the current task; POST answers `postResponse`. */
+    function mockPostFailure(postResponse: Response): void {
+      fetchMock.mockImplementation((_url: string, init?: RequestInit) => {
+        if (init?.method === 'POST') {
+          return Promise.resolve(postResponse);
+        }
+        return Promise.resolve(restOk(mockTask));
+      });
+    }
+
+    const postCalls = (): unknown[] =>
+      fetchMock.mock.calls.filter(
+        ([, init]) => (init as RequestInit | undefined)?.method === 'POST',
+      );
+
+    it.each([401, 403, 404, 422])(
+      'fails fast on a %i POST (attempted exactly once, real status surfaced)',
+      async (status) => {
+        mockPostFailure(restError(status, 'Client Error', `err ${status}`));
+
+        await expect(
+          callTool('add-reminder', {
+            id: 1,
+            reminderDate: '2024-12-25T10:00:00Z',
+          }),
+        ).rejects.toThrow(`HTTP ${status}`);
+        expect(postCalls()).toHaveLength(1);
+      },
+    );
+
+    it('retries a 500 POST then surfaces it (5xx IS retried)', async () => {
+      mockPostFailure(restError(500, 'Internal Server Error', 'boom'));
+
+      await expect(
+        callTool('add-reminder', {
+          id: 1,
+          reminderDate: '2024-12-25T10:00:00Z',
+        }),
+      ).rejects.toThrow('HTTP 500');
+      expect(postCalls()).toHaveLength(3);
+    });
+
+    it('retries a 429 POST then surfaces it (rate-limit IS retried)', async () => {
+      mockPostFailure(restError(429, 'Too Many Requests', 'slow down'));
+
+      await expect(
+        callTool('add-reminder', {
+          id: 1,
+          reminderDate: '2024-12-25T10:00:00Z',
+        }),
+      ).rejects.toThrow('HTTP 429');
+      expect(postCalls()).toHaveLength(3);
+    });
+  });
 });
