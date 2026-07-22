@@ -20,7 +20,7 @@
 # and docker-compose.example.yml for a mounted-config example.
 
 # ---- build stage -----------------------------------------------------------
-FROM node:20-alpine AS build
+FROM node:22-alpine AS build
 
 WORKDIR /app
 
@@ -41,7 +41,7 @@ RUN npm run build
 RUN npm prune --omit=dev --ignore-scripts
 
 # ---- runtime stage ----------------------------------------------------------
-FROM node:20-alpine AS runtime
+FROM node:22-alpine AS runtime
 
 ENV NODE_ENV=production
 
