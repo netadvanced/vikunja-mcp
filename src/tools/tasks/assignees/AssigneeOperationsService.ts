@@ -6,7 +6,7 @@
 import type { TaskWithAssignees, Assignee } from '../../../types';
 import { MCPError, ErrorCode } from '../../../types';
 import type { AuthManager } from '../../../auth/AuthManager';
-import { isAuthenticationError } from '../../../utils/auth-error-handler';
+import { extractHttpStatus } from '../../../utils/http-error-detail';
 import { withRetry, RETRY_CONFIG } from '../../../utils/retry';
 import { vikunjaRestRequest } from '../../../utils/vikunja-rest';
 import { getTaskViaRest } from '../../../utils/task-rest-transport';
@@ -59,13 +59,17 @@ export const AssigneeOperationsService = {
             }),
           {
             ...RETRY_CONFIG.AUTH_ERRORS,
-            shouldRetry: (error) => isAuthenticationError(error)
+            // Only a genuine 401 session failure is worth retrying here; a
+            // resource 403 (e.g. no write access) must not be masked as auth
+            // and retried — that was bug #154 in the labels tool. The inner
+            // vikunjaRestRequest already retries 5xx/429 on its own.
+            shouldRetry: (error) => extractHttpStatus(error) === 401
           }
         );
       }
     } catch (assigneeError) {
-      // Check if it's an auth error after retries
-      if (isAuthenticationError(assigneeError)) {
+      // A genuine session failure after retries — surface it as auth.
+      if (extractHttpStatus(assigneeError) === 401) {
         throw new MCPError(
           ErrorCode.API_ERROR,
           `${AUTH_ERROR_MESSAGES.ASSIGNEE_ASSIGN} (Retried ${RETRY_CONFIG.AUTH_ERRORS.maxRetries} times)`
@@ -83,28 +87,68 @@ export const AssigneeOperationsService = {
     taskId: number,
     userIds: number[],
   ): Promise<void> {
-    // Remove users from the task with retry logic. DELETE
-    // /tasks/{taskID}/assignees/{userID} per the OpenAPI spec — no body.
+    // Remove each user. DELETE /tasks/{taskID}/assignees/{userID} — no body.
+    // Like the label DELETE in bug #154, a failed DELETE does NOT by itself
+    // mean an error: the v1 spec documents 403 for this endpoint (never 404),
+    // returned when the user is not assigned; v2 collapses errors into a
+    // generic response and may even make the delete idempotent (204). Rather
+    // than depend on any one status, we special-case ONLY a genuine 401 as
+    // auth (the inner vikunjaRestRequest already retries 5xx/429) and reconcile
+    // every other failure against the task's real assignee list below — so an
+    // already-absent user is an idempotent no-op on both v1 and v2.
+    const removeFailures: number[] = [];
     for (const userId of userIds) {
       try {
         await withRetry(
           () => vikunjaRestRequest(authManager, 'DELETE', `/tasks/${taskId}/assignees/${userId}`),
           {
             ...RETRY_CONFIG.AUTH_ERRORS,
-            shouldRetry: (error) => isAuthenticationError(error)
+            shouldRetry: (error) => extractHttpStatus(error) === 401
           }
         );
       } catch (removeError) {
-        // Check if it's an auth error after retries
-        if (isAuthenticationError(removeError)) {
+        // A genuine session failure can't be masked as an absent assignee.
+        if (extractHttpStatus(removeError) === 401) {
           throw new MCPError(
             ErrorCode.API_ERROR,
             `${AUTH_ERROR_MESSAGES.ASSIGNEE_REMOVE} (Retried ${RETRY_CONFIG.AUTH_ERRORS.maxRetries} times)`
           );
         }
-        throw removeError;
+        // Non-auth failure (typically Vikunja's 403 for a user not assigned).
+        // Defer judgement to the actual assignee list below.
+        removeFailures.push(userId);
       }
     }
+
+    if (removeFailures.length === 0) {
+      return;
+    }
+
+    // Reconcile against ground truth: the users actually assigned now, read
+    // from the dedicated GET /tasks/{taskID}/assignees endpoint.
+    let stillAssigned: number[];
+    try {
+      const current = await AssigneeOperationsService.fetchAssigneesViaRest(authManager, taskId);
+      const currentIds = new Set(
+        current.map((u) => u.id).filter((id): id is number => typeof id === 'number'),
+      );
+      stillAssigned = removeFailures.filter((id) => currentIds.has(id));
+    } catch {
+      // Current assignees could not be read; treat the failed removals as
+      // genuine failures rather than assuming they succeeded.
+      stillAssigned = removeFailures;
+    }
+
+    if (stillAssigned.length > 0) {
+      const plural = stillAssigned.length > 1;
+      throw new MCPError(
+        ErrorCode.VALIDATION_ERROR,
+        `Could not remove user${plural ? 's' : ''} ${stillAssigned.join(', ')} from task ${taskId}: ` +
+          `still assigned after the request. Check the user id${plural ? 's' : ''} and that you have write access to the task.`,
+      );
+    }
+    // Otherwise every failed removal was for a user already not assigned —
+    // an idempotent no-op, so the unassign succeeds.
   },
 
   /**

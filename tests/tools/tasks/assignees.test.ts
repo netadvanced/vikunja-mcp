@@ -6,20 +6,40 @@ import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals
 import { assignUsers, unassignUsers, listAssignees } from '../../../src/tools/tasks/assignees';
 import { AuthManager } from '../../../src/auth/AuthManager';
 import { MCPError, ErrorCode } from '../../../src/types';
-import { isAuthenticationError } from '../../../src/utils/auth-error-handler';
-import { withRetry, circuitBreakerRegistry } from '../../../src/utils/retry';
+import { circuitBreakerRegistry } from '../../../src/utils/retry';
 
-jest.mock('../../../src/utils/auth-error-handler');
-// Partial mock: only withRetry is overridden (assignUsers/unassignUsers tests
-// drive it directly), while createCircuitBreaker/circuitBreakerRegistry stay
-// real — every REST op goes through the direct-REST helper
-// (vikunjaRestRequest), which needs a working circuit breaker around the
-// mocked global fetch below.
+// Mock withRetry with a lightweight retry that HONORS the caller's shouldRetry
+// predicate but skips the production backoff delays. This lets the tests drive
+// real HTTP responses through the mocked fetch and actually exercise the
+// 401-only retry predicate — so we can assert attempt counts (the #154
+// regression guard: a resource 403 must be attempted exactly once, never
+// retried as auth). createCircuitBreaker/circuitBreakerRegistry stay real:
+// every op goes through vikunjaRestRequest, which needs a working breaker
+// around the mocked global fetch.
 jest.mock('../../../src/utils/retry', () => {
   const actual = jest.requireActual('../../../src/utils/retry');
   return {
     ...(actual as object),
-    withRetry: jest.fn().mockImplementation((fn: () => Promise<unknown>) => fn()),
+    withRetry: async <T>(
+      operation: () => Promise<T>,
+      options?: { maxRetries?: number; shouldRetry?: (error: unknown) => boolean },
+    ): Promise<T> => {
+      const maxRetries = options?.maxRetries ?? 0;
+      const shouldRetry = options?.shouldRetry ?? (() => false);
+      let attempt = 0;
+      // eslint-disable-next-line no-constant-condition
+      for (;;) {
+        try {
+          return await operation();
+        } catch (error) {
+          if (attempt < maxRetries && shouldRetry(error)) {
+            attempt += 1;
+            continue;
+          }
+          throw error;
+        }
+      }
+    },
   };
 });
 jest.mock('../../../src/utils/logger');
@@ -58,8 +78,6 @@ describe('Assignee operations', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    (isAuthenticationError as jest.Mock).mockReturnValue(false);
-    (withRetry as jest.Mock).mockImplementation((fn) => fn());
 
     originalFetch = globalThis.fetch;
     fetchMock = jest.fn().mockResolvedValue(restOk({}));
@@ -233,32 +251,38 @@ describe('Assignee operations', () => {
       );
     });
 
-    it('should handle authentication errors with retry', async () => {
-      const authError = new Error('Authentication failed');
-      (isAuthenticationError as jest.Mock).mockReturnValue(true);
-      (withRetry as jest.Mock).mockRejectedValue(authError);
+    it('retries a genuine 401 on assign and surfaces it as an auth error', async () => {
+      fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+        const method = init?.method ?? 'GET';
+        if (method === 'PUT') {
+          return { ok: false, status: 401, statusText: 'Unauthorized', text: jest.fn(async () => '') } as unknown as Response;
+        }
+        return restOk({});
+      });
 
-      await expect(assignUsers({ id: 123, assignees: [1, 2] }, authManager)).rejects.toThrow(
-        'Failed to assign users to task: Assignee operations may have authentication issues with certain Vikunja API versions. This is a known limitation that prevents assigning users to tasks. (Retried 3 times)'
+      await expect(assignUsers({ id: 123, assignees: [1] }, authManager)).rejects.toThrow(
+        /prevents assigning users to tasks\. \(Retried 3 times\)/
       );
+
+      // A genuine 401 is retried by the outer auth-retry loop (1 initial + 3).
+      const putCalls = fetchMock.mock.calls.filter((c) => (c[1] as RequestInit)?.method === 'PUT');
+      expect(putCalls).toHaveLength(4);
     });
 
-    it('should handle non-authentication API errors', async () => {
-      const apiError = new Error('API Error');
-      (withRetry as jest.Mock).mockRejectedValue(apiError);
+    it('surfaces a non-auth 403 on assign as the real error, attempted exactly once', async () => {
+      // #154 class: a resource 403 must NOT be masked as auth or retried.
+      fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+        const method = init?.method ?? 'GET';
+        if (method === 'PUT') {
+          return { ok: false, status: 403, statusText: 'Forbidden', text: jest.fn(async () => 'forbidden') } as unknown as Response;
+        }
+        return restOk({});
+      });
 
-      await expect(assignUsers({ id: 123, assignees: [1, 2] }, authManager)).rejects.toThrow(
-        'Failed to assign users to task: API Error'
-      );
-    });
+      await expect(assignUsers({ id: 123, assignees: [1] }, authManager)).rejects.toThrow(/HTTP 403/);
 
-    it('should handle unknown error types', async () => {
-      const unknownError = { message: 'Unknown error' };
-      (withRetry as jest.Mock).mockRejectedValue(unknownError);
-
-      await expect(assignUsers({ id: 123, assignees: [1, 2] }, authManager)).rejects.toThrow(
-        'Failed to assign users to task: [object Object]'
-      );
+      const putCalls = fetchMock.mock.calls.filter((c) => (c[1] as RequestInit)?.method === 'PUT');
+      expect(putCalls).toHaveLength(1);
     });
 
     it('should handle MCPError instances propagated from the task read', async () => {
@@ -341,37 +365,86 @@ describe('Assignee operations', () => {
       );
     });
 
-    it('should handle authentication errors during removal', async () => {
-      const authError = new Error('Authentication failed');
-      (isAuthenticationError as jest.Mock).mockReturnValue(true);
-      (withRetry as jest.Mock).mockRejectedValue(authError);
+    it('retries a genuine 401 on unassign and surfaces it as an auth error', async () => {
+      fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+        const method = init?.method ?? 'GET';
+        if (method === 'DELETE') {
+          return { ok: false, status: 401, statusText: 'Unauthorized', text: jest.fn(async () => '') } as unknown as Response;
+        }
+        return restOk({});
+      });
 
       await expect(unassignUsers({ id: 123, assignees: [1] }, authManager)).rejects.toThrow(
-        'Failed to remove users from task: Assignee removal operations may have authentication issues with certain Vikunja API versions. This is a known limitation that prevents removing users from tasks. (Retried 3 times)'
+        /prevents removing users from tasks\. \(Retried 3 times\)/
+      );
+
+      // A genuine 401 is retried by the outer auth-retry loop (1 initial + 3).
+      const deleteCalls = fetchMock.mock.calls.filter((c) => (c[1] as RequestInit)?.method === 'DELETE');
+      expect(deleteCalls).toHaveLength(4);
+    });
+
+    it('treats unassigning a user that is not assigned as an idempotent no-op (Vikunja 403)', async () => {
+      // #154 twin: Vikunja returns 403 for a user that is not assigned. The old
+      // code misclassified that as auth, retried it 3×, and surfaced a
+      // misleading "(Retried 3 times)" error. It must be an idempotent no-op.
+      fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+        const method = init?.method ?? 'GET';
+        const path = new URL(url).pathname;
+        if (method === 'DELETE') {
+          return { ok: false, status: 403, statusText: 'Forbidden', text: jest.fn(async () => '') } as unknown as Response;
+        }
+        // Reconcile: user 5 is genuinely not assigned.
+        if (method === 'GET' && path === '/api/v1/tasks/123/assignees') {
+          return restOk([]);
+        }
+        return restOk({ id: 123, title: 'T', assignees: [] });
+      });
+
+      const result = await unassignUsers({ id: 123, assignees: [5] }, authManager);
+      expect(result.content[0].text).toContain('## ✅ Success');
+
+      // The 403 must be attempted exactly once, never retried.
+      const deleteCalls = fetchMock.mock.calls.filter((c) => (c[1] as RequestInit)?.method === 'DELETE');
+      expect(deleteCalls).toHaveLength(1);
+    });
+
+    it('reports a clear, user/task-specific error when a user is still assigned after a failed removal', async () => {
+      fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+        const method = init?.method ?? 'GET';
+        const path = new URL(url).pathname;
+        if (method === 'DELETE') {
+          return { ok: false, status: 403, statusText: 'Forbidden', text: jest.fn(async () => '') } as unknown as Response;
+        }
+        // Reconcile: user 5 is STILL assigned (e.g. no write access).
+        if (method === 'GET' && path === '/api/v1/tasks/123/assignees') {
+          return restOk([{ id: 5, username: 'user5' }]);
+        }
+        return restOk({});
+      });
+
+      await expect(unassignUsers({ id: 123, assignees: [5] }, authManager)).rejects.toThrow(
+        /Could not remove user 5 from task 123/
       );
     });
 
-    it('should handle non-authentication errors during removal', async () => {
-      const apiError = new Error('API Error');
-      (withRetry as jest.Mock).mockRejectedValue(apiError);
-
-      await expect(unassignUsers({ id: 123, assignees: [1] }, authManager)).rejects.toThrow(
-        'Failed to remove users from task: API Error'
-      );
-    });
-
-    it('should handle mixed success and failure during batch removal', async () => {
-      const apiError = new Error('User not found');
-      (withRetry as jest.Mock)
-        .mockResolvedValueOnce({}) // First user succeeds
-        .mockRejectedValueOnce(apiError); // Second user fails
+    it('removes assigned users while reporting ones that could not be removed', async () => {
+      fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+        const method = init?.method ?? 'GET';
+        const path = new URL(url).pathname;
+        if (method === 'DELETE' && path.endsWith('/assignees/2')) {
+          return { ok: false, status: 403, statusText: 'Forbidden', text: jest.fn(async () => '') } as unknown as Response;
+        }
+        if (method === 'DELETE') return restOk({}); // user 1 removed
+        // Reconcile: user 2 is still assigned.
+        if (method === 'GET' && path === '/api/v1/tasks/123/assignees') {
+          return restOk([{ id: 2, username: 'user2' }]);
+        }
+        return restOk({});
+      });
 
       await expect(unassignUsers({ id: 123, assignees: [1, 2] }, authManager)).rejects.toThrow(
-        'Failed to remove users from task: User not found'
+        /Could not remove user 2 from task 123/
       );
-
-      // Verify that at least the first removal was attempted
-      expect(withRetry).toHaveBeenCalledTimes(2);
     });
   });
 
