@@ -153,6 +153,66 @@ in most cases (see the Bucket example above), but callers that know a field
 is always present for their specific use may still need a local narrowing
 type or a runtime check — don't blanket non-null-assert generated fields.
 
+## The v2 spec (prep only, not wired into runtime)
+
+Vikunja also serves a v2 OpenAPI spec at `/api/v2/openapi.json`. This project
+has vendored it and generated types from it as **groundwork only**
+(tracking issue #28, item `vendor-v2-spec-types`) — nothing under `src/`
+imports from the generated v2 types yet, and no runtime behavior depends on
+this vendoring. Treat the sections below as infrastructure for future v2
+work, not a live integration.
+
+### Where the v2 spec comes from
+
+Same pinned local e2e container as v1, but the `/api/v2/openapi.json`
+endpoint:
+
+```bash
+npm run fetch:api-spec:v2:container
+```
+
+(equivalent to `curl -sS http://localhost:33456/api/v2/openapi.json -o
+docs/vikunja-openapi-v2.json && jq -e . docs/vikunja-openapi-v2.json`)
+
+This gives the same exactly-reproducible spec/behavior pairing as the v1
+fetch, tied to the pinned tag in `docker/e2e/docker-compose.yml`. There is no
+`try.vikunja.io`-equivalent v2 fetch script — only the container source is
+vendored for v2.
+
+Unlike the v1 spec, the v2 document is already **OpenAPI 3.x**
+(`"openapi": "3.1.0"`), not Swagger 2.0. As of this vendoring it declares:
+
+- `info.version`: matches the pinned container's `2.4.0` tag
+- `paths` / `components.schemas`: see `docs/vikunja-openapi-v2.json` directly
+  for current counts — do not hand-summarize numbers here as the spec
+  evolves; the file itself is the source of truth.
+
+The file is committed to the repo (not gitignored), for the same reasons as
+the v1 spec: reviewable diffs, network-independent endpoint verification, and
+reproducible type generation.
+
+### How v2 type generation works
+
+`npm run generate:api-types:v2` (see `scripts/generate-api-types-v2.mjs`)
+reads `docs/vikunja-openapi-v2.json` and feeds it to `openapi-typescript`
+directly — **no** `swagger2openapi` conversion step, since the v2 spec is
+already OpenAPI 3.x. Output goes to
+`src/types/generated/vikunja-openapi-v2.d.ts`, which carries the same
+do-not-hand-edit banner convention as the v1 generated file.
+
+### How to refresh the v2 spec/types
+
+```bash
+npm run e2e:up
+npm run fetch:api-spec:v2:container
+npm run generate:api-types:v2
+npm run typecheck
+```
+
+Review the diff of both `docs/vikunja-openapi-v2.json` and
+`src/types/generated/vikunja-openapi-v2.d.ts` before committing, same as the
+v1 refresh procedure above.
+
 ## Scope of this migration
 
 Wiring the spec into the build (this document, the vendored file, generated
