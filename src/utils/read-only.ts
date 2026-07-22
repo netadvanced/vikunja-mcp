@@ -227,6 +227,10 @@ const LABELS: ClassificationTable = {
   create: 'write',
   update: 'write',
   delete: 'destructive',
+  // ensure (E-item, friction #4): get-or-create by title. Classified 'write'
+  // like `create` since it can create a new label — even though the reuse
+  // path is a pure read, the dispatcher only sees the subcommand up front.
+  ensure: 'write',
 };
 
 // vikunja_teams' 'members' subcommand fans out to a second enum
