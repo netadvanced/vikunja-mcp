@@ -6,6 +6,7 @@
 import CircuitBreaker from 'opossum';
 import { logger } from './logger';
 import { isAuthenticationError } from './auth-error-handler';
+import { extractHttpStatus } from './http-error-detail';
 
 /**
  * Simple circuit breaker registry for tracking and managing circuit breakers
@@ -98,6 +99,93 @@ interface ErrorWithCode extends Error {
 }
 
 /**
+ * opossum's own code for a fast-failed call while the breaker is open
+ * (`buildError('Breaker is open', 'EOPENBREAKER')` in `opossum/lib/circuit.js`).
+ */
+const OPEN_BREAKER_CODE = 'EOPENBREAKER';
+
+/**
+ * opossum `errorFilter` predicate (issue #163): decides which rejections
+ * from the wrapped operation must NOT count toward tripping the circuit
+ * breaker open.
+ *
+ * Root cause of #163: an intermittent bulk-create HTTP 400 ("Invalid model
+ * provided", Vikunja error code 2004) tripped the `vikunja-rest-*` breaker
+ * OPEN, after which every later create in the same session failed instantly
+ * with "Breaker is open" — one client-side validation error poisoned the
+ * whole session (a failing run logged ~19 such rejections; a clean run
+ * logged 0).
+ *
+ * A CLIENT-SIDE 4xx (bad request body, forbidden, not found, conflict,
+ * unprocessable entity, ...) reflects a problem with THIS call's data or
+ * permissions, not the health of the Vikunja service — so it must never
+ * count as a breaker "failure". Per opossum's `handleError` (`lib/circuit.js`),
+ * an `errorFilter` match does not swallow the error: the caller still sees
+ * the real rejection, it is just recorded as a 'success' for the breaker's
+ * rolling stats instead of a 'failure'.
+ *
+ * 401 is deliberately EXCLUDED from this filter — i.e. it still counts
+ * toward opening the breaker, unchanged from before this fix. Auth errors
+ * already have dedicated handling one layer up (`isAuthenticationError` /
+ * `RETRY_CONFIG.AUTH_ERRORS`), and a storm of 401s across otherwise-unrelated
+ * calls (e.g. a revoked/expired session) is arguably still a "stop hammering
+ * the service" signal worth tripping the breaker for. #163's evidence is
+ * specifically about a data-validation 400, not auth — widening the
+ * exclusion to 401 as well was deliberately left out of scope here.
+ *
+ * Errors with no discoverable HTTP status (network failures, timeouts,
+ * `ECONNRESET`/`ETIMEDOUT`, opossum's own `ETIMEDOUT`/`ESHUTDOWN`/
+ * `ESEMLOCKED`) are NOT filtered — they keep counting toward opening the
+ * breaker, which is exactly the "service looks unhealthy" signal the
+ * breaker exists to catch.
+ */
+export function isClientErrorExcludedFromBreaker(error: unknown): boolean {
+  const status = extractHttpStatus(error);
+  if (status === null) return false;
+  if (status === 401) return false;
+  return status >= 400 && status < 500;
+}
+
+/**
+ * Rewords opossum's open-circuit rejection ("Breaker is open", code
+ * `EOPENBREAKER`) so an agent understands it as a TRANSIENT, self-recovering
+ * server-load condition rather than a hard/permanent failure.
+ *
+ * A live battle transcript showed an agent responding to the raw "Breaker is
+ * open" message by calling `vikunja_auth disconnect` — self-sabotaging its
+ * own session over a condition that resolves itself once `resetTimeout`
+ * elapses and has nothing to do with authentication. The reworded message
+ * explicitly tells the caller to back off and retry, and explicitly NOT to
+ * re-authenticate or disconnect.
+ *
+ * Non-`EOPENBREAKER` errors (including opossum's other internal errors like
+ * `ESHUTDOWN`/`ETIMEDOUT`/`ESEMLOCKED`, and ordinary operation failures) pass
+ * through unchanged.
+ */
+export function rewordBreakerOpenError(error: unknown): unknown {
+  if (!(error instanceof Error) || (error as ErrorWithCode).code !== OPEN_BREAKER_CODE) {
+    return error;
+  }
+
+  // NOTE: deliberately avoids the substrings 'timeout', 'connection',
+  // 'network', and 'rate limit' — `isRetryableError` (below) treats any of
+  // those as grounds to retry, and an open breaker must NOT be retried
+  // immediately (it will still be open; retrying just burns the backoff
+  // delay for nothing). The original opossum message ("Breaker is open")
+  // was already non-retryable for the same reason; this rewording preserves
+  // that property.
+  const reworded = new Error(
+    'Vikunja API calls are temporarily paused after repeated recent failures ' +
+      '(circuit breaker open). This is a TRANSIENT, self-recovering server-load ' +
+      'condition, not an authentication or session problem — wait a bit, then ' +
+      'retry the same request again. Do NOT re-authenticate, reconnect, or ' +
+      'disconnect in response to this error.',
+  );
+  (reworded as ErrorWithCode).code = OPEN_BREAKER_CODE;
+  return reworded;
+}
+
+/**
  * Simple retry configuration using opossum's built-in capabilities
  */
 export interface RetryOptions {
@@ -157,7 +245,13 @@ export function createCircuitBreaker<TArgs extends unknown[], TR>(
     timeout: opts.timeout,
     resetTimeout: opts.resetTimeout,
     errorThresholdPercentage: opts.errorThresholdPercentage,
-    volumeThreshold: opts.volumeThreshold
+    volumeThreshold: opts.volumeThreshold,
+    // #163: client-side 4xx responses (bad data, not found, conflict, ...)
+    // must not count toward tripping this breaker — see
+    // `isClientErrorExcludedFromBreaker` for the full rationale. The
+    // rejection itself is unaffected; only the breaker's failure/success
+    // bookkeeping changes.
+    errorFilter: isClientErrorExcludedFromBreaker
   });
 
   // Register with the global registry
@@ -228,7 +322,11 @@ export async function withNamedRetry<T>(
   options: RetryOptions = {}
 ): Promise<T> {
   const breaker = createCircuitBreaker(operation, name, options);
-  return breaker.fire();
+  try {
+    return await breaker.fire();
+  } catch (error) {
+    throw rewordBreakerOpenError(error);
+  }
 }
 
 /**

@@ -522,11 +522,15 @@ describe('vikunja-rest helper', () => {
       ).rejects.toThrow('HTTP 500');
       expect(mockFetch).toHaveBeenCalledTimes(2);
 
-      // The breaker is now open: a third call fails immediately with the
-      // breaker's own error, and never reaches fetch again.
+      // The breaker is now open: a third call fails immediately without
+      // reaching fetch again. Issue #163 reworded opossum's raw "Breaker is
+      // open" message (which read as a hard/permanent failure and once led
+      // an agent to call `vikunja_auth disconnect` in response) into
+      // guidance that the condition is transient and self-recovering — see
+      // `rewordBreakerOpenError` in src/utils/retry.ts.
       await expect(
         vikunjaRestRequest(authManager, 'GET', '/tasks/1', undefined, opts),
-      ).rejects.toThrow('Breaker is open');
+      ).rejects.toThrow('circuit breaker open');
       expect(mockFetch).toHaveBeenCalledTimes(2);
     });
 
@@ -542,10 +546,11 @@ describe('vikunja-rest helper', () => {
       await expect(
         vikunjaRestRequest(authManager, 'GET', '/a', undefined, failingOpts),
       ).rejects.toThrow('HTTP 500');
-      // Group A's breaker is now open.
+      // Group A's breaker is now open (message reworded per #163 — see the
+      // comment on the earlier "opens after repeated failures" test).
       await expect(
         vikunjaRestRequest(authManager, 'GET', '/a', undefined, failingOpts),
-      ).rejects.toThrow('Breaker is open');
+      ).rejects.toThrow('circuit breaker open');
 
       // A different, healthy endpoint group is unaffected.
       mockFetch.mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ ok: true }) }));
@@ -554,6 +559,102 @@ describe('vikunja-rest helper', () => {
           breakerName: 'test-breaker-group-b',
         }),
       ).resolves.toEqual({ ok: true });
+    });
+
+    // #163 regression: an intermittent bulk-create HTTP 400 ("Invalid model
+    // provided", Vikunja error code 2004) tripped the breaker OPEN, after
+    // which every later create in the SAME session failed instantly with
+    // "Breaker is open" — a failing run logged ~19 such rejections where a
+    // clean run logged 0. A client-side 4xx is a caller/data problem, not a
+    // service-health signal, and must never trip the breaker.
+    it('#163: a batched-create 400 does NOT open the breaker for subsequent unrelated creates', async () => {
+      mockFetch.mockResolvedValue(
+        mockResponse({
+          ok: false,
+          status: 400,
+          statusText: 'Bad Request',
+          text: JSON.stringify({ code: 2004, message: 'Invalid model provided' }),
+        }),
+      );
+      const opts = {
+        breakerName: 'test-breaker-400-excluded',
+        retry: {
+          maxRetries: 0,
+          errorThresholdPercentage: 1,
+          // Set to 1 so the breaker would trip after a SINGLE failure if 4xx
+          // responses counted toward it at all — matching the sensitivity
+          // used by the 500-opens-the-breaker tests above.
+          volumeThreshold: 1,
+          resetTimeout: 60_000,
+        },
+      };
+
+      // Several consecutive batched-create 400s, same as a real bulk-create
+      // session hitting the same validation problem repeatedly.
+      await expect(
+        vikunjaRestRequest(authManager, 'PUT', '/projects/4/tasks', undefined, opts),
+      ).rejects.toThrow('HTTP 400');
+      await expect(
+        vikunjaRestRequest(authManager, 'PUT', '/projects/4/tasks', undefined, opts),
+      ).rejects.toThrow('HTTP 400');
+      await expect(
+        vikunjaRestRequest(authManager, 'PUT', '/projects/4/tasks', undefined, opts),
+      ).rejects.toThrow('HTTP 400');
+
+      // Every call reached fetch and surfaced the REAL 400 — none were
+      // fast-failed by an open breaker, proving the breaker never opened.
+      expect(mockFetch).toHaveBeenCalledTimes(3);
+
+      // A subsequent unrelated create against the SAME breaker still
+      // succeeds normally, confirming the breaker is still closed.
+      mockFetch.mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ id: 99 }) }));
+      await expect(
+        vikunjaRestRequest(authManager, 'PUT', '/projects/4/tasks', { title: 'ok' }, opts),
+      ).resolves.toEqual({ id: 99 });
+    });
+
+    // Contrast case for #163: 5xx (service-health signal) must still trip
+    // the breaker exactly as before this fix.
+    it('#163: a 5xx still opens the breaker (contrast case)', async () => {
+      mockFetch.mockResolvedValue(
+        mockResponse({ ok: false, status: 500, statusText: 'Internal Server Error', text: '' }),
+      );
+      const opts = {
+        breakerName: 'test-breaker-500-still-trips',
+        retry: { maxRetries: 0, errorThresholdPercentage: 1, volumeThreshold: 1, resetTimeout: 60_000 },
+      };
+
+      await expect(
+        vikunjaRestRequest(authManager, 'PUT', '/projects/4/tasks', undefined, opts),
+      ).rejects.toThrow('HTTP 500');
+
+      // Breaker is now open: the next call fails fast without reaching fetch.
+      await expect(
+        vikunjaRestRequest(authManager, 'PUT', '/projects/4/tasks', undefined, opts),
+      ).rejects.toThrow('circuit breaker open');
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    // Contrast case for #163: a network-level failure (also a service-health
+    // signal, not a caller/data problem) must still trip the breaker.
+    it('#163: a network error still opens the breaker (contrast case)', async () => {
+      mockFetch.mockRejectedValue(
+        Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }),
+      );
+      const opts = {
+        breakerName: 'test-breaker-network-still-trips',
+        retry: { maxRetries: 0, errorThresholdPercentage: 1, volumeThreshold: 1, resetTimeout: 60_000 },
+      };
+
+      await expect(
+        vikunjaRestRequest(authManager, 'PUT', '/projects/4/tasks', undefined, opts),
+      ).rejects.toThrow('ECONNRESET');
+
+      // Breaker is now open: the next call fails fast without reaching fetch.
+      await expect(
+        vikunjaRestRequest(authManager, 'PUT', '/projects/4/tasks', undefined, opts),
+      ).rejects.toThrow('circuit breaker open');
+      expect(mockFetch).toHaveBeenCalledTimes(1);
     });
   });
 
