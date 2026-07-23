@@ -16,7 +16,7 @@ import { withRetry } from '../../utils/retry';
 import { setTaskLabels } from '../../utils/label-bulk';
 import { BatchProcessor } from '../../utils/performance/batch-processor';
 import type { components } from '../../types/generated/vikunja-openapi';
-import { convertRepeatConfiguration, applyFieldUpdate } from './validation';
+import { convertRepeatConfiguration, applyFieldUpdate, normalizeDateForApi } from './validation';
 import { formatAorpAsMarkdown } from '../../utils/response-factory';
 import { AUTH_ERROR_MESSAGES, REPEAT_MODE_MAP } from './constants';
 import { bulkOperationValidator } from './bulk/BulkOperationValidator';
@@ -106,6 +106,11 @@ const successResponse = (op: string, msg: string, tasks: Task[], meta: Record<st
 function resolveBulkUpdateValue(field: string | undefined, value: unknown): unknown {
   if (field === 'repeat_mode' && typeof value === 'string') {
     return REPEAT_MODE_MAP[value] ?? value;
+  }
+  // Coerce date-only 'YYYY-MM-DD' values to RFC3339 - Vikunja silently
+  // drops a bare date-only due_date/start_date/end_date (issue #164).
+  if (['due_date', 'start_date', 'end_date'].includes(field ?? '') && typeof value === 'string') {
+    return normalizeDateForApi(value);
   }
   return value;
 }
@@ -397,7 +402,7 @@ export async function bulkCreateTasks(args: BulkCreateArgs, authManager: AuthMan
 
         const newTask: Task = { title: t.title, project_id: projectId };
         if (t.description !== undefined) newTask.description = t.description;
-        if (t.dueDate !== undefined) newTask.due_date = t.dueDate;
+        if (t.dueDate !== undefined) newTask.due_date = normalizeDateForApi(t.dueDate) ?? t.dueDate;
         if (t.priority !== undefined) newTask.priority = t.priority;
         if (t.repeatAfter !== undefined || t.repeatMode !== undefined) {
           const rc = convertRepeatConfiguration(t.repeatAfter, t.repeatMode);

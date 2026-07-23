@@ -23,6 +23,34 @@ export function validateDateString(date: string, fieldName: string): void {
 }
 
 /**
+ * Coerce a date-only `YYYY-MM-DD` string to a full RFC3339 timestamp
+ * (`YYYY-MM-DDT00:00:00Z`) before it is sent to Vikunja.
+ *
+ * Vikunja's API expects `due_date`/`start_date`/`end_date` as RFC3339 and
+ * SILENTLY DROPS a bare date-only value — everything else in the same
+ * payload persists, so a caller passing e.g. `dueDate: '2026-07-24'` loses
+ * the due date with no error surfaced anywhere (issue #164). This helper
+ * is the single normalization point for that coercion; already-full
+ * timestamps (anything containing a `T`) are passed through unchanged, and
+ * empty/undefined input is passed through as-is (validation of malformed
+ * strings is `validateDateString`'s job, not this function's).
+ */
+export function normalizeDateForApi(date: string | undefined): string | undefined {
+  if (!date) return date;
+  const trimmed = date.trim();
+  if (trimmed === '') return date;
+  // Already a full timestamp (has a time component) - leave untouched.
+  if (trimmed.includes('T')) return date;
+  // Bare date-only form, e.g. '2026-07-24'.
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    return `${trimmed}T00:00:00Z`;
+  }
+  // Anything else (malformed, or a format we don't recognize) - leave
+  // untouched; validateDateString is responsible for rejecting it.
+  return date;
+}
+
+/**
  * Validates that an ID is a positive integer
  * @deprecated Use validateSharedId from '../../../utils/validation' instead
  */

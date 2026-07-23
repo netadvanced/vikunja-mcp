@@ -417,6 +417,82 @@ describe('Bulk operations', () => {
         expect(parsed.hasHeading(2, /Error/)).toBe(true);
         expect(markdown).toContain('Assignee restoration failed for task(s): 1');
       });
+
+      // Regression for issue #164: Vikunja SILENTLY DROPS a bare
+      // 'YYYY-MM-DD' due_date/start_date/end_date value on POST
+      // /tasks/bulk — the rest of the payload persists, so nothing errors
+      // and the due date is simply gone. These assert the exact body sent
+      // to POST /tasks/bulk carries a full RFC3339 timestamp.
+      describe('Date field normalization (issue #164)', () => {
+        it('coerces a date-only due_date to RFC3339 before the native bulk update request', async () => {
+          let sentBody: unknown;
+          mockRest.mockImplementation(async (_auth: unknown, method: string, path: string, body?: unknown) => {
+            if (method === 'POST' && path === '/tasks/bulk') {
+              sentBody = body;
+              return {
+                task_ids: (body as { task_ids: number[] }).task_ids,
+                tasks: [{ id: 1, title: 'Task 1', due_date: '2026-07-24T00:00:00Z' }],
+              };
+            }
+            throw new Error(`mockRest: unhandled ${method} ${path}`);
+          });
+
+          const result = await bulkUpdateTasks({ taskIds: [1], field: 'due_date', value: '2026-07-24' });
+
+          expect(sentBody).toEqual({
+            task_ids: [1],
+            fields: ['due_date'],
+            values: { due_date: '2026-07-24T00:00:00Z' },
+          });
+
+          const markdown = result.content[0].text;
+          expect(markdown).toContain('## ✅ Success');
+        });
+
+        it('passes an already-full RFC3339 due_date through unchanged', async () => {
+          let sentBody: unknown;
+          mockRest.mockImplementation(async (_auth: unknown, method: string, path: string, body?: unknown) => {
+            if (method === 'POST' && path === '/tasks/bulk') {
+              sentBody = body;
+              return {
+                task_ids: (body as { task_ids: number[] }).task_ids,
+                tasks: [{ id: 1, title: 'Task 1', due_date: '2026-07-24T10:30:00Z' }],
+              };
+            }
+            throw new Error(`mockRest: unhandled ${method} ${path}`);
+          });
+
+          await bulkUpdateTasks({ taskIds: [1], field: 'due_date', value: '2026-07-24T10:30:00Z' });
+
+          expect(sentBody).toEqual({
+            task_ids: [1],
+            fields: ['due_date'],
+            values: { due_date: '2026-07-24T10:30:00Z' },
+          });
+        });
+
+        it('coerces a date-only start_date/end_date the same way as due_date', async () => {
+          let sentBody: unknown;
+          mockRest.mockImplementation(async (_auth: unknown, method: string, path: string, body?: unknown) => {
+            if (method === 'POST' && path === '/tasks/bulk') {
+              sentBody = body;
+              return {
+                task_ids: (body as { task_ids: number[] }).task_ids,
+                tasks: [{ id: 1, title: 'Task 1', start_date: '2026-07-20T00:00:00Z' }],
+              };
+            }
+            throw new Error(`mockRest: unhandled ${method} ${path}`);
+          });
+
+          await bulkUpdateTasks({ taskIds: [1], field: 'start_date', value: '2026-07-20' });
+
+          expect(sentBody).toEqual({
+            task_ids: [1],
+            fields: ['start_date'],
+            values: { start_date: '2026-07-20T00:00:00Z' },
+          });
+        });
+      });
     });
 
     describe('Per-task merge updates (avoids native bulk wipe)', () => {
@@ -810,6 +886,46 @@ describe('Bulk operations', () => {
         expect(markdown).toContain('Successfully created 1 tasks');
         expect(markdown).toContain('**Operation:** create-tasks');
         expect(markdown).toContain('**count:** 1');
+      });
+
+      // Regression for issue #164: bulk-create forwarded a date-only
+      // dueDate straight through as due_date, which Vikunja silently drops
+      // (everything else in the payload persists, so nothing errors).
+      it('coerces a date-only dueDate to RFC3339 before creating the task', async () => {
+        const mockTask = { id: 1, title: 'Test Task', project_id: 1, due_date: '2026-07-24T00:00:00Z' };
+
+        mockClient.tasks.createTask.mockResolvedValue(mockTask);
+        mockClient.tasks.getTask.mockResolvedValue(mockTask);
+
+        const result = await bulkCreateTasks({
+          projectId: 1,
+          tasks: [{ title: 'Test Task', dueDate: '2026-07-24' }],
+        });
+
+        expect(mockClient.tasks.createTask).toHaveBeenCalledWith(1, expect.objectContaining({
+          title: 'Test Task',
+          due_date: '2026-07-24T00:00:00Z',
+        }));
+
+        const markdown = result.content[0].text;
+        expect(markdown).toContain('## ✅ Success');
+      });
+
+      it('passes an already-full RFC3339 dueDate through unchanged', async () => {
+        const mockTask = { id: 1, title: 'Test Task', project_id: 1, due_date: '2026-07-24T10:30:00Z' };
+
+        mockClient.tasks.createTask.mockResolvedValue(mockTask);
+        mockClient.tasks.getTask.mockResolvedValue(mockTask);
+
+        await bulkCreateTasks({
+          projectId: 1,
+          tasks: [{ title: 'Test Task', dueDate: '2026-07-24T10:30:00Z' }],
+        });
+
+        expect(mockClient.tasks.createTask).toHaveBeenCalledWith(1, expect.objectContaining({
+          title: 'Test Task',
+          due_date: '2026-07-24T10:30:00Z',
+        }));
       });
 
       it('should handle labels and assignees', async () => {

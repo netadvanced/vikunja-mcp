@@ -33,8 +33,22 @@ export function registerTaskBulkTool(
       operation: z.enum(['bulk-create', 'bulk-update', 'bulk-delete', 'bulk-set-bucket']),
       // Bulk operation fields
       taskIds: z.array(z.number()).optional(),
-      field: z.string().optional(),
-      value: z.unknown().optional(),
+      field: z
+        .string()
+        .optional()
+        .describe(
+          "The task field to bulk-update, e.g. 'due_date', 'start_date', 'end_date', " +
+            "'priority', 'done', 'project_id', 'assignees', 'labels', 'repeat_after', " +
+            "'repeat_mode'.",
+        ),
+      value: z
+        .unknown()
+        .optional()
+        .describe(
+          "The new value for 'field'. For due_date/start_date/end_date, a RFC3339/ISO 8601 " +
+            "date-time (e.g., 2024-05-24T10:00:00Z) or a date-only value (e.g., 2024-05-24), " +
+            'which is normalized to midnight UTC before being sent to Vikunja.',
+        ),
       projectId: z.number().optional(), // Add projectId for bulk-create; also optional override for bulk-set-bucket
       // bulk-set-bucket fields
       bucketId: z.coerce.number().optional(),
@@ -44,7 +58,14 @@ export function registerTaskBulkTool(
           z.object({
             title: z.string(),
             description: z.string().optional(),
-            dueDate: z.string().optional(),
+            dueDate: z
+              .string()
+              .optional()
+              .describe(
+                'RFC3339/ISO 8601 date-time (e.g., 2024-05-24T10:00:00Z). A date-only value ' +
+                  '(e.g., 2024-05-24) is also accepted and normalized to midnight UTC before ' +
+                  'being sent to Vikunja.',
+              ),
             priority: z.number().min(0).max(5).optional(),
             labels: z.array(z.number()).optional(),
             assignees: z.array(z.number()).optional(),

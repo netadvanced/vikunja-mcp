@@ -4,6 +4,7 @@ import {
   validateId,
   convertRepeatConfiguration,
   processBatches,
+  normalizeDateForApi,
 } from '../../../src/tools/tasks/validation';
 import { MCPError, ErrorCode } from '../../../src/types';
 
@@ -31,6 +32,29 @@ describe('Validation utilities', () => {
           'testDate must be a valid ISO 8601 date string (e.g., 2024-05-24T10:00:00Z)'
         )
       );
+    });
+  });
+
+  describe('normalizeDateForApi', () => {
+    it('coerces a bare YYYY-MM-DD date to RFC3339 midnight UTC', () => {
+      expect(normalizeDateForApi('2026-07-24')).toBe('2026-07-24T00:00:00Z');
+    });
+
+    it('leaves an already-full RFC3339 timestamp unchanged', () => {
+      expect(normalizeDateForApi('2026-07-24T10:30:00Z')).toBe('2026-07-24T10:30:00Z');
+      expect(normalizeDateForApi('2026-07-24T10:30:00+02:00')).toBe('2026-07-24T10:30:00+02:00');
+    });
+
+    it('passes through undefined unchanged', () => {
+      expect(normalizeDateForApi(undefined)).toBeUndefined();
+    });
+
+    it('passes through an empty string unchanged', () => {
+      expect(normalizeDateForApi('')).toBe('');
+    });
+
+    it('leaves an unrecognized/malformed date string unchanged (validateDateString handles rejection)', () => {
+      expect(normalizeDateForApi('not-a-date')).toBe('not-a-date');
     });
   });
 
