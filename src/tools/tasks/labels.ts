@@ -11,6 +11,7 @@ import { vikunjaRestRequest } from '../../utils/vikunja-rest';
 import { getTaskViaRest } from '../../utils/task-rest-transport';
 import { validateId } from './validation';
 import { createSimpleResponse, formatAorpAsMarkdown } from '../../utils/response-factory';
+import { ensureLabelByTitle } from '../../utils/label-ensure';
 import type { components } from '../../types/generated/vikunja-openapi';
 
 /** `models.Label` per the OpenAPI spec, as returned by `GET /tasks/{task}/labels`. */
@@ -34,11 +35,19 @@ function isLabelAlreadyOnTaskError(error: unknown): boolean {
  * whole operation. Vikunja rejects a duplicate label with "label already
  * exists on the task"; treating that as fatal previously stopped the loop and
  * left the remaining requested labels unapplied.
+ *
+ * `labelTitles` resolves each title via the shared `ensureLabelByTitle`
+ * get-or-create helper (same match/create semantics as `vikunja_labels`
+ * subcommand "ensure") before merging the resolved ids in with `labels` —
+ * this is what lets "attach a label by name" happen in a single apply-label
+ * call instead of a separate ensure-then-apply round trip. See
+ * netadvanced/vikunja-mcp#28 friction #4 and src/utils/label-ensure.ts.
  */
 export async function applyLabels(
   args: {
     id?: number;
     labels?: number[];
+    labelTitles?: string[];
   },
   authManager: AuthManager,
 ): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
@@ -51,16 +60,40 @@ export async function applyLabels(
     }
     validateId(args.id, 'id');
 
-    if (!args.labels || args.labels.length === 0) {
-      throw new MCPError(ErrorCode.VALIDATION_ERROR, 'At least one label id is required');
+    const labelIds = args.labels ?? [];
+    const labelTitles = args.labelTitles ?? [];
+
+    if (labelIds.length === 0 && labelTitles.length === 0) {
+      throw new MCPError(
+        ErrorCode.VALIDATION_ERROR,
+        'At least one label id (labels) or label title (labelTitles) is required',
+      );
     }
 
     // Validate label IDs
-    args.labels.forEach((id) => validateId(id, 'label ID'));
+    labelIds.forEach((id) => validateId(id, 'label ID'));
 
     const taskId = args.id;
-    // Deduplicate so a repeated id is not applied or counted twice
-    const requestedLabelIds = [...new Set(args.labels)];
+
+    // Resolve each requested title to an id via the shared get-or-create
+    // helper, caching by lowercased title so a repeated (or differently
+    // cased) title in the same call resolves once instead of making a
+    // redundant search/create round trip.
+    const titleCache = new Map<string, { id: number; title: string; created: boolean }>();
+    for (const title of labelTitles) {
+      const cacheKey = title.toLowerCase();
+      const cached = titleCache.get(cacheKey);
+      if (cached) continue;
+      const resolved = await ensureLabelByTitle(authManager, title);
+      titleCache.set(cacheKey, resolved);
+    }
+    const titleResolutions = [...titleCache.values()];
+    const createdLabels = titleResolutions.filter((r) => r.created);
+    const reusedLabels = titleResolutions.filter((r) => !r.created);
+
+    // Deduplicate so a repeated id — whether passed directly or resolved
+    // from a title — is not applied or counted twice.
+    const requestedLabelIds = [...new Set([...labelIds, ...titleResolutions.map((r) => r.id)])];
 
     // Skip labels already on the task: applying a duplicate makes Vikunja
     // reject the request, so pre-filtering keeps the operation idempotent.
@@ -133,11 +166,24 @@ export async function applyLabels(
     let message: string;
     if (newlyApplied.length > 0) {
       message = `Label${newlyApplied.length > 1 ? 's' : ''} applied to task successfully`;
-      if (alreadyPresent.length > 0) {
-        message += ` (${alreadyPresent.length} already present, skipped)`;
-      }
     } else {
       message = `No labels applied: all ${alreadyPresent.length} requested label(s) already present on the task`;
+    }
+
+    // Report which labelTitles were get-or-created vs reused, alongside the
+    // existing "already present" idempotent messaging.
+    const messageDetails: string[] = [];
+    if (alreadyPresent.length > 0 && newlyApplied.length > 0) {
+      messageDetails.push(`${alreadyPresent.length} already present, skipped`);
+    }
+    if (createdLabels.length > 0) {
+      messageDetails.push(`created: ${createdLabels.map((l) => l.title).join(', ')}`);
+    }
+    if (reusedLabels.length > 0) {
+      messageDetails.push(`reused: ${reusedLabels.map((l) => l.title).join(', ')}`);
+    }
+    if (messageDetails.length > 0) {
+      message += ` (${messageDetails.join('; ')})`;
     }
 
     const response = createSimpleResponse(
@@ -149,6 +195,8 @@ export async function applyLabels(
           affectedFields: ['labels'],
           labelsApplied: newlyApplied,
           labelsAlreadyPresent: alreadyPresent,
+          labelsCreated: createdLabels.map((l) => ({ id: l.id, title: l.title })),
+          labelsReused: reusedLabels.map((l) => ({ id: l.id, title: l.title })),
         },
       }
     );

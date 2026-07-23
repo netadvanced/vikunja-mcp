@@ -233,6 +233,147 @@ describe('Label operations', () => {
     });
   });
 
+  describe('applyLabels with labelTitles', () => {
+    // These exercise the `labelTitles` get-or-create-and-attach path: each
+    // title is resolved via ensureLabelByTitle (GET /labels?s=<title>, then
+    // PUT /labels on a miss) before the resolved ids merge into the normal
+    // apply-label flow. A dedicated router replaces the file's generic
+    // beforeEach mock so GET .../labels?s=<title> (label search) is
+    // distinguished from GET .../tasks/{id}/labels (current task labels).
+    function routedFetchMock(opts: {
+      existingLabelsByTitle?: Record<string, { id: number; title: string }>;
+      nextCreatedId?: number;
+      taskLabels?: Array<{ id: number; title: string }>;
+    }): jest.Mock {
+      const { existingLabelsByTitle = {}, taskLabels = [] } = opts;
+      let nextId = opts.nextCreatedId ?? 100;
+      return jest.fn((url: string, init?: RequestInit) => {
+        const method = init?.method;
+        const parsed = new URL(url);
+
+        // Label title search: GET /labels?s=<title>
+        if (method === 'GET' && parsed.pathname.endsWith('/labels') && parsed.searchParams.has('s')) {
+          const searched = parsed.searchParams.get('s') ?? '';
+          const match = Object.values(existingLabelsByTitle).find(
+            (label) => label.title.toLowerCase() === searched.toLowerCase(),
+          );
+          return Promise.resolve(restOk(match ? [match] : []));
+        }
+
+        // Label create: PUT /labels (no query string)
+        if (method === 'PUT' && parsed.pathname === '/api/v1/labels') {
+          const body = JSON.parse((init?.body as string) ?? '{}') as { title: string };
+          const created = { id: nextId, title: body.title };
+          nextId += 1;
+          return Promise.resolve(restOk(created));
+        }
+
+        // Current labels already on the task: GET /tasks/{id}/labels
+        if (method === 'GET' && parsed.pathname.endsWith('/labels')) {
+          return Promise.resolve(restOk(taskLabels));
+        }
+
+        // Apply a label to the task: PUT /tasks/{id}/labels
+        if (method === 'PUT' && /\/tasks\/\d+\/labels$/.test(parsed.pathname)) {
+          return Promise.resolve(restOk({}));
+        }
+
+        // Task refresh: GET /tasks/{id}
+        return Promise.resolve(restOk({}));
+      });
+    }
+
+    it('resolves a labelTitle to an existing label id, case-insensitively (reuse)', async () => {
+      fetchMock = routedFetchMock({ existingLabelsByTitle: { bug: { id: 7, title: 'Bug' } } });
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+      const result = await applyLabels({ id: 1, labelTitles: ['bug'] }, authManager);
+
+      // No PUT /labels (create) call — only the apply PUT.
+      const createCalls = fetchMock.mock.calls.filter(
+        ([url, init]) =>
+          (init as RequestInit)?.method === 'PUT' && new URL(url as string).pathname === '/api/v1/labels',
+      );
+      expect(createCalls).toHaveLength(0);
+      const applyCalls = fetchMock.mock.calls.filter(
+        ([url, init]) =>
+          (init as RequestInit)?.method === 'PUT' && /\/tasks\/1\/labels$/.test(url as string),
+      );
+      expect(applyCalls).toHaveLength(1);
+      expect(JSON.parse((applyCalls[0]?.[1] as RequestInit).body as string)).toEqual({ label_id: 7 });
+      expect(result.content[0].text).toContain('Label applied to task successfully');
+      expect(result.content[0].text).toContain('reused');
+      expect(result.content[0].text).toContain('Bug');
+    });
+
+    it('creates a new label for a labelTitle with no existing match, then attaches it', async () => {
+      fetchMock = routedFetchMock({ nextCreatedId: 55 });
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+      const result = await applyLabels({ id: 1, labelTitles: ['Urgent'] }, authManager);
+
+      const createCalls = fetchMock.mock.calls.filter(
+        ([url, init]) =>
+          (init as RequestInit)?.method === 'PUT' && new URL(url as string).pathname === '/api/v1/labels',
+      );
+      expect(createCalls).toHaveLength(1);
+      const applyCalls = fetchMock.mock.calls.filter(
+        ([url, init]) =>
+          (init as RequestInit)?.method === 'PUT' && /\/tasks\/1\/labels$/.test(url as string),
+      );
+      expect(applyCalls).toHaveLength(1);
+      expect(JSON.parse((applyCalls[0]?.[1] as RequestInit).body as string)).toEqual({ label_id: 55 });
+      expect(result.content[0].text).toContain('created');
+      expect(result.content[0].text).toContain('Urgent');
+    });
+
+    it('merges numeric labels and labelTitles, applying both', async () => {
+      fetchMock = routedFetchMock({
+        existingLabelsByTitle: { research: { id: 3, title: 'research' } },
+      });
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+      const result = await applyLabels({ id: 1, labels: [9], labelTitles: ['research'] }, authManager);
+
+      const applyCalls = fetchMock.mock.calls.filter(
+        ([url, init]) =>
+          (init as RequestInit)?.method === 'PUT' && /\/tasks\/1\/labels$/.test(url as string),
+      );
+      expect(applyCalls).toHaveLength(2);
+      const appliedIds = applyCalls
+        .map(([, init]) => JSON.parse((init as RequestInit).body as string).label_id as number)
+        .sort();
+      expect(appliedIds).toEqual([3, 9]);
+      expect(result.content[0].text).toContain('Labels applied to task successfully');
+    });
+
+    it('dedupes when a labelTitle resolves to an id already present in labels', async () => {
+      fetchMock = routedFetchMock({
+        existingLabelsByTitle: { research: { id: 9, title: 'research' } },
+      });
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+      const result = await applyLabels({ id: 1, labels: [9], labelTitles: ['research'] }, authManager);
+
+      // id 9 appears both directly and via the resolved title — must only be
+      // applied once.
+      const applyCalls = fetchMock.mock.calls.filter(
+        ([url, init]) =>
+          (init as RequestInit)?.method === 'PUT' && /\/tasks\/1\/labels$/.test(url as string),
+      );
+      expect(applyCalls).toHaveLength(1);
+      expect(JSON.parse((applyCalls[0]?.[1] as RequestInit).body as string)).toEqual({ label_id: 9 });
+      expect(result.content[0].text).toContain('Label applied to task successfully');
+    });
+
+    it('throws a validation error when neither labels nor labelTitles is provided', async () => {
+      await expect(applyLabels({ id: 1 }, authManager)).rejects.toThrow(MCPError);
+      await expect(applyLabels({ id: 1, labels: [], labelTitles: [] }, authManager)).rejects.toThrow(
+        /label id.*label title|At least one/i,
+      );
+    });
+  });
+
   describe('removeLabels', () => {
     it('should remove labels from a task successfully', async () => {
       const result = await removeLabels({ id: 1, labels: [1] }, authManager);

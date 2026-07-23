@@ -27,15 +27,19 @@ export function registerTaskLabelsTool(
     'vikunja_task_labels',
     withReadOnlyNote(
       'vikunja_task_labels',
-      'Manage task labels: apply, remove, list labels. apply-label/remove-label take label IDs — ' +
-        'to attach a label by name, first call vikunja_labels with subcommand "ensure" (get-or-create ' +
-        'by title, idempotent) to resolve the id, then pass it here.',
+      'Manage task labels: apply, remove, list labels. remove-label/list-labels take label IDs. ' +
+        'apply-label takes label IDs (`labels`) AND/OR label titles (`labelTitles`) — to attach a ' +
+        'label by name, just pass `labelTitles`: each title is get-or-created and attached in ONE ' +
+        'call, no separate lookup needed.',
     ),
     {
       operation: z.enum(['apply-label', 'remove-label', 'list-labels']),
       // Task and label identification
       id: z.number(),
       labels: z.array(z.number()).optional(),
+      // apply-label only: label titles to get-or-create-then-attach, merged
+      // with `labels` (deduped) — see src/utils/label-ensure.ts.
+      labelTitles: z.array(z.string().min(1)).optional(),
     },
     getToolAnnotations('vikunja_task_labels'),
     async (args) => {
@@ -62,7 +66,8 @@ export function registerTaskLabelsTool(
             return applyLabels(
               {
                 id: args.id,
-                labels: args.labels || []
+                labels: args.labels || [],
+                labelTitles: args.labelTitles || []
               },
               authManager,
             );

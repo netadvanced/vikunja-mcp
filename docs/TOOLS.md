@@ -108,7 +108,7 @@ interface StandardResponse {
   - `download-attachment` - **Cannot deliver the file itself** — MCP has no binary content channel. Returns the direct download URL (optionally with a `previewSize` of `sm`/`md`/`lg`/`xl`) plus the `Authorization: Bearer <token>` header guidance needed to fetch it yourself.
   - `relate` / `unrelate` / `relations` - Manage task-to-task relations (subtask, blocking, duplicateof, ...) — same underlying handlers as the standalone `vikunja_task_relations` tool below
   - `add-reminder` / `remove-reminder` / `list-reminders` - Manage task reminders — same underlying handlers as the standalone `vikunja_task_reminders` tool below
-  - `apply-label` / `remove-label` / `list-labels` - Apply/remove/list a task's labels — same underlying handlers as the standalone `vikunja_task_labels` tool below
+  - `apply-label` / `remove-label` / `list-labels` - Apply/remove/list a task's labels — same underlying handlers as the standalone `vikunja_task_labels` tool below. `apply-label` accepts label ids (`labels`) and/or label **titles** (`labelTitles`) — each title is get-or-created (case-insensitive exact-title match, else created) and attached in the same call, so "attach a label by name" is one call instead of a separate `vikunja_labels ensure` lookup followed by a second `apply-label`
   - `set-bucket` - Move a task into a Kanban bucket; `projectId`/`viewId` auto-resolve when omitted
   - `bulk-set-bucket` - Move several tasks into the same Kanban bucket in one call (`taskIds`, `bucketId`, optional `projectId`/`viewId` overrides). Resolves the project (from `projectId`, or from the first task in `taskIds` when omitted) and the Kanban view once, then applies each move sequentially (SQLite lock discipline). Reports the count from confirmed per-task successes; `failedIds` on a partial result. Same underlying handler as `vikunja_task_bulk`'s `bulk-set-bucket` operation below
   - `set-position` - Update a task's ordering within a project view (`position` is a float — see the Vikunja docs on inserting between two existing positions)
@@ -131,7 +131,8 @@ narrower tool surface exposed to a client): `vikunja_task_bulk` (`operation`:
 (`operation`: `assign`/`unassign`/`list-assignees`), `vikunja_task_comments`
 (`operation`: `comment`/`list`/`get`/`update`/`delete`),
 `vikunja_task_reminders` (`operation`: `add-reminder`/`remove-reminder`/`list-reminders`),
-`vikunja_task_labels` (`operation`: `apply-label`/`remove-label`/`list-labels`),
+`vikunja_task_labels` (`operation`: `apply-label`/`remove-label`/`list-labels`; `apply-label`
+takes `labels` and/or `labelTitles`, see above),
 `vikunja_task_relations` (`operation`: `relate`/`unrelate`/`relations`, plus
 `relationKind`: one of `subtask`, `parenttask`, `related`, `duplicateof`,
 `duplicates`, `blocking`, `blocked`, `precedes`, `follows`, `copiedfrom`,
@@ -226,8 +227,11 @@ narrower tool surface exposed to a client): `vikunja_task_bulk` (`operation`:
   - `create` - Create new label (required: title; optional: description, hexColor)
   - `update` - Update existing label (partial updates)
   - `delete` - Delete a label by ID
-  - `apply-label` / `remove-label` - Apply or remove one or more labels on a task (task id + labels array; bulk supported)
-  - `list-labels` - List all labels assigned to a task
+  - `ensure` - Get-or-create a label by title (case-insensitive exact-title match via `GET /labels?s=`, else creates it), idempotent — use this when you want the label's id WITHOUT attaching it to a task. To attach a label by name in one call, prefer `vikunja_task_labels apply-label`'s `labelTitles` field instead (see [Task Management](#task-management) above) — it does the same get-or-create AND attaches, so it's one call instead of `ensure` followed by a separate `apply-label`
+
+Applying/removing/listing a task's labels lives on `vikunja_task_labels`
+(`apply-label`/`remove-label`/`list-labels`) and the equivalent `vikunja_tasks`
+subcommands — see [Task Management](#task-management) above.
 
 ## Project Templates
 

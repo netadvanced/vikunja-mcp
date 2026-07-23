@@ -22,6 +22,13 @@
  * single idempotent call. See netadvanced/vikunja-mcp#28 friction #4
  * (existing-label-reuse cost both models 2x the optimal call count with no
  * create-or-reuse primitive).
+ *
+ * The get-or-create logic itself lives in the shared `ensureLabelByTitle`
+ * helper (src/utils/label-ensure.ts) — `vikunja_task_labels apply-label` also
+ * calls it (via its `labelTitles` field) so attaching a label by name is a
+ * single call on the tool agents already reach for, instead of requiring a
+ * separate `ensure` call followed by a second `apply-label` call. `ensure`
+ * remains here for the get-or-create-without-attaching use case.
  */
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -34,6 +41,7 @@ import { wrapToolError } from '../utils/error-handler';
 import { vikunjaRestRequest } from '../utils/vikunja-rest';
 import { formatAorpAsMarkdown } from '../utils/response-factory';
 import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../utils/read-only';
+import { ensureLabelByTitle } from '../utils/label-ensure';
 import type { components } from '../types/generated/vikunja-openapi';
 // `ResponseData.labels` (src/utils/simple-response.ts) is still typed
 // against this simplified local shape (`title: string`, not optional) — the
@@ -69,8 +77,10 @@ export function registerLabelsTool(server: McpServer, authManager: AuthManager, 
     withReadOnlyNote(
       'vikunja_labels',
       'Manage task labels with full CRUD operations for organizing and categorizing tasks. ' +
-        'To attach a label by name, prefer subcommand "ensure" (get-or-create by title, idempotent, ' +
-        'one call) over list+match+create, then pass the returned id to vikunja_task_labels apply-label.',
+        'To attach a label by name in one call, pass `labelTitles` to vikunja_task_labels ' +
+        'apply-label instead — it get-or-creates each title and attaches it, no separate lookup ' +
+        'needed. Use subcommand "ensure" here only when you want to get-or-create a label by title ' +
+        '(idempotent, one call) WITHOUT attaching it to a task.',
     ),
     {
       // Operation type
@@ -277,71 +287,34 @@ export function registerLabelsTool(server: McpServer, authManager: AuthManager, 
             if (!args.title) {
               throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Title is required');
             }
-            const requestedTitle = args.title;
-            const normalizedTitle = requestedTitle.toLowerCase();
 
-            // Narrow via the server's own search first (mirrors the `list`
-            // subcommand's `s` param) — the authoritative match is still done
-            // client-side below since `s` is a substring search, not
-            // guaranteed to be an exact (case-insensitive) title match.
-            const searchParams = new URLSearchParams();
-            searchParams.set('s', requestedTitle);
-            const candidates = await vikunjaRestRequest<VikunjaLabel[]>(
-              authManager,
-              'GET',
-              `/labels?${searchParams.toString()}`,
-            );
-            // Multiple candidates can share a case-insensitive title (e.g.
-            // "Bug" and "bug" both created previously); dedupe by picking the
-            // first exact match deterministically instead of creating a
-            // second duplicate.
-            const existing = (Array.isArray(candidates) ? candidates : []).find(
-              (label) =>
-                typeof label.title === 'string' && label.title.toLowerCase() === normalizedTitle,
-            );
+            const result = await ensureLabelByTitle(authManager, args.title, {
+              ...(args.description ? { description: args.description } : {}),
+              ...(args.hexColor ? { hexColor: args.hexColor } : {}),
+            });
 
-            if (existing) {
-              const response = createStandardResponse(
-                'ensure-label',
-                `Label "${existing.title}" already exists (reused)`,
-                { label: existing },
-                { affectedFields: [], reused: true },
-              );
-
-              return {
-                content: [
+            const response = result.created
+              ? createStandardResponse(
+                  'ensure-label',
+                  `Label "${result.label.title}" did not exist, created it`,
+                  { label: result.label },
                   {
-                    type: 'text' as const,
-                    text: formatAorpAsMarkdown(response),
+                    // Mirrors the `create` subcommand's affectedFields: the
+                    // keys actually sent in the PUT body when creating.
+                    affectedFields: [
+                      'title',
+                      ...(args.description ? ['description'] : []),
+                      ...(args.hexColor ? ['hex_color'] : []),
+                    ],
+                    reused: false,
                   },
-                ],
-              };
-            }
-
-            // No existing label matched: create it, mirroring the `create`
-            // subcommand above.
-            const labelData: VikunjaLabel = {
-              title: requestedTitle,
-            };
-            if (args.description) labelData.description = args.description;
-            if (args.hexColor) labelData.hex_color = args.hexColor;
-
-            const created = await vikunjaRestRequest<VikunjaLabel>(
-              authManager,
-              'PUT',
-              '/labels',
-              labelData,
-            );
-
-            const response = createStandardResponse(
-              'ensure-label',
-              `Label "${created.title}" did not exist, created it`,
-              { label: created },
-              {
-                affectedFields: Object.keys(labelData).filter((key) => typeof key === 'string'),
-                reused: false,
-              },
-            );
+                )
+              : createStandardResponse(
+                  'ensure-label',
+                  `Label "${result.label.title}" already exists (reused)`,
+                  { label: result.label },
+                  { affectedFields: [], reused: true },
+                );
 
             return {
               content: [

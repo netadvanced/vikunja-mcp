@@ -444,6 +444,7 @@ interface FlowContext {
   taskId?: number;
   labelId?: number;
   ensureLabelId?: number;
+  attachByTitleLabelId?: number;
   filterId?: number;
   selfUserId?: number;
   bucketId?: number;
@@ -1062,6 +1063,84 @@ async function testLabels(h: McpHarness, ctx: FlowContext): Promise<void> {
       `first=${ctx.ensureLabelId} third=${extractId(ensureThird.text)}`,
     );
   }
+
+  // attach-by-title (feat/label-attach-by-name): apply-label's `labelTitles`
+  // should get-or-create AND attach in a single call — the whole point being
+  // that weak agents don't have to discover `ensure` on vikunja_labels and
+  // thread its returned id into a second, separate apply-label call. First
+  // call has no matching label yet (create-miss); calling it again with the
+  // identical title must reuse the same id (idempotent), not create a
+  // duplicate, and both calls must actually attach the label to the task.
+  //
+  // apply-label's own response is task-shaped (not label-shaped), so the
+  // resolved label's id is looked up independently via `vikunja_labels list
+  // search=<title>` afterwards, rather than parsed out of apply-label's text
+  // — mirroring the id-extraction approach the stale-label sweep above
+  // already uses for `vikunja_labels list` responses.
+  const attachTitle = `${NAME_PREFIX}attach-by-title`;
+  const attachFirst = await h.call('vikunja_task_labels', {
+    operation: 'apply-label',
+    id: ctx.taskId,
+    labelTitles: [attachTitle],
+  });
+  if (!assertOk('apply-label labelTitles (first call, create-miss)', attachFirst)) return;
+  assertStep(
+    'apply-label labelTitles first call reports a create, not a reuse',
+    attachFirst.text.includes('created'),
+    attachFirst.text.slice(0, 300),
+  );
+
+  const searchAfterFirst = await h.call('vikunja_labels', {
+    subcommand: 'list',
+    search: attachTitle,
+  });
+  if (!assertOk('search for label created via labelTitles', searchAfterFirst)) return;
+  ctx.attachByTitleLabelId = extractId(searchAfterFirst.text);
+  if (!ctx.attachByTitleLabelId) {
+    fail(
+      'apply-label labelTitles (id extraction)',
+      `could not extract label id from: ${searchAfterFirst.text.slice(0, 300)}`,
+    );
+    return;
+  }
+
+  const attachListAfterFirst = await h.call('vikunja_task_labels', {
+    operation: 'list-labels',
+    id: ctx.taskId,
+  });
+  if (assertOk('list task labels after attach-by-title (first call)', attachListAfterFirst)) {
+    assertStep(
+      'task label list includes the label attached via labelTitles',
+      attachListAfterFirst.text.includes(attachTitle) ||
+        extractAllIds(attachListAfterFirst.text).includes(ctx.attachByTitleLabelId),
+      attachListAfterFirst.text.slice(0, 300),
+    );
+  }
+
+  const attachSecond = await h.call('vikunja_task_labels', {
+    operation: 'apply-label',
+    id: ctx.taskId,
+    labelTitles: [attachTitle],
+  });
+  if (assertOk('apply-label labelTitles (second call, reuse-hit)', attachSecond)) {
+    assertStep(
+      'apply-label labelTitles second call reports a reuse, not a create',
+      attachSecond.text.includes('reused'),
+      attachSecond.text.slice(0, 300),
+    );
+  }
+
+  const searchAfterSecond = await h.call('vikunja_labels', {
+    subcommand: 'list',
+    search: attachTitle,
+  });
+  if (assertOk('search for label after attach-by-title (second call)', searchAfterSecond)) {
+    assertStep(
+      'attach-by-title second call reused the same label id as the first (no duplicate created)',
+      extractId(searchAfterSecond.text) === ctx.attachByTitleLabelId,
+      `first=${ctx.attachByTitleLabelId} second=${extractId(searchAfterSecond.text)}`,
+    );
+  }
 }
 
 async function testAssignees(h: McpHarness, ctx: FlowContext): Promise<void> {
@@ -1502,6 +1581,15 @@ async function finalCleanup(h: McpHarness, ctx: FlowContext): Promise<void> {
       log(`  deleted label ${ctx.ensureLabelId}`);
     } catch (e) {
       log(`  could not delete label ${ctx.ensureLabelId}: ${(e as Error).message}`);
+    }
+  }
+
+  if (ctx.attachByTitleLabelId) {
+    try {
+      await h.call('vikunja_labels', { subcommand: 'delete', id: ctx.attachByTitleLabelId });
+      log(`  deleted label ${ctx.attachByTitleLabelId}`);
+    } catch (e) {
+      log(`  could not delete label ${ctx.attachByTitleLabelId}: ${(e as Error).message}`);
     }
   }
 
