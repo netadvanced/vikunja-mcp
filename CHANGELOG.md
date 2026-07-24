@@ -16,6 +16,71 @@ Nothing yet.
 
 
 
+
+## [0.6.0] - 2026-07-24
+
+A reliability and agent-ergonomics milestone on the Vikunja 2.4.0-aligned baseline (minimum
+supported 2.3.0). Two silent-failure bugs that could bite *any* client are fixed — a circuit-breaker
+cascade that let one bad request poison an entire session, and date-only due dates being silently
+lost — alongside a batch of changes that make weaker AI agents far more reliable against the tool
+surface (measured: haiku scenario pass-rate 7/15 → 14/15). **Breaking:** the minimum Node.js is now
+22 LTS.
+
+### Added
+
+- **Attach labels by name in one call.** `vikunja_task_labels` `apply-label` now accepts
+  `labelTitles` — labels are get-or-created and attached in a single call instead of the old
+  list → match → create dance. Backed by a new `ensure` subcommand on `vikunja_labels`
+  (idempotent get-or-create by title) and a shared `ensureLabelByTitle` helper (#159, #162).
+- **Per-session API-version / capability detection.** `vikunja_auth` `status`/`info` now report the
+  connected server version and whether the Vikunja v2 API is available, cached per session. No
+  behavior change yet — it's the seam the upcoming v2 fast-paths will consult (#149).
+- **Multi-architecture Docker images** — releases now publish `linux/amd64` *and* `linux/arm64`
+  (Apple Silicon, ARM servers), with SLSA build provenance (#146).
+
+### Changed
+
+- **BREAKING — minimum Node.js is now 22 LTS** (was 20). Node 20 is no longer supported (#152).
+- **Clearer Kanban/bucket guidance.** Argument descriptions and error messages across
+  `vikunja_tasks` and `vikunja_projects` bucket operations now state exactly which id each expects
+  (project `id` vs `viewId` vs `bucketId`) and how to obtain it — cutting the validation errors
+  weaker agents hit (#161).
+- **Filter discoverability.** The `vikunja_tasks` `filter` parameter and `vikunja_filters` gained
+  copy-pasteable syntax examples (operators, `&&`/`||`, date literals) (#158).
+
+### Fixed
+
+- **Circuit-breaker cascade (reliability).** A single client-side `4xx` (e.g. a malformed
+  bulk-create) no longer trips the circuit breaker. Previously one bad request opened the breaker
+  and *every* subsequent write failed with "Breaker is open" for the rest of the session; the
+  open-circuit message is also reworded so callers know it's a transient condition to retry, not an
+  auth failure to reconnect through (#163).
+- **Silent date data-loss.** Date-only due / start / end dates (`YYYY-MM-DD`) were rejected by
+  Vikunja (which requires RFC3339) and silently lost. They are now coerced to RFC3339 across
+  single-create, bulk-create, and bulk-update; bulk-create additionally now forwards
+  `startDate`/`endDate` at all (they were previously dropped entirely) (#164, #167, #168). This was
+  also a root trigger of the circuit-breaker cascade above.
+- **403 misclassification.** Removing a label that isn't attached (or an absent assignee) returns
+  Vikunja's `403`, which was misread as an auth error and retried 3× with a misleading message.
+  These paths now reconcile against actual state and report an accurate, idempotent outcome (#154,
+  #155, #157).
+
+### Security
+
+- `@hono/node-server` overridden to `^2.0.5` — clears GHSA-frvp-7c67-39w9 (#153).
+- `fast-uri` bumped to `3.1.4` — clears GHSA-v2hh-gcrm-f6hx (#151). `npm audit` reports zero
+  vulnerabilities.
+
+### Internal
+
+- Vendored the Vikunja **v2 OpenAPI spec** and generated types — preparation for the v2 API
+  migration (0.7.0); not wired into runtime yet (#147).
+- Battle-testing: added `bulk-set-bucket` / `bulk-create-subtasks` scenarios and fixed the
+  kanban bucket-count verification (read from the view's tasks endpoint) (#148, #150); locked in
+  subresource 4xx-not-retried / 5xx-retried behavior with tests (#156).
+- Release notes now link npm + GHCR package pages; documented the post-1.0 maintenance-branch
+  policy (#145, #144).
+
 ## [0.5.2] - 2026-07-22
 
 A maintenance patch: sharing and filter bug fixes, a dependency security bump, and the
