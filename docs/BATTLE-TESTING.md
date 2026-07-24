@@ -39,7 +39,7 @@ Rough costs observed while building this harness (Claude Code 2.1.214,
 |---|---|---|
 | Cheapest scenario (`single-task-smoke`) | haiku | ~$0.07 |
 | Cheapest scenario (`single-task-smoke`) | sonnet | typically a few times the haiku cost |
-| Full 8-scenario library, one model | sonnet | expect several dollars -- run scenarios individually first if you're cost-sensitive |
+| Full scenario library (13 scenarios), one model | sonnet | expect several dollars -- run scenarios individually first if you're cost-sensitive |
 
 Always start with `npm run battle -- --list` (free) and a single cheap
 scenario before running `--all`.
@@ -154,17 +154,20 @@ transcript that revealed it).
 ## The scenario library
 
 `scripts/battle/scenarios/*.json`, each validated against `ScenarioSchema`
-(`scripts/battle/types.ts`) at load time. Currently 10 scenarios:
+(`scripts/battle/types.ts`) at load time. Currently 13 scenarios:
 
 | id | probes |
 |---|---|
-| `q3-offsite-kanban` | Pierre's canonical example: a single sentence hiding a multi-step composite (project + 3-column Kanban + 10 tasks + priorities + due dates) |
+| `q3-offsite-kanban` | Pierre's canonical example: a single sentence hiding a multi-step composite (project + 3-column Kanban + 10 tasks + priorities + due dates). `optimalCallCount` dropped from 15 to 1 once the `setup-kanban` composite (issue #173) shipped -- see `setup-kanban-composite` below |
+| `setup-kanban-composite` | added alongside issue #173's `setup-kanban` composite: a q3-offsite-kanban-style prompt (new project, 4-column board, 8 tasks distributed across columns, priorities, due dates) specifically probing whether the agent reaches for the one-call composite instead of hand-rolling create -> create-bucket (xN) -> bulk-create -> set-bucket/bulk-set-bucket (xN) |
 | `filter-high-priority-search` | the Vikunja filter query language (`docs/API_NOTES.md`'s filter notes) |
 | `share-project-by-user` | project link-sharing discoverability |
 | `subtask-breakdown` | subtask creation (Vikunja has no first-class subtask resource -- it's a task relation under the hood) |
+| `bulk-create-subtasks` | bulk-create-subtasks composite discoverability vs. one `create-subtask` call per subtask |
 | `bulk-priority-bump` | bulk-edit discoverability vs. one-call-per-task |
+| `bulk-set-bucket` | bulk-set-bucket composite discoverability vs. moving each task into its Kanban column one at a time |
 | `labels-due-date-combo` | label creation + application + due dates combined in one ask (create-then-apply path only) |
-| `single-task-smoke` | deliberately the cheapest scenario -- use this one for a first try or a live-smoke proof |
+| `single-task-smoke` | deliberately the simplest, most deterministic scenario -- use this one for a first try or a live-smoke proof (see the note on `optimalCallCount` below -- it is no longer necessarily the global minimum by raw call count, but remains the designated smoke-test scenario) |
 | `mixed-priority-batch` | varying a per-item field within a single batch-creation call |
 | `existing-label-reuse` | applying an already-existing label (find-then-apply path -- seeded via `setup`, closes the evidence gap `labels-due-date-combo` leaves open) |
 | `project-rename-share` | project create + rename + share-by-name in one prompt -- probes the `title`-vs-`name` field-naming footgun (`vikunja_projects`' flat args object has both) and exercises the share-by-name composite (`create-share` with a `name`) |

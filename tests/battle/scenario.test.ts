@@ -65,9 +65,9 @@ describe('renderScenario setup actions', () => {
 describe('shipped scenario library (scripts/battle/scenarios/*.json)', () => {
   const scenarios = loadAllScenarios(SCENARIOS_DIR);
 
-  it('ships between 6 and 12 scenarios', () => {
+  it('ships between 6 and 15 scenarios', () => {
     expect(scenarios.length).toBeGreaterThanOrEqual(6);
-    expect(scenarios.length).toBeLessThanOrEqual(12);
+    expect(scenarios.length).toBeLessThanOrEqual(15);
   });
 
   it('has unique ids', () => {
@@ -75,15 +75,21 @@ describe('shipped scenario library (scripts/battle/scenarios/*.json)', () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it('exactly one scenario is tagged as the cheap live-smoke-test scenario', () => {
-    // Convention: the cheapest scenario is the one with the lowest
-    // optimalCallCount; there should be a clear, unambiguous minimum so
-    // docs/BATTLE-TESTING.md's "run the cheapest scenario" instruction is
-    // unambiguous.
-    const min = Math.min(...scenarios.map((s) => s.optimalCallCount));
-    const cheapest = scenarios.filter((s) => s.optimalCallCount === min);
-    expect(cheapest.length).toBeGreaterThanOrEqual(1);
-    expect(cheapest.some((s) => s.id === 'single-task-smoke')).toBe(true);
+  it('single-task-smoke remains the designated cheap live-smoke-test scenario', () => {
+    // Historically the unique global minimum of optimalCallCount. That
+    // invariant no longer holds unconditionally: a one-call composite that
+    // provisions an entire structure (e.g. setup-kanban, issue #173) can
+    // legitimately need FEWER calls than single-task-smoke's two primitive
+    // calls (create-project + create-task) — q3-offsite-kanban and
+    // setup-kanban-composite are both now estimated at 1 call. That's
+    // expected and desired (it's the whole point of shipping the
+    // composite), not a regression in single-task-smoke's designated role:
+    // it remains docs/BATTLE-TESTING.md's/docs/RELEASING.md's named
+    // live-smoke-test scenario because it is the simplest and most
+    // deterministic to run, not because it is the lowest call count.
+    const singleTaskSmoke = scenarios.find((s) => s.id === 'single-task-smoke');
+    expect(singleTaskSmoke).toBeDefined();
+    expect(singleTaskSmoke?.optimalCallCount).toBeLessThanOrEqual(3);
   });
 
   it.each(loadAllScenarios(SCENARIOS_DIR).map((s) => [s.id, s] as const))('%s renders and every check/setup action substitutes cleanly', (_id, scenario) => {

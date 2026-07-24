@@ -1,9 +1,9 @@
 {
   "id": "q3-offsite-kanban",
   "title": "Q3 offsite Kanban setup (Pierre's canonical example)",
-  "description": "A single, deceptively simple sentence hiding a multi-step composite task: a new project, a 3-column Kanban board, 10 tasks distributed across those columns, priorities, and due dates spread across a month.",
+  "description": "A single, deceptively simple sentence hiding a multi-step composite task: a new project, a 3-column Kanban board, 10 tasks distributed across those columns, priorities, and due dates spread across a month. This is the scenario that motivated issue #173 (haiku needed ~38 calls against a hand-estimated optimal of 15 before the setup-kanban composite existed). optimalCallCount dropped from 15 to 1 once vikunja_projects setup-kanban shipped -- see also the setup-kanban-composite scenario, added alongside that composite.",
   "promptTemplate": "Set up a project called \"{{prefix}}Q3 Offsite\" to plan our Q3 offsite: a kanban board with three columns, ten tasks distributed across those columns, each task given a priority, and due dates spread across September 2026.",
-  "optimalCallCount": 15,
+  "optimalCallCount": 1,
   "verify": [
     { "type": "project-exists", "titleContains": "{{prefix}}Q3 Offsite" },
     { "type": "min-tasks-in-project", "projectTitleContains": "{{prefix}}Q3 Offsite", "min": 10 },

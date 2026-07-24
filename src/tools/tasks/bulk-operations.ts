@@ -4,7 +4,7 @@
  * This file maintains backward compatibility while using the simplified implementation.
  */
 
-export { bulkUpdateTasks, bulkDeleteTasks, bulkCreateTasks } from './bulk-operations-simplified';
+export { bulkUpdateTasks, bulkDeleteTasks, bulkCreateTasks, createOneBulkTask } from './bulk-operations-simplified';
 
 // Re-export types from canonical location (BulkOperationValidator)
 export type {

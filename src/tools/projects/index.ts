@@ -86,6 +86,8 @@ import {
 
 import { duplicateProject, type DuplicateProjectArgs } from './duplicate';
 
+import { setupKanban, type SetupKanbanArgs, type SetupKanbanTaskInput } from './kanban-setup';
+
 import {
   removeProjectBackground,
   setUnsplashBackground,
@@ -181,6 +183,7 @@ const PROJECT_ID_ALIAS_SUBCOMMANDS = new Set<string>([
   'remove-background',
   'set-unsplash-background',
   'search-unsplash',
+  'setup-kanban',
 ]);
 
 /**
@@ -227,6 +230,9 @@ export function registerProjectsTool(
     'list-buckets', 'create-bucket', 'update-bucket', 'delete-bucket',
     'list-views', 'get-view', 'create-view', 'update-view', 'delete-view',
     'set-done-bucket', 'list-view-tasks', 'duplicate',
+    // Composite: provisions a whole Kanban board (project + view + ordered
+    // buckets + placed tasks) in one call — see src/tools/projects/kanban-setup.ts.
+    'setup-kanban',
     // Direct user/team sharing — primitives
     'list-project-users', 'search-project-users', 'add-project-user',
     'update-project-user-permission', 'remove-project-user',
@@ -249,7 +255,13 @@ export function registerProjectsTool(
       + 'update-view, delete-view, set-done-bucket, duplicate, and the backgrounds subcommands) identify the target project via `id` — `projectId` '
       + 'is accepted there too as an alias for `id`. Sharing subcommands (create-share, share-with-user, list-project-users, etc.) use `projectId` only. '
       + '`create-share`\'s share label is the `name` field, NOT `title` (`title` is the project\'s own title field, used by `create`/`update`) — '
-      + 'passing `title` to `create-share` is rejected with a validation error naming the correct field.'
+      + 'passing `title` to `create-share` is rejected with a validation error naming the correct field. '
+      + 'Setting up a whole Kanban board (a project, its columns, and tasks distributed across them) by hand costs many separate calls — '
+      + 'create the project, create/rename each bucket, bulk-create the tasks, then move each task into its column. Use `setup-kanban` instead: '
+      + 'ONE call given a project title (or an existing `id` to reuse), an ordered `columns` array, and an optional `tasks` array (each task may '
+      + 'carry a `column` name plus the normal task fields) provisions the whole board — creating/reusing the project, ensuring its Kanban view, '
+      + 'creating/renaming/reusing buckets to match `columns` in order, and creating+placing every task. Prefer it over hand-rolling '
+      + 'create -> create-bucket (xN) -> vikunja_task_bulk bulk-create -> vikunja_tasks set-bucket / vikunja_task_bulk bulk-set-bucket (xN).'
       + (backgroundsEnabled
         ? ' The opt-in backgrounds module adds remove-background/set-unsplash-background/search-unsplash'
         : ''),
@@ -324,6 +336,62 @@ export function registerProjectsTool(
       defaultBucketId: z.coerce.number().positive().optional(),
       // Duplicate-project arguments (duplicate subcommand).
       duplicateShares: z.boolean().optional(),
+      // setup-kanban composite arguments (issue #173). `columns` and
+      // `tasks` are dedicated to this subcommand; `title`/`description`/
+      // `parentProjectId` above are reused when setup-kanban creates a new
+      // project (i.e. when `id` is omitted).
+      columns: z
+        .array(z.string().min(1))
+        .min(1)
+        .optional()
+        .describe(
+          'Required for setup-kanban: an ORDERED, non-empty array of Kanban column/bucket ' +
+            'names, e.g. ["To Do", "Doing", "Done"]. Buckets are created/renamed/reused to ' +
+            'match this exact order.',
+        ),
+      tasks: z
+        .array(
+          z.object({
+            title: z.string().min(1),
+            column: z
+              .string()
+              .optional()
+              .describe('Must match one of the setup-kanban `columns` entries (case-insensitive).'),
+            description: z.string().optional(),
+            priority: z.number().min(0).max(5).optional(),
+            dueDate: z
+              .string()
+              .optional()
+              .describe(
+                'RFC3339/ISO 8601 date-time, or a date-only value (e.g. 2026-09-01) normalized ' +
+                  'to midnight UTC.',
+              ),
+            startDate: z
+              .string()
+              .optional()
+              .describe(
+                'RFC3339/ISO 8601 date-time, or a date-only value (e.g. 2026-09-01) normalized ' +
+                  'to midnight UTC.',
+              ),
+            endDate: z
+              .string()
+              .optional()
+              .describe(
+                'RFC3339/ISO 8601 date-time, or a date-only value (e.g. 2026-09-01) normalized ' +
+                  'to midnight UTC.',
+              ),
+            labels: z
+              .array(z.string())
+              .optional()
+              .describe('Label titles — get-or-created by title, same as apply-label\'s labelTitles.'),
+            assignees: z.array(z.number()).optional().describe('Numeric assignee user ids.'),
+          }),
+        )
+        .optional()
+        .describe(
+          'Used by setup-kanban: tasks to bulk-create and place into their named column ' +
+            '(each task\'s `column`, matched against `columns`).',
+        ),
       // Sharing arguments (link shares + direct user/team sharing)
       projectId: z
         .number()
@@ -616,6 +684,12 @@ export function registerProjectsTool(
             }
             return await listProjectMembers(args as ListMembersArgs, authManager);
 
+          // setup-kanban composite (issue #173) — validates its own required
+          // fields (columns, and either id or title) internally; `id` here
+          // has already had the projectId alias applied above when present.
+          case 'setup-kanban':
+            return await setupKanban(args as SetupKanbanArgs, authManager);
+
           // Kanban bucket operations
           case 'list-buckets':
             if (!args.id) {
@@ -811,7 +885,9 @@ export type {
   ListMembersArgs,
   RemoveBackgroundArgs,
   SetUnsplashBackgroundArgs,
-  SearchUnsplashArgs
+  SearchUnsplashArgs,
+  SetupKanbanArgs,
+  SetupKanbanTaskInput
 };
 
 // Export all functions for direct use if needed
@@ -844,6 +920,9 @@ export {
   updateBucket,
   deleteBucket,
   listViewTasks,
+
+  // Kanban board composite
+  setupKanban,
 
   // Project views
   listViews,

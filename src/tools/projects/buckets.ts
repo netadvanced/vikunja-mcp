@@ -117,8 +117,15 @@ function validateNonNegativeNumber(value: number, fieldName: string): void {
   }
 }
 
-/** Fetches the buckets of a project's view. */
-async function fetchBuckets(
+/**
+ * Fetches the buckets of a project's view.
+ *
+ * Exported so callers that need the raw, structured bucket list — not
+ * `listBuckets`'s formatted MCP response — can reuse the exact same fetch
+ * (e.g. `setupKanban`, `src/tools/projects/kanban-setup.ts`, which needs
+ * numeric bucket ids to place tasks after resolving each requested column).
+ */
+export async function fetchBuckets(
   authManager: AuthManager,
   projectId: number,
   viewId: number,
@@ -129,6 +136,60 @@ async function fetchBuckets(
     `/projects/${projectId}/views/${viewId}/buckets`,
   );
   return Array.isArray(buckets) ? buckets : [];
+}
+
+/**
+ * Creates a bucket and returns the raw, structured `VikunjaBucket` (not a
+ * formatted MCP response). This is the exact request `createBucket` (the
+ * `create-bucket` subcommand handler) sends — extracted so `setupKanban`
+ * can reuse it directly and get the created bucket's numeric id back for
+ * task placement, without parsing a markdown-formatted response.
+ */
+export async function createBucketRaw(
+  authManager: AuthManager,
+  projectId: number,
+  viewId: number,
+  fields: { title: string; limit?: number; position?: number },
+): Promise<VikunjaBucket> {
+  const body: VikunjaBucket = { title: fields.title };
+  if (fields.limit !== undefined) body.limit = fields.limit;
+  if (fields.position !== undefined) body.position = fields.position;
+  return vikunjaRestRequest<VikunjaBucket>(
+    authManager,
+    'PUT',
+    `/projects/${projectId}/views/${viewId}/buckets`,
+    body,
+  );
+}
+
+/**
+ * Updates a bucket (fetch-merge-POST already applied by the caller via
+ * `current`) and returns the raw, structured `VikunjaBucket`. This is the
+ * exact request `updateBucket` (the `update-bucket` subcommand handler)
+ * sends — extracted so `setupKanban` can reuse it directly (e.g. to rename
+ * a leftover default bucket to a requested column name, or to pin a
+ * reused bucket's `position` to enforce column order) without parsing a
+ * markdown-formatted response.
+ */
+export async function updateBucketRaw(
+  authManager: AuthManager,
+  projectId: number,
+  viewId: number,
+  current: VikunjaBucket,
+  fields: { title?: string; limit?: number; position?: number },
+): Promise<VikunjaBucket> {
+  const payload: VikunjaBucket = {
+    ...current,
+    ...(fields.title !== undefined && { title: fields.title }),
+    ...(fields.limit !== undefined && { limit: fields.limit }),
+    ...(fields.position !== undefined && { position: fields.position }),
+  };
+  return vikunjaRestRequest<VikunjaBucket>(
+    authManager,
+    'POST',
+    `/projects/${projectId}/views/${viewId}/buckets/${current.id}`,
+    payload,
+  );
 }
 
 /**
@@ -280,16 +341,11 @@ export async function createBucket(
   const viewId =
     args.viewId !== undefined ? args.viewId : await resolveKanbanViewId(authManager, args.id);
 
-  const body: VikunjaBucket = { title: args.title.trim() };
-  if (args.limit !== undefined) body.limit = args.limit;
-  if (args.position !== undefined) body.position = args.position;
+  const bucketFields: { title: string; limit?: number; position?: number } = { title: args.title.trim() };
+  if (args.limit !== undefined) bucketFields.limit = args.limit;
+  if (args.position !== undefined) bucketFields.position = args.position;
 
-  const bucket = await vikunjaRestRequest<VikunjaBucket>(
-    authManager,
-    'PUT',
-    `/projects/${args.id}/views/${viewId}/buckets`,
-    body,
-  );
+  const bucket = await createBucketRaw(authManager, args.id, viewId, bucketFields);
 
   const affectedFields = ['title'];
   if (args.limit !== undefined) affectedFields.push('limit');
@@ -359,19 +415,12 @@ export async function updateBucket(
     args.id,
   );
 
-  const payload: VikunjaBucket = {
-    ...current,
-    ...(args.title !== undefined && { title: args.title.trim() }),
-    ...(args.limit !== undefined && { limit: args.limit }),
-    ...(args.position !== undefined && { position: args.position }),
-  };
+  const updateFields: { title?: string; limit?: number; position?: number } = {};
+  if (args.title !== undefined) updateFields.title = args.title.trim();
+  if (args.limit !== undefined) updateFields.limit = args.limit;
+  if (args.position !== undefined) updateFields.position = args.position;
 
-  const updated = await vikunjaRestRequest<VikunjaBucket>(
-    authManager,
-    'POST',
-    `/projects/${args.id}/views/${viewId}/buckets/${current.id}`,
-    payload,
-  );
+  const updated = await updateBucketRaw(authManager, args.id, viewId, current, updateFields);
 
   const affectedFields: string[] = [];
   if (args.title !== undefined) affectedFields.push('title');

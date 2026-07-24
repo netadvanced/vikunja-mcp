@@ -1423,6 +1423,85 @@ async function testKanban(h: McpHarness, ctx: FlowContext): Promise<void> {
   );
 }
 
+async function testSetupKanban(h: McpHarness): Promise<void> {
+  log('\n[setup-kanban composite]');
+
+  // New project: create the board, ordered columns, and tasks distributed
+  // across those columns (one column name deliberately unknown to a task,
+  // exercising the honest created-not-placed reporting path).
+  const title = `${NAME_PREFIX}kanban-composite`;
+  const setup = await h.call('vikunja_projects', {
+    subcommand: 'setup-kanban',
+    title,
+    columns: ['To Do', 'Doing', 'Done'],
+    tasks: [
+      { title: `${NAME_PREFIX}kc-task-1`, column: 'To Do', priority: 3, dueDate: '2026-09-01' },
+      { title: `${NAME_PREFIX}kc-task-2`, column: 'Doing' },
+      { title: `${NAME_PREFIX}kc-task-3`, column: 'Done' },
+      { title: `${NAME_PREFIX}kc-task-4`, column: 'Nonexistent Column' },
+    ],
+  });
+  if (!assertOk('setup-kanban (new project)', setup)) return;
+  assertStep(
+    'setup-kanban reports the project, columns, and tasks created',
+    setup.text.includes('3/3 columns ready') && setup.text.includes('3/4 tasks created'),
+    setup.text.slice(0, 500),
+  );
+  assertStep(
+    'setup-kanban honestly reports the unknown-column task as created-not-placed',
+    setup.text.includes('Created but not placed') && setup.text.includes('kc-task-4'),
+    setup.text.slice(0, 800),
+  );
+
+  const projectId = extractId(setup.text);
+  if (!projectId) {
+    fail('setup-kanban (new project) response contains a project id', setup.text.slice(0, 300));
+    return;
+  }
+
+  // Verify server-side: 3 buckets, and the placed tasks actually landed in
+  // distinct buckets (not all left in whatever bucket is the view default).
+  const buckets = await h.call('vikunja_projects', { subcommand: 'list-buckets', id: projectId });
+  if (assertOk('list-buckets after setup-kanban', buckets)) {
+    const bucketIds = extractAllIds(buckets.text);
+    assertStep(
+      'setup-kanban created exactly 3 buckets',
+      bucketIds.length === 3,
+      `expected 3 bucket ids, got: ${buckets.text.slice(0, 300)}`,
+    );
+  }
+
+  // Idempotent-ish reuse: calling setup-kanban again on the SAME project id
+  // with the SAME column names must not create duplicate buckets.
+  const reuse = await h.call('vikunja_projects', {
+    subcommand: 'setup-kanban',
+    id: projectId,
+    columns: ['To Do', 'Doing', 'Done'],
+  });
+  if (assertOk('setup-kanban (existing project reuse)', reuse)) {
+    assertStep(
+      'setup-kanban reuse reports the project as reused, not created',
+      reuse.text.includes(`project ${projectId} reused`),
+      reuse.text.slice(0, 300),
+    );
+  }
+
+  const bucketsAfterReuse = await h.call('vikunja_projects', { subcommand: 'list-buckets', id: projectId });
+  if (assertOk('list-buckets after setup-kanban reuse', bucketsAfterReuse)) {
+    const bucketIds = extractAllIds(bucketsAfterReuse.text);
+    assertStep(
+      'setup-kanban reuse does not create duplicate buckets',
+      bucketIds.length === 3,
+      `expected still 3 bucket ids after reuse, got: ${bucketsAfterReuse.text.slice(0, 300)}`,
+    );
+  }
+
+  // Cleanup: this composite creates its own project, independent of the
+  // shared FlowContext.projectId chain, so it cleans itself up here rather
+  // than relying on finalCleanup.
+  await deleteProjectAndTasks(h, projectId, title);
+}
+
 async function testNotifications(h: McpHarness): Promise<void> {
   log('\n[Notifications]');
   const list = await h.call('vikunja_notifications', { subcommand: 'list' });
@@ -1678,6 +1757,7 @@ async function main(): Promise<void> {
       await testComments(h, ctx);
       await testReminders(h, ctx);
       await testKanban(h, ctx);
+      await testSetupKanban(h);
       await testNotifications(h);
       await testAvatarSettings(h);
       await testSavedFilters(h, ctx);
