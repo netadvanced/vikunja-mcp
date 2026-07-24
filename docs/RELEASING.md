@@ -218,9 +218,15 @@ How this project tracks new upstream Vikunja releases, proven end-to-end alignin
 > spec/type refresh, drift-gating) ride along in a patch release *without* claiming the alignment
 > headline, deferring the announced-and-hardened alignment milestone to a later minor. This was
 > exercised for `0.5.2` (2026-07-22): it carried the 2.4.0 groundwork plus additive/non-breaking
-> fixes as a patch, while `0.6.0` was reserved as the deliberate *"optimised for Vikunja 2.4"*
-> milestone (battle-hardening + v2 API fast-paths). Use sparingly and only when nothing a caller
-> relies on changes; the default remains a minor.
+> fixes as a patch, while `0.6.0` (shipped 2026-07-24) was reserved as the deliberate *"optimised
+> for Vikunja 2.4"* reliability/agent-ergonomics milestone. **Verified/corrected, 2026-07-24:** at
+> the time this note was first written, `0.6.0` was also expected to carry the v2 API fast-paths;
+> in practice `0.6.0` only vendored the v2 spec/types (prep, not wired into runtime — see its
+> CHANGELOG "Internal" section) and the fast-path migration itself was deferred to a later release
+> (0.7.0 — see `docs/ROADMAP.md` §2/§6). The exception mechanism still worked exactly as designed;
+> only the boundary of what rode along in which release shifted, which is itself the kind of
+> owner-discretion latitude this note exists to describe. Use sparingly and only when nothing a
+> caller relies on changes; the default remains a minor.
 
 **Compat tag semantics.** Every release's Docker image carries a `-vikunja<A.B.C>` suffix on its own
 version, never a standalone tag: `X.Y.Z-vikunja<A.B.C>` (e.g. `0.5.2` → `:0.5.2-vikunja2.4.0`), the

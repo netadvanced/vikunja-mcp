@@ -23,6 +23,9 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
+# shellcheck source=./lib/changelog-draft.sh
+source "$REPO_ROOT/scripts/lib/changelog-draft.sh"
+
 # ---------------------------------------------------------------------------
 # 0. Args
 # ---------------------------------------------------------------------------
@@ -162,49 +165,28 @@ trap 'rm -f "$DRAFT_FILE"' EXIT
   echo "_Draft generated from conventional commits by scripts/release-prepare.sh — curate before merging._"
 } >>"$DRAFT_FILE"
 
-# Group commit subjects by conventional-commit prefix. Dependency-free: plain git log + shell.
-declare -A SECTION_TITLES=(
-  [feat]="Added"
-  [fix]="Fixed"
-  [perf]="Changed"
-  [refactor]="Changed"
-  [docs]="Documentation"
-  [chore]="Chores"
-  [other]="Other"
-)
-SECTION_ORDER=(feat fix perf refactor docs chore other)
-
-declare -A BUCKETS
-for key in "${SECTION_ORDER[@]}"; do
-  BUCKETS[$key]=""
+# Group commit subjects by conventional-commit prefix. Dependency-free: plain git log +
+# shell (see scripts/lib/changelog-draft.sh, tested by scripts/lib/changelog-draft.test.sh).
+declare -A CHANGELOG_BUCKETS
+declare -a CHANGELOG_UNCLASSIFIED_SUBJECTS=()
+for key in "${CHANGELOG_SECTION_ORDER[@]}"; do
+  CHANGELOG_BUCKETS[$key]=""
 done
 
-MERGE_NOISE_RE='^Merge (pull request|branch|remote-tracking branch)'
-CONVENTIONAL_RE='^(feat|fix|perf|refactor|docs|chore)(\([^)]*\))?!?:[[:space:]]*(.*)$'
-
-while IFS= read -r subject; do
-  [[ -z "$subject" ]] && continue
-  # Skip merge-noise subjects that add nothing on their own.
-  [[ "$subject" =~ $MERGE_NOISE_RE ]] && continue
-
-  if [[ "$subject" =~ $CONVENTIONAL_RE ]]; then
-    key="${BASH_REMATCH[1]}"
-    msg="${BASH_REMATCH[3]}"
-  else
-    key="other"
-    msg="$subject"
-  fi
-  BUCKETS[$key]+="- ${msg}"$'\n'
-done < <(git log --no-merges --pretty=format:'%s' "$COMMIT_RANGE" 2>/dev/null || true)
+# NOTE: `git log --pretty=format:'%s'` deliberately has no trailing newline after the
+# final (oldest) commit in the range — build_changelog_buckets accounts for that (a plain
+# `while read` loop would silently drop that commit; see scripts/lib/changelog-draft.sh
+# for the full writeup of the bug this fixes).
+build_changelog_buckets < <(git log --no-merges --pretty=format:'%s' "$COMMIT_RANGE" 2>/dev/null || true)
 
 WROTE_ANY=false
-for key in "${SECTION_ORDER[@]}"; do
-  if [[ -n "${BUCKETS[$key]}" ]]; then
+for key in "${CHANGELOG_SECTION_ORDER[@]}"; do
+  if [[ -n "${CHANGELOG_BUCKETS[$key]}" ]]; then
     {
       echo ""
-      echo "### ${SECTION_TITLES[$key]}"
+      echo "### ${CHANGELOG_SECTION_TITLES[$key]}"
       echo ""
-      printf '%s' "${BUCKETS[$key]}"
+      printf '%s' "${CHANGELOG_BUCKETS[$key]}"
     } >>"$DRAFT_FILE"
     WROTE_ANY=true
   fi
@@ -215,6 +197,19 @@ if [[ "$WROTE_ANY" == false ]]; then
     echo ""
     echo "_No conventional commits found in range \`${COMMIT_RANGE}\` — fill this in by hand._"
   } >>"$DRAFT_FILE"
+fi
+
+# Make the failure mode loud: every commit that didn't match a recognized conventional-commit
+# prefix is already in the CHANGELOG's "Unclassified — review manually" section above, but
+# print it to the terminal too so it can't be missed before the draft is curated.
+if [[ "${#CHANGELOG_UNCLASSIFIED_SUBJECTS[@]}" -gt 0 ]]; then
+  echo "" >&2
+  echo "==> WARNING: ${#CHANGELOG_UNCLASSIFIED_SUBJECTS[@]} commit(s) in range could not be classified" >&2
+  echo "    and were placed under 'Unclassified — review manually' in CHANGELOG.md:" >&2
+  for subject in "${CHANGELOG_UNCLASSIFIED_SUBJECTS[@]}"; do
+    echo "      - ${subject}" >&2
+  done
+  echo "    Review that section by hand before merging the release PR." >&2
 fi
 
 # Insert the draft section right after the "## [Unreleased]" heading's own body.

@@ -85,8 +85,10 @@ surface (measured: haiku scenario pass-rate 7/15 → 14/15). **Breaking:** the m
 
 A maintenance patch: sharing and filter bug fixes, a dependency security bump, and the
 under-the-hood groundwork for Vikunja 2.4.0. The announced, hardened *"optimised for Vikunja 2.4"*
-alignment — battle-tested, with v2 API fast-paths — is the upcoming **0.6.0** milestone; this
-release only lays the groundwork and does not yet claim it.
+alignment shipped as **[0.6.0](#060---2026-07-24)** (a reliability and agent-ergonomics
+milestone) — this release only laid the groundwork and did not yet claim it. (v2 API fast-paths
+turned out not to be part of 0.6.0 either — 0.6.0 only vendored the v2 spec/types; the actual
+migration is tracked for a later release, see 0.6.0's Internal notes.)
 
 ### Added
 
