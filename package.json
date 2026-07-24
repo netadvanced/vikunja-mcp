@@ -44,6 +44,7 @@
     "e2e:up": "docker/e2e/bootstrap.sh",
     "e2e:down": "docker compose -f docker/e2e/docker-compose.yml --profile postgres --profile sqlite down -v",
     "release:prepare": "scripts/release-prepare.sh",
+    "test:release-prepare": "bash scripts/lib/changelog-draft.test.sh",
     "release:tag": "scripts/release-tag.sh",
     "release:publish": "scripts/release-publish.sh"
   },
