@@ -97,6 +97,107 @@ describe('Tasks CRUD - Validation Coverage', () => {
     });
   });
 
+  describe('date coercion in createTask (#167)', () => {
+    it('coerces a date-only dueDate to RFC3339 before sending the create request', async () => {
+      const createdTask = {
+        id: 1,
+        title: 'Test Task',
+        due_date: '2026-07-24T00:00:00Z',
+      };
+      mockRest
+        .mockResolvedValueOnce(createdTask) // PUT /projects/{id}/tasks
+        .mockResolvedValueOnce(createdTask); // final GET /tasks/{id}
+
+      await createTask(
+        {
+          projectId: 1,
+          title: 'Test Task',
+          dueDate: '2026-07-24',
+        },
+        mockAuthManager,
+      );
+
+      expect(mockRest).toHaveBeenCalledWith(
+        mockAuthManager,
+        'PUT',
+        '/projects/1/tasks',
+        expect.objectContaining({ due_date: '2026-07-24T00:00:00Z' }),
+      );
+    });
+
+    it('coerces date-only startDate and endDate to RFC3339 before sending the create request', async () => {
+      const createdTask = { id: 1, title: 'Test Task' };
+      mockRest
+        .mockResolvedValueOnce(createdTask) // PUT /projects/{id}/tasks
+        .mockResolvedValueOnce(createdTask); // final GET /tasks/{id}
+
+      await createTask(
+        {
+          projectId: 1,
+          title: 'Test Task',
+          startDate: '2026-07-24',
+          endDate: '2026-08-01',
+        },
+        mockAuthManager,
+      );
+
+      expect(mockRest).toHaveBeenCalledWith(
+        mockAuthManager,
+        'PUT',
+        '/projects/1/tasks',
+        expect.objectContaining({
+          start_date: '2026-07-24T00:00:00Z',
+          end_date: '2026-08-01T00:00:00Z',
+        }),
+      );
+    });
+
+    it('leaves a full RFC3339 dueDate timestamp unchanged', async () => {
+      const createdTask = {
+        id: 1,
+        title: 'Test Task',
+        due_date: '2026-07-24T15:30:00Z',
+      };
+      mockRest
+        .mockResolvedValueOnce(createdTask) // PUT /projects/{id}/tasks
+        .mockResolvedValueOnce(createdTask); // final GET /tasks/{id}
+
+      await createTask(
+        {
+          projectId: 1,
+          title: 'Test Task',
+          dueDate: '2026-07-24T15:30:00Z',
+        },
+        mockAuthManager,
+      );
+
+      expect(mockRest).toHaveBeenCalledWith(
+        mockAuthManager,
+        'PUT',
+        '/projects/1/tasks',
+        expect.objectContaining({ due_date: '2026-07-24T15:30:00Z' }),
+      );
+    });
+
+    it('does not add a due_date field when dueDate is not provided', async () => {
+      const createdTask = { id: 1, title: 'Test Task' };
+      mockRest
+        .mockResolvedValueOnce(createdTask) // PUT /projects/{id}/tasks
+        .mockResolvedValueOnce(createdTask); // final GET /tasks/{id}
+
+      await createTask(
+        {
+          projectId: 1,
+          title: 'Test Task',
+        },
+        mockAuthManager,
+      );
+
+      const [, , , body] = mockRest.mock.calls[0];
+      expect(body).not.toHaveProperty('due_date');
+    });
+  });
+
   describe('error propagation paths', () => {
     it('should handle generic Error in createTask (line 187)', async () => {
       // Mock createTask (PUT /projects/{id}/tasks) to throw a generic Error
