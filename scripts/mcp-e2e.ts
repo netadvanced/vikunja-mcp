@@ -534,19 +534,24 @@ async function testAuth(h: McpHarness): Promise<void> {
     // api-version-detect groundwork (netadvanced/vikunja-mcp#28): 'info'
     // runs the session capability/version detector (GET /info already
     // above, plus a one-time GET /api/v2/openapi.json probe) and must
-    // surface both fields. Ground truth confirmed live against this harness's
-    // 2.4.0 stack: `curl http://localhost:33456/api/v2/openapi.json` returns
-    // 200 with a real OpenAPI schema (v2 is already present, just not used by
-    // this server's request paths yet) — so hasV2Api:true is the honest
-    // detection result here, not v1-only.
+    // surface both fields. `hasV2Api` is version-dependent — the v2 API is
+    // present on Vikunja 2.4.0+ but ABSENT on the 2.3.0 v1-floor — so we
+    // probe the live endpoint here for ground truth and assert the detector
+    // agrees, rather than hard-coding `true` (which false-failed on 2.3.0).
     assertStep(
       'auth info surfaces hasV2Api',
       /hasV2Api/.test(info.text),
       info.text.slice(0, 300),
     );
+    let v2Live = false;
+    try {
+      v2Live = (await fetch(`${VIKUNJA_URL.replace('/api/v1', '/api/v2')}/openapi.json`)).ok;
+    } catch {
+      v2Live = false;
+    }
     assertStep(
-      'auth info reports hasV2Api:true against the 2.4.0 stack (GET /api/v2/openapi.json is live)',
-      /hasV2Api[^a-zA-Z]*true/i.test(info.text),
+      `auth info reports hasV2Api:${v2Live} matching the live v2 probe (GET /api/v2/openapi.json ${v2Live ? '200' : 'absent'})`,
+      new RegExp(`hasV2Api[^a-zA-Z]*${v2Live}`, 'i').test(info.text),
       info.text.slice(0, 300),
     );
   }
