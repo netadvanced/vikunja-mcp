@@ -12,7 +12,7 @@ import { withRetry, RETRY_CONFIG } from '../../../utils/retry';
 import { transformApiError, handleFetchError } from '../../../utils/error-handler';
 import { sanitizeString } from '../../../utils/validation';
 import { AUTH_ERROR_MESSAGES } from '../constants';
-import { validateDateString, validateId, convertRepeatConfiguration } from '../validation';
+import { validateDateString, validateId, convertRepeatConfiguration, normalizeDateForApi } from '../validation';
 import { createTaskResponse } from './TaskResponseFormatter';
 import { formatAorpAsMarkdown } from '../../../utils/response-factory';
 import type { components } from '../../../types/generated/vikunja-openapi';
@@ -97,9 +97,14 @@ export async function createTask(
 
     // Add optional fields with sanitized values
     if (sanitizedDescription !== undefined) newTask.description = sanitizedDescription;
-    if (args.dueDate !== undefined) newTask.due_date = args.dueDate;
-    if (args.startDate !== undefined) newTask.start_date = args.startDate;
-    if (args.endDate !== undefined) newTask.end_date = args.endDate;
+    // Coerce date-only values (e.g. '2026-07-24') to RFC3339 before sending —
+    // Vikunja rejects bare dates with HTTP 400 code 2004 "Invalid model
+    // provided" (#167), the same error that trips the circuit-breaker
+    // cascade (#163). Full timestamps and empty/undefined values pass
+    // through unchanged.
+    if (args.dueDate !== undefined) newTask.due_date = normalizeDateForApi(args.dueDate) ?? args.dueDate;
+    if (args.startDate !== undefined) newTask.start_date = normalizeDateForApi(args.startDate) ?? args.startDate;
+    if (args.endDate !== undefined) newTask.end_date = normalizeDateForApi(args.endDate) ?? args.endDate;
     if (args.priority !== undefined) newTask.priority = args.priority;
 
     // Handle repeat configuration. The generated `models.Task.repeat_mode`
